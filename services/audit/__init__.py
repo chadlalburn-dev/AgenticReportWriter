@@ -33,6 +33,15 @@ from services.audit.store import (
     SqliteAuditStore,
 )
 
+# FirestoreAuditStore is exposed lazily — the google-cloud-firestore SDK is
+# only installed when the [gcp] extra is present. Modules that depend on
+# the audit package shouldn't have to install Firestore deps.
+try:
+    from services.audit.firestore_store import FirestoreAuditStore
+except ImportError:  # pragma: no cover - depends on local install
+    FirestoreAuditStore = None  # type: ignore[assignment,misc]
+
+
 __all__ = [
     "AuditAction",
     "AuditEvent",
@@ -41,6 +50,7 @@ __all__ = [
     "AuditStore",
     "AuditingLlmClient",
     "ComplianceMode",
+    "FirestoreAuditStore",
     "HashChainViolation",
     "InMemoryAuditStore",
     "SqliteAuditStore",
