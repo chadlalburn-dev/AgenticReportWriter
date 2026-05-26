@@ -88,6 +88,8 @@ gcp-key*.json
 # `data/` (e.g. inside sample corpora) are not affected.
 /data/
 /outputs/
+# Per-run generated artifacts under any sample corpus output/ dir
+samples/**/output/
 *.gdoc
 *.docx
 *.pdf

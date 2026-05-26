@@ -13,7 +13,12 @@ authors = [{ name = "Report Generator Agent Team" }]
 
 dependencies = [
     "pydantic>=2.7,<3",
-    "anthropic>=0.40,<1",
+    # anthropic[vertex] — Claude on GSK corporate Vertex AI via workload
+    # identity federation. NEVER use ANTHROPIC_API_KEY in this project;
+    # auth is via ADC (gcloud auth application-default login locally,
+    # workload identity in Cloud Run).
+    "anthropic[vertex]>=0.40,<1",
+    "google-auth>=2.30,<3",
     "jsonschema>=4.21,<5",
     "python-docx>=1.1,<2",
     "openpyxl>=3.1,<4",
