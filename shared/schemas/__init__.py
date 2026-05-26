@@ -7,6 +7,13 @@ changes — bump the schema version and migrate consumers.
 
 from shared.schemas.canonical_document import CanonicalDocument, SourceSystem
 from shared.schemas.citation import Citation, CitationLocator, SourceType
+from shared.schemas.parsed_chunk import (
+    ChunkKind,
+    DocxLocator,
+    ParsedChunk,
+    PdfLocator,
+    XlsxLocator,
+)
 from shared.schemas.template import (
     DataBinding,
     DataBindingType,
@@ -19,15 +26,20 @@ from shared.schemas.template import (
 
 __all__ = [
     "CanonicalDocument",
+    "ChunkKind",
     "Citation",
     "CitationLocator",
     "DataBinding",
     "DataBindingType",
+    "DocxLocator",
     "GenerationMode",
+    "ParsedChunk",
+    "PdfLocator",
     "ReportTemplate",
     "SourceSystem",
     "SourceType",
     "TemplateSection",
     "TemplateStatus",
     "ValidationRule",
+    "XlsxLocator",
 ]

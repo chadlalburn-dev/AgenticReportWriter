@@ -29,6 +29,7 @@ dev = [
     "ruff>=0.4,<1",
     "mypy>=1.10,<2",
     "types-jsonschema",
+    "reportlab>=4.2,<5",  # for generating PDF fixtures in parser tests
 ]
 gcp = [
     "google-cloud-aiplatform>=1.50,<2",
@@ -45,7 +46,7 @@ poc = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["shared", "services", "templates"]
+packages = ["shared", "services"]
 
 [tool.ruff]
 line-length = 100
