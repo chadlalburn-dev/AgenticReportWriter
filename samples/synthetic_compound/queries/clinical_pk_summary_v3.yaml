@@ -1,0 +1,41 @@
+id: clinical_pk_summary_v3
+description: |
+  Steady-state pharmacokinetic parameters per study + dose. Used in IB
+  Section 4.1 (PK and Product Metabolism in Humans).
+source: edc_warehouse
+version: 3
+sql: |
+  SELECT
+    study_id,
+    dose_text,
+    n_subjects,
+    cmax_ss_ng_per_ml,
+    auc_24_ss_ng_h_per_ml,
+    accumulation_ratio
+  FROM clinical_pk_ss
+  WHERE compound_id = :compound_id
+  ORDER BY study_id, dose_text
+parameters:
+  compound_id:
+    type: string
+    required: true
+output_columns:
+  study_id:
+    type: string
+  dose_text:
+    type: string
+  n_subjects:
+    type: integer
+  cmax_ss_ng_per_ml:
+    type: float
+  auc_24_ss_ng_h_per_ml:
+    type: float
+  accumulation_ratio:
+    type: float
+approval:
+  approved_by: clinical_pharmacology
+  approved_at: 2026-03-10
+  change_log:
+    - "v1: Day 1 PK only"
+    - "v2: added steady-state"
+    - "v3: added accumulation_ratio"

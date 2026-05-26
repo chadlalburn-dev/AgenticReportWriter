@@ -38,6 +38,11 @@ from services.audit import (  # noqa: E402
     SqliteAuditStore,
     verify_chain,
 )
+from services.data_integration import (  # noqa: E402
+    NamedQueryRegistry,
+    SqlSafetyGate,
+    SqliteQueryExecutor,
+)
 from services.document_renderer import (  # noqa: E402
     DryRunRenderer,
     spec_from_report,
@@ -55,6 +60,10 @@ from shared.llm import (  # noqa: E402
     StubLlmClient,
 )
 from shared.schemas import ReportTemplate  # noqa: E402
+
+
+QUERIES_DIR = Path(__file__).resolve().parent / "synthetic_compound" / "queries"
+EDC_SQLITE = Path(__file__).resolve().parent / "synthetic_compound" / "edc.sqlite"
 
 
 SOURCES = REPO_ROOT / "samples" / "synthetic_compound" / "sources"
@@ -177,11 +186,27 @@ def main() -> int:
     audit_sink = AuditSink(audit_store)
     print(f"Audit ledger:     {audit_db_path}")
 
+    # Wire the named-query registry + SQL safety gate against the local EDC SQLite.
+    # If the EDC database hasn't been seeded yet, generate it on demand.
+    if not EDC_SQLITE.exists():
+        from samples.synthetic_compound.seed_db import seed as _seed_edc
+        _seed_edc()
+    query_registry = NamedQueryRegistry.from_directory(QUERIES_DIR)
+    query_executor = SqliteQueryExecutor(
+        EDC_SQLITE, source="edc_warehouse", read_only=True
+    )
+    safety_gate = SqlSafetyGate(executor=query_executor, registry=query_registry)
+    print(f"Named queries:    {len(query_registry)} loaded from {QUERIES_DIR.name}/")
+
     generator = ReportGenerator(
-        fill_client=client, audit_sink=audit_sink, max_retries_per_section=1
+        fill_client=client,
+        audit_sink=audit_sink,
+        safety_gate=safety_gate,
+        max_retries_per_section=1,
     )
     inputs = {
         "product_name": metadata["compound"]["research_code"],
+        "compound_id": metadata["compound"]["research_code"],
         "sponsor_name": metadata["compound"]["sponsor"],
         "ib_edition": metadata["compound"]["ib_edition"],
         "release_date": metadata["compound"]["ib_release_date"],

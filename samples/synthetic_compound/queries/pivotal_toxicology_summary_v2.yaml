@@ -1,0 +1,40 @@
+id: pivotal_toxicology_summary_v2
+description: |
+  Pivotal repeat-dose toxicology findings — NOAEL, exposure at NOAEL,
+  target organs of toxicity. Used in IB Section 3.3 (Toxicology).
+source: nonclinical_warehouse
+version: 2
+sql: |
+  SELECT
+    study_id,
+    species,
+    duration_text,
+    noael_mg_per_kg_per_day,
+    noael_auc_24,
+    target_organs
+  FROM pivotal_tox
+  WHERE compound_id = :compound_id
+  ORDER BY species, duration_text
+parameters:
+  compound_id:
+    type: string
+    required: true
+output_columns:
+  study_id:
+    type: string
+  species:
+    type: string
+  duration_text:
+    type: string
+  noael_mg_per_kg_per_day:
+    type: float
+  noael_auc_24:
+    type: float
+  target_organs:
+    type: string
+approval:
+  approved_by: nonclinical_toxicology
+  approved_at: 2026-02-04
+  change_log:
+    - "v1: NOAEL only"
+    - "v2: added exposure margin and target_organs column"

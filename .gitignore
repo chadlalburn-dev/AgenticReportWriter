@@ -90,6 +90,8 @@ gcp-key*.json
 /outputs/
 # Per-run generated artifacts under any sample corpus output/ dir
 samples/**/output/
+# Synthetic data warehouse — regenerated on demand by seed_db.py
+samples/synthetic_compound/edc.sqlite
 *.gdoc
 *.docx
 *.pdf

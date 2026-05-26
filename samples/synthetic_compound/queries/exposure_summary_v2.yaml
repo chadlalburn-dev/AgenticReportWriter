@@ -1,0 +1,38 @@
+id: exposure_summary_v2
+description: |
+  Patient exposure (n, median weeks on treatment, n >=12 weeks) per
+  study + dose group. Used in IB Section 4.2.
+source: edc_warehouse
+version: 2
+sql: |
+  SELECT
+    study_id,
+    dose_group,
+    n_subjects,
+    median_duration_weeks,
+    n_at_least_12wk
+  FROM exposure_summary
+  WHERE compound_id = :compound_id
+  ORDER BY study_id, dose_group
+parameters:
+  compound_id:
+    type: string
+    description: Internal compound identifier
+    required: true
+output_columns:
+  study_id:
+    type: string
+  dose_group:
+    type: string
+  n_subjects:
+    type: integer
+  median_duration_weeks:
+    type: float
+  n_at_least_12wk:
+    type: integer
+approval:
+  approved_by: clinical_data_management
+  approved_at: 2026-02-20
+  change_log:
+    - "v1 (2025-11): single study only"
+    - "v2 (2026-02): multi-study with study_id grouping"

@@ -1,0 +1,39 @@
+id: ae_summary_by_soc_v3
+description: |
+  Treatment-emergent adverse events aggregated by MedDRA System Organ
+  Class for a given compound. Used in IB Section 4.2 (Safety and Efficacy).
+source: edc_warehouse
+version: 3
+sql: |
+  SELECT
+    soc AS MedDRA_SOC,
+    any_grade_n,
+    grade_3_4_n,
+    sae_n
+  FROM ae_events_by_soc
+  WHERE compound_id = :compound_id
+  ORDER BY any_grade_n DESC
+parameters:
+  compound_id:
+    type: string
+    description: Internal compound identifier (e.g. XYZ-001)
+    required: true
+output_columns:
+  MedDRA_SOC:
+    type: string
+  any_grade_n:
+    type: integer
+    description: Any-grade incidence count
+  grade_3_4_n:
+    type: integer
+    description: Grade 3 or 4 incidence count
+  sae_n:
+    type: integer
+    description: Serious adverse event count
+approval:
+  approved_by: medical_writing_qa
+  approved_at: 2026-04-15
+  change_log:
+    - "v1 (2025-09): initial version with SOC + any_grade"
+    - "v2 (2026-01): added grade_3_4 column"
+    - "v3 (2026-04): added sae column, normalized ORDER BY"

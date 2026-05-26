@@ -1,0 +1,42 @@
+id: nonclinical_pk_summary_v1
+description: |
+  Cross-species nonclinical pharmacokinetic parameters. Used in IB
+  Section 3.2 (PK and Product Metabolism in Animals).
+source: nonclinical_warehouse
+version: 1
+sql: |
+  SELECT
+    species,
+    dose_mg_per_kg,
+    route,
+    cmax_ng_per_ml,
+    auc_inf_ng_h_per_ml,
+    half_life_h,
+    bioavailability_pct
+  FROM nonclinical_pk
+  WHERE compound_id = :compound_id
+  ORDER BY species, dose_mg_per_kg
+parameters:
+  compound_id:
+    type: string
+    required: true
+output_columns:
+  species:
+    type: string
+  dose_mg_per_kg:
+    type: float
+  route:
+    type: string
+  cmax_ng_per_ml:
+    type: float
+  auc_inf_ng_h_per_ml:
+    type: float
+  half_life_h:
+    type: float
+  bioavailability_pct:
+    type: float
+approval:
+  approved_by: nonclinical_dmpk
+  approved_at: 2026-01-12
+  change_log:
+    - "v1: initial"

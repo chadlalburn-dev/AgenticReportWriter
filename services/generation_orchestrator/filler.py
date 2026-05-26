@@ -21,6 +21,7 @@ from shared.llm import (
     ModelTier,
     StructuredOutputError,
 )
+from services.data_integration import ResolvedQueryResult
 from shared.schemas import (
     Citation,
     CitationLocator,
@@ -32,7 +33,7 @@ from shared.schemas import (
 )
 
 from .prompts import FILL_SYSTEM_PROMPT, PROMPT_VERSION
-from .retrieval import ResolvedSectionContext
+from .retrieval import ResolvedBinding, ResolvedSectionContext
 from .types import GeneratedClaim, GeneratedParagraph, GeneratedSection
 
 
@@ -93,6 +94,33 @@ def _render_chunk_for_prompt(chunk: ParsedChunk, citation_id: str) -> str:
     )
 
 
+def _render_table_for_prompt(binding: ResolvedBinding, citation_id: str) -> str:
+    """Render a query result as a markdown-style table the LLM can reference.
+
+    The LLM should NOT re-derive these numbers — it should narrate around
+    the table and cite this citation_id when referencing it.
+    """
+    assert binding.query_result is not None  # caller's responsibility
+    qresult = binding.query_result
+    header = " | ".join(qresult.columns)
+    sep = " | ".join("---" for _ in qresult.columns)
+    rows = "\n".join(" | ".join(str(c) if c is not None else "" for c in row) for row in qresult.rows)
+    params_str = ", ".join(f"{k}={v!r}" for k, v in qresult.parameters.items())
+    return (
+        f"[citation_id={citation_id}] "
+        f"(binding_id={binding.binding_id}; source={qresult.source}; params={{{params_str}}})\n"
+        f"{header}\n{sep}\n{rows}\n"
+    )
+
+
+def _table_snippet(qresult: ResolvedQueryResult) -> str:
+    """A short text snippet for the Citation.snippet field (truncated)."""
+    header = " | ".join(qresult.columns)
+    sample = " | ".join(str(c) if c is not None else "" for c in qresult.rows[0]) if qresult.rows else ""
+    snippet = f"{header}\n{sample}\n({qresult.row_count} row(s) from {qresult.source})"
+    return snippet[:500]
+
+
 def _source_type_for_chunk(chunk: ParsedChunk) -> SourceType:
     if isinstance(chunk.locator, PdfLocator):
         return SourceType.PDF
@@ -139,14 +167,26 @@ class SectionFiller:
         chunk_to_citation: dict[str, str] = {
             c.chunk_id: str(uuid.uuid4()) for c in section_context.all_chunks
         }
+        # Plus one citation_id per resolved query table (binding_id -> citation_id).
+        table_to_citation: dict[str, str] = {
+            b.binding_id: str(uuid.uuid4())
+            for b in section_context.bindings
+            if b.query_result is not None
+        }
 
-        # Build the user message: prompt + bindings + chunk pool.
+        # Build the user message: prompt + bindings + chunk pool + query tables.
         prompt_body = _build_prompt_template(section_context, free_text_inputs)
 
         binding_summaries: list[str] = []
         for b in section_context.bindings:
             if b.text_value is not None:
                 binding_summaries.append(f"<binding:{b.binding_id}> = {b.text_value!r}")
+            elif b.query_result is not None:
+                binding_summaries.append(
+                    f"<binding:{b.binding_id}> — table with "
+                    f"{b.query_result.row_count} rows "
+                    f"(cite via citation_id={table_to_citation[b.binding_id]})"
+                )
             elif b.deferred_note:
                 binding_summaries.append(
                     f"<binding:{b.binding_id}> — {b.deferred_note}"
@@ -160,6 +200,13 @@ class SectionFiller:
         for chunk in section_context.all_chunks:
             citation_id = chunk_to_citation[chunk.chunk_id]
             chunk_blocks.append(_render_chunk_for_prompt(chunk, citation_id))
+
+        table_blocks: list[str] = []
+        for b in section_context.bindings:
+            if b.query_result is None:
+                continue
+            citation_id = table_to_citation[b.binding_id]
+            table_blocks.append(_render_table_for_prompt(b, citation_id))
 
         length_hint = ""
         if section.generation.expected_length_words_min or section.generation.expected_length_words_max:
@@ -178,6 +225,8 @@ class SectionFiller:
             f"## Bindings\n" + "\n".join(binding_summaries) + "\n\n"
             f"## Source chunk pool (each tagged with a citation_id)\n\n"
             + ("\n".join(chunk_blocks) if chunk_blocks else "(no chunks retrieved for this section)\n")
+            + ("\n\n## Deterministic data tables (cite as a whole; do NOT re-derive the numbers)\n\n"
+               + "\n".join(table_blocks) if table_blocks else "")
             + "\n\nProduce the section by calling emit_structured_output."
         )
 
@@ -198,8 +247,9 @@ class SectionFiller:
             )
         fill = _FillOutput.model_validate(response.parsed_json)
 
-        # Validate citation IDs the LLM used: they must all come from the pool.
-        valid_citation_ids = set(chunk_to_citation.values())
+        # Validate citation IDs the LLM used: they must all come from the pool
+        # (chunks OR tables).
+        valid_citation_ids = set(chunk_to_citation.values()) | set(table_to_citation.values())
         used_citation_ids: set[str] = set()
         for paragraph in fill.paragraphs:
             for claim in paragraph.claims:
@@ -230,6 +280,31 @@ class SectionFiller:
                     snippet=chunk.text[:500],
                     retrieved_at=retrieval_ts,
                     retrieval_chunk_id=chunk.chunk_id,
+                )
+            )
+
+        # Plus one Citation per used query-result binding.
+        for b in section_context.bindings:
+            if b.query_result is None:
+                continue
+            citation_id = table_to_citation[b.binding_id]
+            if citation_id not in used_citation_ids:
+                continue
+            qresult = b.query_result
+            citations.append(
+                Citation(
+                    citation_id=citation_id,
+                    report_instance_id=report_instance_id,
+                    source_type=SourceType.SQL,
+                    source_uri=f"{qresult.source}://{b.binding_id}",
+                    source_doc_id=b.binding_id,
+                    source_doc_version=str(qresult.row_count),
+                    locator=CitationLocator(
+                        query_id=b.binding_id,
+                        query_parameters={k: str(v) for k, v in qresult.parameters.items()},
+                    ),
+                    snippet=_table_snippet(qresult),
+                    retrieved_at=retrieval_ts,
                 )
             )
 
