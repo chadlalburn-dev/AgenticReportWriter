@@ -32,6 +32,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from services.audit import (  # noqa: E402
+    AuditQuery,
+    AuditSink,
+    SqliteAuditStore,
+    verify_chain,
+)
 from services.document_renderer import (  # noqa: E402
     DryRunRenderer,
     spec_from_report,
@@ -165,7 +171,15 @@ def main() -> int:
         print("Using StubLlmClient (no Vertex access required)")
         client = _build_smart_stub()
 
-    generator = ReportGenerator(fill_client=client, max_retries_per_section=1)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    audit_db_path = OUTPUT_DIR / "audit.sqlite"
+    audit_store = SqliteAuditStore(audit_db_path)
+    audit_sink = AuditSink(audit_store)
+    print(f"Audit ledger:     {audit_db_path}")
+
+    generator = ReportGenerator(
+        fill_client=client, audit_sink=audit_sink, max_retries_per_section=1
+    )
     inputs = {
         "product_name": metadata["compound"]["research_code"],
         "sponsor_name": metadata["compound"]["sponsor"],
@@ -173,12 +187,16 @@ def main() -> int:
         "release_date": metadata["compound"]["ib_release_date"],
     }
     print("Generating IB...")
+    project_id = f"ib-pilot/{metadata['compound']['research_code']}"
     result = generator.generate(
         template=template,
         documents=docs,
         chunks_by_doc=chunks_by_doc,
         free_text_inputs=inputs,
         compliance_mode="rd",
+        project_id=project_id,
+        tenant_id="gsk",
+        actor_id=metadata["compound"]["sponsor"],
     )
 
     n_sections = len(template.all_sections())
@@ -191,6 +209,17 @@ def main() -> int:
         f"{len(result.citations)} citations, {len(result.audit_events)} audit events"
     )
 
+    # Audit chain integrity check (per-project)
+    project_chain = list(audit_store.query(AuditQuery(project_id=project_id)))
+    n_verified = verify_chain(project_chain)
+    print(f"Audit chain verified: {n_verified} events ({project_id})")
+
+    # Per-action counts (a quick QMS-style summary)
+    from collections import Counter
+    counts = Counter(e.action.value for e in project_chain)
+    for action, n in sorted(counts.items()):
+        print(f"  {action:<35s} {n}")
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT_DIR / "ib_run.json"
     out_path.write_text(
@@ -198,18 +227,7 @@ def main() -> int:
             {
                 "instance": result.instance.model_dump(mode="json"),
                 "citations": [c.model_dump(mode="json") for c in result.citations],
-                "audit_events": [
-                    {
-                        "event_id": e.event_id,
-                        "section_id": e.section_id,
-                        "phase": e.phase,
-                        "model_version": e.model_version,
-                        "timestamp": e.timestamp.isoformat(),
-                        "status": e.status,
-                        "notes": e.notes,
-                    }
-                    for e in result.audit_events
-                ],
+                "audit_events": [e.model_dump(mode="json") for e in result.audit_events],
                 "plan_summary": result.plan.overall_summary if result.plan else None,
             },
             indent=2,

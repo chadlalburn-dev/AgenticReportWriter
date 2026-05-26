@@ -5,17 +5,22 @@ Inputs:
   - Pool of CanonicalDocuments + their ParsedChunks (from ingestion/parsing)
   - free_text_inputs (user-provided per binding_id)
   - compliance_mode + retry budget
+  - (optional) AuditSink — when supplied, the orchestrator wraps every LLM
+    client with AuditingLlmClient so every call is recorded, and it emits
+    canonical AuditEvents for each generation phase. If not supplied, an
+    InMemoryAuditStore is used so the loop still runs (events are
+    ephemeral).
 
 Outputs:
   - ReportInstance (sections, paragraphs, claims)
   - list[Citation]
-  - GenerationAuditEvent log (every LLM call's request/response captured)
+  - list[AuditEvent] (events emitted during this generation run)
 """
 
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -29,6 +34,16 @@ from shared.schemas import (
     TemplateSection,
 )
 
+from services.audit import (
+    AuditAction,
+    AuditEvent,
+    AuditQuery,
+    AuditSink,
+    AuditingLlmClient,
+    ComplianceMode,
+    InMemoryAuditStore,
+)
+
 from .critic import SectionCritic
 from .filler import FillResult, SectionFiller
 from .planner import ReportPlan, ReportPlanner
@@ -37,22 +52,11 @@ from .types import GeneratedSection, ReportInstance
 
 
 @dataclass
-class GenerationAuditEvent:
-    event_id: str
-    section_id: str | None
-    phase: Literal["plan", "fill", "critique"]
-    model_version: str
-    timestamp: datetime
-    status: Literal["ok", "regenerated", "failed"]
-    notes: list[str] = field(default_factory=list)
-
-
-@dataclass
 class GenerationResult:
     instance: ReportInstance
     citations: list[Citation]
     plan: ReportPlan | None
-    audit_events: list[GenerationAuditEvent]
+    audit_events: list[AuditEvent]
 
 
 class ReportGenerator:
@@ -62,12 +66,15 @@ class ReportGenerator:
         fill_client: LlmClient,
         plan_client: LlmClient | None = None,
         critique_client: LlmClient | None = None,
+        audit_sink: AuditSink | None = None,
         max_retries_per_section: int = 2,
     ) -> None:
-        # Same client for all three by default; tests/production can split.
-        self._planner = ReportPlanner(plan_client or fill_client)
-        self._filler = SectionFiller(fill_client)
-        self._critic = SectionCritic(critique_client or fill_client)
+        # Inner clients are stored raw; we wrap them per-run inside generate()
+        # so each run carries the right project_id / instance_id in audit metadata.
+        self._fill_client_inner = fill_client
+        self._plan_client_inner = plan_client or fill_client
+        self._critique_client_inner = critique_client or fill_client
+        self._audit_sink = audit_sink or AuditSink(InMemoryAuditStore())
         self._max_retries = max_retries_per_section
 
     def generate(
@@ -77,29 +84,65 @@ class ReportGenerator:
         documents: list[CanonicalDocument],
         chunks_by_doc: dict[str, list[ParsedChunk]],
         free_text_inputs: dict[str, str],
-        compliance_mode: Literal["rd", "gxp", "part11"] = "rd",
+        compliance_mode: ComplianceMode = "rd",
+        project_id: str = "default-project",
+        tenant_id: str = "default-tenant",
+        actor_id: str = "system:orchestrator",
         run_plan_phase: bool = True,
     ) -> GenerationResult:
         instance_id = str(uuid.uuid4())
         generated_at = datetime.now(timezone.utc)
-        audit: list[GenerationAuditEvent] = []
+
+        # Wrap clients with auditing decorators bound to this run's identifiers.
+        wrap = lambda c: AuditingLlmClient(  # noqa: E731
+            c,
+            self._audit_sink,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            actor_id=actor_id,
+            mode=compliance_mode,
+            report_instance_id=instance_id,
+        )
+        planner = ReportPlanner(wrap(self._plan_client_inner))
+        filler = SectionFiller(wrap(self._fill_client_inner))
+        critic = SectionCritic(wrap(self._critique_client_inner))
+
+        # Mark the start of this generation run on the chain.
+        self._emit(
+            action=AuditAction.GENERATION_REQUESTED,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            actor_id=actor_id,
+            mode=compliance_mode,
+            target_type="report_instance",
+            target_id=instance_id,
+            target_version=f"{template.template_id}@{template.version}",
+            extra={
+                "template_id": template.template_id,
+                "template_version": template.version,
+                "compliance_mode": compliance_mode,
+                "n_documents": len(documents),
+                "n_chunks": sum(len(c) for c in chunks_by_doc.values()),
+            },
+        )
 
         plan: ReportPlan | None = None
         if run_plan_phase:
-            plan = self._planner.plan(
+            plan = planner.plan(
                 template=template,
                 available_docs=documents,
                 free_text_inputs=free_text_inputs,
             )
-            audit.append(
-                GenerationAuditEvent(
-                    event_id=str(uuid.uuid4()),
-                    section_id=None,
-                    phase="plan",
-                    model_version=plan.model_version,
-                    timestamp=datetime.now(timezone.utc),
-                    status="ok",
-                )
+            self._emit(
+                action=AuditAction.GENERATION_PLAN_COMPLETED,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                actor_id=actor_id,
+                mode=compliance_mode,
+                target_type="report_instance",
+                target_id=instance_id,
+                target_version=plan.model_version,
+                extra={"overall_summary_len": len(plan.overall_summary)},
             )
 
         resolver = BindingResolver(
@@ -113,16 +156,21 @@ class ReportGenerator:
         all_citations: list[Citation] = []
 
         for section in all_sections:
-            generated, citations, events = self._generate_section(
+            generated, citations = self._generate_section(
                 section=section,
                 resolver=resolver,
+                filler=filler,
+                critic=critic,
                 free_text_inputs=free_text_inputs,
                 report_instance_id=instance_id,
                 retrieved_at=generated_at,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                actor_id=actor_id,
+                mode=compliance_mode,
             )
             generated_by_id[section.section_id] = generated
             all_citations.extend(citations)
-            audit.extend(events)
 
         # Re-assemble the section tree
         top_level = [
@@ -140,8 +188,31 @@ class ReportGenerator:
             plan_summary=plan.overall_summary if plan else None,
             sections=top_level,
         )
+        self._emit(
+            action=AuditAction.GENERATION_COMPLETED,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            actor_id=actor_id,
+            mode=compliance_mode,
+            target_type="report_instance",
+            target_id=instance_id,
+            extra={
+                "n_sections": len(generated_by_id),
+                "n_citations": len(all_citations),
+            },
+        )
+
+        # Return the events emitted for THIS instance (filter by report_instance
+        # extra in the chain — for compactness, also includes phase-level events
+        # whose target_id is the instance_id).
+        events_this_run = self._events_for_instance(
+            project_id=project_id, instance_id=instance_id
+        )
         return GenerationResult(
-            instance=instance, citations=all_citations, plan=plan, audit_events=audit
+            instance=instance,
+            citations=all_citations,
+            plan=plan,
+            audit_events=events_this_run,
         )
 
     def _generate_section(
@@ -149,12 +220,16 @@ class ReportGenerator:
         *,
         section: TemplateSection,
         resolver: BindingResolver,
+        filler: SectionFiller,
+        critic: SectionCritic,
         free_text_inputs: dict[str, str],
         report_instance_id: str,
         retrieved_at: datetime,
-    ) -> tuple[GeneratedSection, list[Citation], list[GenerationAuditEvent]]:
-        events: list[GenerationAuditEvent] = []
-
+        tenant_id: str,
+        project_id: str,
+        actor_id: str,
+        mode: ComplianceMode,
+    ) -> tuple[GeneratedSection, list[Citation]]:
         # Sections that aren't LLM-generated still get a stub GeneratedSection so
         # the renderer can place them. No fill, no critique.
         if section.generation.mode in (GenerationMode.DETERMINISTIC, GenerationMode.MANUAL):
@@ -166,7 +241,6 @@ class ReportGenerator:
                     critique_status="passed",
                 ),
                 [],
-                events,
             )
 
         context = resolver.resolve(section)
@@ -175,50 +249,129 @@ class ReportGenerator:
         last_result: FillResult | None = None
         last_issues: list[str] = []
         while fill_attempts <= self._max_retries:
-            fill_result = self._filler.fill(
+            fill_result = filler.fill(
                 section_context=context,
                 free_text_inputs=free_text_inputs,
                 report_instance_id=report_instance_id,
                 retrieved_at=retrieved_at,
             )
             last_result = fill_result
-            events.append(
-                GenerationAuditEvent(
-                    event_id=str(uuid.uuid4()),
-                    section_id=section.section_id,
-                    phase="fill",
-                    model_version=fill_result.model_version,
-                    timestamp=datetime.now(timezone.utc),
-                    status="ok" if fill_attempts == 0 else "regenerated",
-                )
+            self._emit(
+                action=AuditAction.GENERATION_SECTION_FILLED,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                actor_id=actor_id,
+                mode=mode,
+                target_type="section",
+                target_id=section.section_id,
+                target_version=fill_result.model_version,
+                extra={
+                    "report_instance_id": report_instance_id,
+                    "attempt": fill_attempts + 1,
+                    "n_paragraphs": len(fill_result.section.paragraphs),
+                    "n_citations": len(fill_result.citations),
+                },
             )
+            for citation in fill_result.citations:
+                self._emit(
+                    action=AuditAction.CITATION_CREATED,
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    actor_id=actor_id,
+                    mode=mode,
+                    target_type="citation",
+                    target_id=citation.citation_id,
+                    extra={
+                        "report_instance_id": report_instance_id,
+                        "section_id": section.section_id,
+                        "source_doc_id": citation.source_doc_id,
+                        "source_type": citation.source_type.value,
+                    },
+                )
 
-            verdict_pass, issues = self._critic.critique(
+            verdict_pass, issues = critic.critique(
                 section=section, generated=fill_result.section
             )
             last_issues = issues
-            events.append(
-                GenerationAuditEvent(
-                    event_id=str(uuid.uuid4()),
-                    section_id=section.section_id,
-                    phase="critique",
-                    model_version=fill_result.model_version,
-                    timestamp=datetime.now(timezone.utc),
-                    status="ok" if verdict_pass else "failed",
-                    notes=issues,
-                )
+            self._emit(
+                action=AuditAction.GENERATION_SECTION_CRITIQUED,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                actor_id=actor_id,
+                mode=mode,
+                target_type="section",
+                target_id=section.section_id,
+                target_version=fill_result.model_version,
+                notes=issues,
+                extra={
+                    "report_instance_id": report_instance_id,
+                    "verdict": "pass" if verdict_pass else "fail",
+                    "attempt": fill_attempts + 1,
+                },
             )
             if verdict_pass:
                 fill_result.section.critique_status = "passed"
                 fill_result.section.critique_notes = []
-                return fill_result.section, fill_result.citations, events
+                return fill_result.section, fill_result.citations
             fill_attempts += 1
 
         # All retries exhausted — flag and return the last attempt.
         assert last_result is not None
         last_result.section.critique_status = "failed_after_retries"
         last_result.section.critique_notes = last_issues
-        return last_result.section, last_result.citations, events
+        return last_result.section, last_result.citations
+
+    def _emit(
+        self,
+        *,
+        action: AuditAction,
+        tenant_id: str,
+        project_id: str,
+        actor_id: str,
+        mode: ComplianceMode,
+        target_type: str,
+        target_id: str,
+        target_version: str | None = None,
+        notes: list[str] | None = None,
+        extra: dict[str, object] | None = None,
+    ) -> AuditEvent:
+        return self._audit_sink.emit(
+            AuditEvent(
+                action=action,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                actor_id=actor_id,
+                mode=mode,
+                target_type=target_type,
+                target_id=target_id,
+                target_version=target_version,
+                timestamp_utc=datetime.now(timezone.utc),
+                notes=notes or [],
+                extra={k: (v if isinstance(v, (str, int, float, bool)) else str(v))
+                       for k, v in (extra or {}).items()},
+            )
+        )
+
+    def _events_for_instance(
+        self, *, project_id: str, instance_id: str
+    ) -> list[AuditEvent]:
+        """Return events from this generation run.
+
+        Picks up events whose target_id is the instance_id (phase events) and
+        events whose extra.report_instance_id matches (per-section events).
+        Order: insertion order from the store.
+        """
+        sink = self._audit_sink
+        # The sink doesn't expose its store directly; we re-read through query.
+        store = sink._store  # type: ignore[attr-defined]
+        all_events = list(store.query(AuditQuery(project_id=project_id)))
+        results: list[AuditEvent] = []
+        for event in all_events:
+            if event.target_id == instance_id:
+                results.append(event)
+            elif event.extra.get("report_instance_id") == instance_id:
+                results.append(event)
+        return results
 
     @staticmethod
     def _collect_template_sections(template: ReportTemplate) -> list[TemplateSection]:
