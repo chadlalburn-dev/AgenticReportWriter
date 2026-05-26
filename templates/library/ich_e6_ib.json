@@ -1,0 +1,287 @@
+{
+  "template_id": "ich_e6_ib",
+  "version": "0.1.0",
+  "status": "draft",
+  "report_type": "ICH_E6_IB",
+  "title": "Investigator's Brochure (ICH E6)",
+  "metadata": {
+    "authored_by": "system:library",
+    "authored_at": "2026-05-26T00:00:00Z",
+    "source_origin": "from_library"
+  },
+  "global_style": {
+    "numbering": "decimal",
+    "citation_style": "footnote_numbered",
+    "heading_levels": 4
+  },
+  "sections": [
+    {
+      "section_id": "title_page",
+      "title": "Title Page",
+      "level": 1,
+      "generation": {
+        "mode": "deterministic",
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "sponsor_name", "prompt": "Sponsor name", "required": true },
+        { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name / compound identifier", "required": true },
+        { "type": "free_text_input", "binding_id": "ib_edition", "prompt": "IB edition (e.g., Edition 3.0)", "required": true },
+        { "type": "free_text_input", "binding_id": "release_date", "prompt": "Release date (YYYY-MM-DD)", "required": true }
+      ],
+      "citation_policy": { "required": false, "granularity": "section", "min_citations_per_paragraph": 0 }
+    },
+    {
+      "section_id": "confidentiality",
+      "title": "Confidentiality Statement",
+      "level": 1,
+      "generation": {
+        "mode": "deterministic",
+        "output_shape": "prose"
+      },
+      "citation_policy": { "required": false, "granularity": "section", "min_citations_per_paragraph": 0 }
+    },
+    {
+      "section_id": "summary",
+      "title": "Summary",
+      "level": 1,
+      "generation": {
+        "mode": "llm",
+        "prompt_template": "Produce a concise (~1-2 page) summary of the investigational product covering: (a) chemical class and mechanism of action, (b) summary of nonclinical pharmacology and toxicology, (c) human PK and safety/efficacy to date, (d) potential risks and adverse reactions, (e) recommendations for investigator vigilance. Use {{bindings.product_name}} consistently. Every quantitative claim must carry a citation.",
+        "expected_length_words_min": 400,
+        "expected_length_words_max": 1200,
+        "style_directives": ["formal", "past_tense_for_completed_studies", "no_speculation"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name", "required": true },
+        { "type": "file_set", "binding_id": "all_prior_ib", "filter_tags": ["prior_ib"], "required": false },
+        { "type": "file_set", "binding_id": "all_studies", "filter_tags": ["study_report"], "required": false }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+      "validation_rules": [
+        { "rule": "must_cite_every_number", "severity": "error" },
+        { "rule": "no_unbound_claims", "severity": "error" },
+        { "rule": "length_within_bounds", "severity": "warn" }
+      ]
+    },
+    {
+      "section_id": "1",
+      "title": "Introduction",
+      "level": 1,
+      "generation": {
+        "mode": "llm",
+        "prompt_template": "Write a brief introduction (~500 words) for {{bindings.product_name}}: chemical name and structural class, therapeutic class and proposed indications, rationale for performing research with this product, and the general approach being followed. Cite any factual claims to source documents in {{bindings.background_docs}}.",
+        "expected_length_words_min": 300,
+        "expected_length_words_max": 800,
+        "style_directives": ["formal", "factual_only"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name", "required": true },
+        { "type": "file_set", "binding_id": "background_docs", "filter_tags": ["background", "mechanism"], "required": false }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+    },
+    {
+      "section_id": "2",
+      "title": "Physical, Chemical, and Pharmaceutical Properties and Formulation",
+      "level": 1,
+      "generation": {
+        "mode": "hybrid",
+        "prompt_template": "Describe the chemical structure, physicochemical properties, formulation, and storage conditions of {{bindings.product_name}}. Pull the structural identifiers and physicochemical constants from {{bindings.cmc_summary}}. Include the structural formula reference and the formulation table verbatim from the CMC source.",
+        "expected_length_words_min": 300,
+        "expected_length_words_max": 1500,
+        "style_directives": ["technical", "precise_units"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name", "required": true },
+        { "type": "file_set", "binding_id": "cmc_summary", "filter_tags": ["CMC", "formulation"], "required": true }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+      "validation_rules": [
+        { "rule": "must_cite_every_number", "severity": "error" }
+      ]
+    },
+    {
+      "section_id": "3",
+      "title": "Nonclinical Studies",
+      "level": 1,
+      "children": [
+        {
+          "section_id": "3.1",
+          "title": "Nonclinical Pharmacology",
+          "level": 2,
+          "generation": {
+            "mode": "llm",
+            "prompt_template": "Summarize the nonclinical pharmacology of {{bindings.product_name}}: primary pharmacodynamics (mechanism, efficacy models, dose-response), secondary pharmacodynamics, and safety pharmacology (cardiovascular, respiratory, CNS). Draw exclusively from {{bindings.nonclinical_pharm}}. Where dose levels, exposures, or efficacy endpoints are referenced, cite the specific study report.",
+            "expected_length_words_min": 800,
+            "expected_length_words_max": 3000,
+            "style_directives": ["formal", "past_tense", "dose_units_explicit"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name", "required": true },
+            { "type": "file_set", "binding_id": "nonclinical_pharm", "filter_tags": ["nonclinical", "pharmacology"], "required": true }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+          "validation_rules": [
+            { "rule": "must_cite_every_number", "severity": "error" },
+            { "rule": "no_unbound_claims", "severity": "error" }
+          ]
+        },
+        {
+          "section_id": "3.2",
+          "title": "Pharmacokinetics and Product Metabolism in Animals",
+          "level": 2,
+          "generation": {
+            "mode": "hybrid",
+            "prompt_template": "Summarize absorption, distribution, metabolism, and excretion (ADME) of {{bindings.product_name}} in animal species. For each species in {{bindings.pk_studies}}, report key PK parameters (Cmax, Tmax, AUC, t1/2, CL, Vd) verbatim from the source study. Discuss metabolic pathways and major metabolites identified.",
+            "expected_length_words_min": 600,
+            "expected_length_words_max": 2500,
+            "style_directives": ["formal", "precise_units", "species_explicit"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name", "required": true },
+            { "type": "file_set", "binding_id": "pk_studies", "filter_tags": ["nonclinical", "PK"], "required": true },
+            { "type": "named_query", "binding_id": "pk_summary_table", "source": "edc_warehouse", "query_id": "nonclinical_pk_summary_v1", "parameters": {"compound_id": "{{report.compound_id}}"}, "required": false }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+          "validation_rules": [
+            { "rule": "must_cite_every_number", "severity": "error" }
+          ]
+        },
+        {
+          "section_id": "3.3",
+          "title": "Toxicology",
+          "level": 2,
+          "generation": {
+            "mode": "hybrid",
+            "prompt_template": "Summarize toxicology findings for {{bindings.product_name}}: single-dose toxicity, repeat-dose toxicity by species and duration, genotoxicity, carcinogenicity (if applicable), reproductive and developmental toxicity, local tolerance, and other toxicity. For each study in {{bindings.tox_studies}}, report NOAEL, NOEL, target organs of toxicity, and reversibility verbatim from the source. Include a deterministic table of pivotal tox studies pulled via {{bindings.pivotal_tox_table}}.",
+            "expected_length_words_min": 1000,
+            "expected_length_words_max": 4000,
+            "style_directives": ["formal", "noael_units_mg_per_kg_per_day", "species_explicit"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name", "required": true },
+            { "type": "file_set", "binding_id": "tox_studies", "filter_tags": ["nonclinical", "toxicology"], "required": true },
+            { "type": "named_query", "binding_id": "pivotal_tox_table", "source": "edc_warehouse", "query_id": "pivotal_toxicology_summary_v2", "parameters": {"compound_id": "{{report.compound_id}}"}, "required": true }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+          "validation_rules": [
+            { "rule": "must_cite_every_number", "severity": "error" },
+            { "rule": "no_unbound_claims", "severity": "error" }
+          ]
+        }
+      ]
+    },
+    {
+      "section_id": "4",
+      "title": "Effects in Humans",
+      "level": 1,
+      "children": [
+        {
+          "section_id": "4.1",
+          "title": "Pharmacokinetics and Product Metabolism in Humans",
+          "level": 2,
+          "generation": {
+            "mode": "hybrid",
+            "prompt_template": "Summarize human PK of {{bindings.product_name}}: absorption, distribution, metabolism, excretion. Include population PK estimates if available. Report parameters (Cmax, Tmax, AUC, t1/2, CL/F, Vd/F) per study from {{bindings.clinical_pk_studies}}; pull the cross-study summary table via {{bindings.human_pk_table}}.",
+            "expected_length_words_min": 600,
+            "expected_length_words_max": 2500,
+            "style_directives": ["formal", "precise_units", "study_id_explicit"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name", "required": true },
+            { "type": "file_set", "binding_id": "clinical_pk_studies", "filter_tags": ["clinical", "PK"], "required": false },
+            { "type": "named_query", "binding_id": "human_pk_table", "source": "edc_warehouse", "query_id": "clinical_pk_summary_v3", "parameters": {"compound_id": "{{report.compound_id}}"}, "required": false }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+          "validation_rules": [
+            { "rule": "must_cite_every_number", "severity": "error" }
+          ]
+        },
+        {
+          "section_id": "4.2",
+          "title": "Safety and Efficacy",
+          "level": 2,
+          "generation": {
+            "mode": "hybrid",
+            "prompt_template": "Summarize human safety and efficacy of {{bindings.product_name}}: extent of human exposure, safety findings (adverse events, serious adverse events, deaths, discontinuations, lab abnormalities), and efficacy findings by indication/study. Pull the AE summary verbatim from {{bindings.ae_summary_table}} and the exposure table from {{bindings.exposure_table}}. Discuss class effects and recognized risks.",
+            "expected_length_words_min": 1500,
+            "expected_length_words_max": 5000,
+            "style_directives": ["formal", "study_id_explicit", "ae_terminology_meddra"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name", "required": true },
+            { "type": "file_set", "binding_id": "clinical_studies", "filter_tags": ["clinical", "safety", "efficacy"], "required": true },
+            { "type": "named_query", "binding_id": "ae_summary_table", "source": "edc_warehouse", "query_id": "ae_summary_by_soc_v3", "parameters": {"compound_id": "{{report.compound_id}}"}, "required": true },
+            { "type": "named_query", "binding_id": "exposure_table", "source": "edc_warehouse", "query_id": "exposure_summary_v2", "parameters": {"compound_id": "{{report.compound_id}}"}, "required": true }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+          "validation_rules": [
+            { "rule": "must_cite_every_number", "severity": "error" },
+            { "rule": "no_unbound_claims", "severity": "error" },
+            { "rule": "ae_terms_in_meddra", "severity": "warn" }
+          ]
+        },
+        {
+          "section_id": "4.3",
+          "title": "Marketing Experience",
+          "level": 2,
+          "generation": {
+            "mode": "llm",
+            "prompt_template": "Summarize the marketing experience for {{bindings.product_name}}, if any. List countries of approval, approved indications, withdrawal/restriction history, and post-marketing safety findings from {{bindings.pv_reports}}. If the product is not marketed, state so explicitly.",
+            "expected_length_words_min": 100,
+            "expected_length_words_max": 1500,
+            "style_directives": ["formal", "factual_only"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name", "required": true },
+            { "type": "file_set", "binding_id": "pv_reports", "filter_tags": ["pharmacovigilance", "PSUR", "DSUR"], "required": false }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+        }
+      ]
+    },
+    {
+      "section_id": "5",
+      "title": "Summary of Data and Guidance for the Investigator",
+      "level": 1,
+      "generation": {
+        "mode": "llm",
+        "prompt_template": "Provide an integrated discussion of the nonclinical and clinical data for {{bindings.product_name}} and the implications for investigators conducting studies: known and potential risks, recommended monitoring, recommended dose range with rationale, identification of overdose signs and recommended management, recognized adverse reactions and their management, and recommended precautions. This section is the most clinically actionable in the IB — every recommendation must be defensible by data from earlier sections.",
+        "expected_length_words_min": 1000,
+        "expected_length_words_max": 4000,
+        "style_directives": ["formal", "actionable", "risk_benefit_balanced"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name", "required": true },
+        { "type": "file_set", "binding_id": "all_studies", "filter_tags": ["study_report"], "required": false },
+        { "type": "file_set", "binding_id": "risk_management", "filter_tags": ["risk_management", "RMP"], "required": false }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+      "validation_rules": [
+        { "rule": "must_cite_every_number", "severity": "error" },
+        { "rule": "no_unbound_claims", "severity": "error" }
+      ]
+    },
+    {
+      "section_id": "references",
+      "title": "References / Bibliography",
+      "level": 1,
+      "generation": {
+        "mode": "deterministic",
+        "output_shape": "list"
+      },
+      "citation_policy": { "required": false, "granularity": "section", "min_citations_per_paragraph": 0 }
+    }
+  ]
+}
