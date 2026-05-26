@@ -1,0 +1,26 @@
+{
+  "compound": {
+    "research_code": "XYZ-001",
+    "sponsor_code": "GVR-12345",
+    "chemical_class": "Small-molecule selective inhibitor of Kinase Z",
+    "indication": "Solid tumors expressing Kinase Z",
+    "ib_edition": "Edition 1.0",
+    "ib_release_date": "2026-05-26",
+    "sponsor": "Acme Therapeutics (synthetic)",
+    "developmental_stage": "Phase 1/2 ongoing"
+  },
+  "nonclinical_studies": [
+    {"id": "XYZ-NC-001", "type": "Primary pharmacology", "species": "in vitro / mouse xenograft", "duration": "single + 21-day"},
+    {"id": "XYZ-NC-PK-001", "type": "Pharmacokinetics", "species": "rat", "duration": "single + 7-day"},
+    {"id": "XYZ-NC-PK-002", "type": "Pharmacokinetics", "species": "dog", "duration": "single + 7-day"},
+    {"id": "XYZ-NC-002", "type": "Repeat-dose toxicology", "species": "rat", "duration": "28-day"},
+    {"id": "XYZ-NC-003", "type": "Repeat-dose toxicology", "species": "dog", "duration": "28-day"},
+    {"id": "XYZ-NC-004", "type": "Repeat-dose toxicology", "species": "rat", "duration": "13-week"},
+    {"id": "XYZ-NC-005", "type": "Repeat-dose toxicology", "species": "dog", "duration": "26-week"}
+  ],
+  "clinical_studies": [
+    {"id": "XYZ-101", "type": "Phase 1 dose escalation", "n_enrolled": 36, "indication": "Advanced solid tumors", "status": "Complete"},
+    {"id": "XYZ-102", "type": "Phase 1/2 expansion", "n_enrolled": 84, "indication": "Kinase Z-positive solid tumors", "status": "Ongoing"}
+  ],
+  "note": "All data in this corpus is SYNTHETIC and generated for testing the report-generation pipeline. No real compound, no real patients, no real studies."
+}

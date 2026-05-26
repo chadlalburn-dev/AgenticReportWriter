@@ -84,15 +84,17 @@ client_secret*.json
 google-oauth*.json
 gcp-key*.json
 
-# Local data / outputs (PoC)
-data/
-outputs/
+# Local data / outputs (PoC) — anchored to repo root so subdirectories named
+# `data/` (e.g. inside sample corpora) are not affected.
+/data/
+/outputs/
 *.gdoc
 *.docx
 *.pdf
 !docs/*.pdf
 !samples/**/*.pdf
 !samples/**/*.docx
+!samples/**/*.xlsx
 
 # Local vector indexes
 .faiss/
