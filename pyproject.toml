@@ -19,6 +19,9 @@ dependencies = [
     # workload identity in Cloud Run).
     "anthropic[vertex]>=0.40,<1",
     "google-auth>=2.30,<3",
+    # Google Docs + Drive APIs for the document renderer. ADC-authenticated;
+    # no API keys, no service-account JSON files in this project.
+    "google-api-python-client>=2.130,<3",
     "jsonschema>=4.21,<5",
     "python-docx>=1.1,<2",
     "openpyxl>=3.1,<4",

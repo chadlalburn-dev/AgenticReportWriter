@@ -32,6 +32,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from services.document_renderer import (  # noqa: E402
+    DryRunRenderer,
+    spec_from_report,
+)
 from services.generation_orchestrator.orchestrator import ReportGenerator  # noqa: E402
 from services.ingestion_service.connectors import (  # noqa: E402
     ConnectorContext,
@@ -120,6 +124,19 @@ def main() -> int:
         "--vertex-base-url",
         help="Kong / proxy base URL if Vertex AI is fronted by a gateway",
     )
+    parser.add_argument(
+        "--render-gdoc",
+        action="store_true",
+        help=(
+            "Render the generated IB to a Google Doc in your Drive. Requires "
+            "`gcloud auth application-default login` first. Defaults to a "
+            "dry-run JSON render."
+        ),
+    )
+    parser.add_argument(
+        "--drive-folder-id",
+        help="Optional Drive folder ID to place the rendered Doc into",
+    )
     args = parser.parse_args()
 
     metadata = json.loads(METADATA_PATH.read_text(encoding="utf-8"))
@@ -200,7 +217,26 @@ def main() -> int:
         ),
         encoding="utf-8",
     )
-    print(f"Wrote: {out_path}")
+    print(f"Wrote run JSON:    {out_path}")
+
+    spec = spec_from_report(result.instance, result.citations)
+    if args.render_gdoc:
+        from services.document_renderer import GoogleDocsConfig, GoogleDocsRenderer
+
+        if GoogleDocsRenderer is None:
+            print("ERROR: GoogleDocsRenderer is unavailable (google-api-python-client missing)")
+            return 1
+        cfg = GoogleDocsConfig(target_drive_folder_id=args.drive_folder_id)
+        renderer = GoogleDocsRenderer(config=cfg)
+        artifact = renderer.render(spec)
+        print(f"Rendered Google Doc: {artifact.document_url}")
+        print(f"  ({artifact.n_operations} Docs API operations)")
+    else:
+        render_path = OUTPUT_DIR / "ib_render.json"
+        artifact = DryRunRenderer(render_path).render(spec)
+        print(f"Dry-run render:   {artifact.json_path}")
+        print(f"  ({artifact.n_operations} operations; pass --render-gdoc to create a real Google Doc)")
+
     return 0
 
 
