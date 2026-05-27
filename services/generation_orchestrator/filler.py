@@ -121,6 +121,33 @@ def _table_snippet(qresult: ResolvedQueryResult) -> str:
     return snippet[:500]
 
 
+def _render_api_table_for_prompt(binding: ResolvedBinding, citation_id: str) -> str:
+    """Render an API call result as a table the LLM can reference + cite."""
+    from services.api_integration import ApiCallResult
+
+    assert isinstance(binding.api_result, ApiCallResult)
+    api = binding.api_result
+    header = " | ".join(api.columns)
+    sep = " | ".join("---" for _ in api.columns)
+    rows = "\n".join(
+        " | ".join(str(c) if c is not None else "" for c in row) for row in api.rows
+    )
+    params_str = ", ".join(f"{k}={v!r}" for k, v in api.parameters.items())
+    return (
+        f"[citation_id={citation_id}] "
+        f"(binding_id={binding.binding_id}; api={api.connector_id}.{api.operation_id}; "
+        f"params={{{params_str}}})\n"
+        f"{header}\n{sep}\n{rows}\n"
+    )
+
+
+def _api_snippet(api) -> str:
+    header = " | ".join(api.columns)
+    sample = " | ".join(str(c) if c is not None else "" for c in api.rows[0]) if api.rows else ""
+    snippet = f"{header}\n{sample}\n({api.row_count} row(s) from {api.connector_id}.{api.operation_id})"
+    return snippet[:500]
+
+
 def _source_type_for_chunk(chunk: ParsedChunk) -> SourceType:
     if isinstance(chunk.locator, PdfLocator):
         return SourceType.PDF
@@ -167,11 +194,13 @@ class SectionFiller:
         chunk_to_citation: dict[str, str] = {
             c.chunk_id: str(uuid.uuid4()) for c in section_context.all_chunks
         }
-        # Plus one citation_id per resolved query table (binding_id -> citation_id).
+        # Plus one citation_id per resolved table (binding_id -> citation_id).
+        # Both query_result (DB) and api_result (external API) become
+        # tables in the prompt.
         table_to_citation: dict[str, str] = {
             b.binding_id: str(uuid.uuid4())
             for b in section_context.bindings
-            if b.query_result is not None
+            if b.query_result is not None or b.api_result is not None
         }
 
         # Build the user message: prompt + bindings + chunk pool + query tables.
@@ -183,9 +212,16 @@ class SectionFiller:
                 binding_summaries.append(f"<binding:{b.binding_id}> = {b.text_value!r}")
             elif b.query_result is not None:
                 binding_summaries.append(
-                    f"<binding:{b.binding_id}> — table with "
+                    f"<binding:{b.binding_id}> — DB table with "
                     f"{b.query_result.row_count} rows "
                     f"(cite via citation_id={table_to_citation[b.binding_id]})"
+                )
+            elif b.api_result is not None:
+                binding_summaries.append(
+                    f"<binding:{b.binding_id}> — API response from "
+                    f"{b.api_result.connector_id}.{b.api_result.operation_id} "
+                    f"({b.api_result.row_count} rows; cite via "
+                    f"citation_id={table_to_citation[b.binding_id]})"
                 )
             elif b.deferred_note:
                 binding_summaries.append(
@@ -203,10 +239,12 @@ class SectionFiller:
 
         table_blocks: list[str] = []
         for b in section_context.bindings:
-            if b.query_result is None:
-                continue
-            citation_id = table_to_citation[b.binding_id]
-            table_blocks.append(_render_table_for_prompt(b, citation_id))
+            if b.query_result is not None:
+                citation_id = table_to_citation[b.binding_id]
+                table_blocks.append(_render_table_for_prompt(b, citation_id))
+            elif b.api_result is not None:
+                citation_id = table_to_citation[b.binding_id]
+                table_blocks.append(_render_api_table_for_prompt(b, citation_id))
 
         length_hint = ""
         if section.generation.expected_length_words_min or section.generation.expected_length_words_max:
@@ -304,6 +342,31 @@ class SectionFiller:
                         query_parameters={k: str(v) for k, v in qresult.parameters.items()},
                     ),
                     snippet=_table_snippet(qresult),
+                    retrieved_at=retrieval_ts,
+                )
+            )
+
+        # Plus one Citation per used api_result binding.
+        for b in section_context.bindings:
+            if b.api_result is None:
+                continue
+            citation_id = table_to_citation[b.binding_id]
+            if citation_id not in used_citation_ids:
+                continue
+            api = b.api_result
+            citations.append(
+                Citation(
+                    citation_id=citation_id,
+                    report_instance_id=report_instance_id,
+                    source_type=SourceType.API,
+                    source_uri=f"api://{api.connector_id}/{api.operation_id}",
+                    source_doc_id=b.binding_id,
+                    source_doc_version=str(api.row_count),
+                    locator=CitationLocator(
+                        endpoint=f"{api.connector_id}.{api.operation_id}",
+                        api_parameters={k: str(v) for k, v in api.parameters.items()},
+                    ),
+                    snippet=_api_snippet(api),
                     retrieved_at=retrieval_ts,
                 )
             )

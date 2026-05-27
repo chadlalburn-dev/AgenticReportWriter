@@ -23,6 +23,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from services.api_integration import (
+    ApiCallGate,
+    ApiCallResult,
+    ApiOperationError,
+    ApiSafetyViolation,
+)
 from services.data_integration import (
     ResolvedQueryResult,
     SafetyVerdict,
@@ -57,6 +63,7 @@ class ResolvedBinding:
     text_value: str | None = None
     query_result: ResolvedQueryResult | None = None
     query_verdict: SafetyVerdict | None = None
+    api_result: ApiCallResult | None = None
     deferred_note: str | None = None
 
 
@@ -84,12 +91,14 @@ class BindingResolver:
         free_text_inputs: dict[str, str],
         max_chunks_per_binding: int = 40,
         safety_gate: SqlSafetyGate | None = None,
+        api_gate: ApiCallGate | None = None,
     ) -> None:
         self._chunks_by_doc = chunks_by_doc
         self._docs_by_id = docs_by_id
         self._free_text_inputs = free_text_inputs
         self._max_chunks_per_binding = max_chunks_per_binding
         self._safety_gate = safety_gate
+        self._api_gate = api_gate
 
     def resolve(self, section: TemplateSection) -> ResolvedSectionContext:
         resolved: list[ResolvedBinding] = []
@@ -131,7 +140,9 @@ class BindingResolver:
                 rb = self._resolve_named_query(binding)
             elif isinstance(binding, SqlQueryBinding):
                 rb = self._resolve_sql_query(binding)
-            elif isinstance(binding, (ComputedMetricBinding, ApiCallBinding)):
+            elif isinstance(binding, ApiCallBinding):
+                rb = self._resolve_api_call(binding)
+            elif isinstance(binding, ComputedMetricBinding):
                 rb = ResolvedBinding(
                     binding_id=binding.binding_id,
                     binding_type=binding.type,
@@ -220,6 +231,47 @@ class BindingResolver:
             binding_type=binding.type,
             query_result=result,
             query_verdict=verdict,
+        )
+
+    def _resolve_api_call(self, binding: ApiCallBinding) -> ResolvedBinding:
+        if self._api_gate is None:
+            return ResolvedBinding(
+                binding_id=binding.binding_id,
+                binding_type=binding.type,
+                deferred_note=(
+                    f"[PoC: api_call binding {binding.binding_id!r} "
+                    f"(connector_id={binding.connector_id!r}, "
+                    f"endpoint={binding.endpoint!r}) was not executed because "
+                    "no ApiCallGate was provided to the orchestrator.]"
+                ),
+            )
+        params = self._substitute_report_params(binding.parameters)
+        try:
+            result = self._api_gate.call(
+                binding.connector_id, binding.endpoint, params
+            )
+        except ApiSafetyViolation as exc:
+            return ResolvedBinding(
+                binding_id=binding.binding_id,
+                binding_type=binding.type,
+                deferred_note=(
+                    f"[api_call binding {binding.binding_id!r} blocked by the "
+                    f"API gate: {exc.code} — {exc.message}]"
+                ),
+            )
+        except ApiOperationError as exc:
+            return ResolvedBinding(
+                binding_id=binding.binding_id,
+                binding_type=binding.type,
+                deferred_note=(
+                    f"[api_call binding {binding.binding_id!r} failed at the "
+                    f"connector: {exc}]"
+                ),
+            )
+        return ResolvedBinding(
+            binding_id=binding.binding_id,
+            binding_type=binding.type,
+            api_result=result,
         )
 
     def _substitute_report_params(

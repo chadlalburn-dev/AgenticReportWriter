@@ -34,6 +34,7 @@ from shared.schemas import (
     TemplateSection,
 )
 
+from services.api_integration import ApiCallGate
 from services.audit import (
     AuditAction,
     AuditEvent,
@@ -69,6 +70,7 @@ class ReportGenerator:
         critique_client: LlmClient | None = None,
         audit_sink: AuditSink | None = None,
         safety_gate: SqlSafetyGate | None = None,
+        api_gate: ApiCallGate | None = None,
         max_retries_per_section: int = 2,
     ) -> None:
         # Inner clients are stored raw; we wrap them per-run inside generate()
@@ -80,6 +82,8 @@ class ReportGenerator:
         # Optional: when provided, named_query and sql_query bindings execute
         # through the gate. Otherwise they emit deferred_notes.
         self._safety_gate = safety_gate
+        # Optional: when provided, api_call bindings execute through this gate.
+        self._api_gate = api_gate
         self._max_retries = max_retries_per_section
 
     def generate(
@@ -155,6 +159,7 @@ class ReportGenerator:
             docs_by_id={d.doc_id: d for d in documents},
             free_text_inputs=free_text_inputs,
             safety_gate=self._safety_gate,
+            api_gate=self._api_gate,
         )
 
         all_sections = self._collect_template_sections(template)

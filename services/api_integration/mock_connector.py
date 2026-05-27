@@ -1,0 +1,225 @@
+"""Mock connectors — used by tests and the local demo.
+
+`InMemoryApiConnector` is a fixture-driven generic connector for unit
+tests: register response payloads keyed by (operation_id, frozen
+parameters), call the connector, get the fixture back. No network.
+
+`MockChemblConnector` is a small in-memory analog of the live ChEMBL
+target_search/get_mechanism MCP tools. It returns ChEMBL-shaped data
+keyed by target gene symbol so the synthetic IB demo can populate the
+Background section with realistic-looking target biology without
+hitting a live endpoint. Production swaps this for either an
+McpToolConnector (calling the real ChEMBL MCP server) or a thin
+google.api or httpx wrapper.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from services.api_integration.connector import (
+    ApiCallResult,
+    ApiConnector,
+    ApiOperationError,
+)
+
+
+# --- InMemoryApiConnector --------------------------------------------------
+
+
+def _freeze_params(parameters: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
+    return tuple(sorted((str(k), v) for k, v in parameters.items()))
+
+
+class InMemoryApiConnector(ApiConnector):
+    """Fixture-driven generic connector.
+
+    Tests register response payloads with ``register_response(...)``.
+    When ``call()`` is invoked, the connector looks up by
+    (operation_id, frozen-params) and returns the registered payload.
+    Unregistered calls raise ApiOperationError.
+    """
+
+    def __init__(
+        self,
+        *,
+        connector_id: str = "in_memory",
+        allowed_operations: frozenset[str] | None = None,
+    ) -> None:
+        self.connector_id = connector_id
+        self.allowed_operations = allowed_operations or frozenset()
+        self._fixtures: dict[
+            tuple[str, tuple[tuple[str, Any], ...]], ApiCallResult
+        ] = {}
+
+    def register_response(
+        self,
+        operation_id: str,
+        parameters: Mapping[str, Any],
+        result: ApiCallResult,
+    ) -> None:
+        if operation_id not in self.allowed_operations:
+            # Register-time, not call-time: tests can register one and forget.
+            object.__setattr__(
+                self,
+                "allowed_operations",
+                self.allowed_operations | {operation_id},
+            )
+        self._fixtures[(operation_id, _freeze_params(parameters))] = result
+
+    def call(
+        self, operation_id: str, parameters: Mapping[str, Any]
+    ) -> ApiCallResult:
+        key = (operation_id, _freeze_params(parameters))
+        if key not in self._fixtures:
+            raise ApiOperationError(
+                f"InMemoryApiConnector(connector_id={self.connector_id!r}): no "
+                f"fixture for operation_id={operation_id!r}, params={dict(parameters)!r}"
+            )
+        return self._fixtures[key]
+
+
+# --- MockChemblConnector --------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ChemblTargetFixture:
+    target_chembl_id: str
+    target_name: str
+    target_type: str
+    organism: str
+    components: tuple[str, ...]  # UniProt accessions
+    description: str
+
+
+# A small seed of plausible targets for the IB Background section.
+# Numbers are synthetic; intent is to exercise the connector path,
+# not to provide accurate ChEMBL data.
+_TARGET_FIXTURES: dict[str, _ChemblTargetFixture] = {
+    "kinz": _ChemblTargetFixture(
+        target_chembl_id="CHEMBL-MOCK-KINZ",
+        target_name="Kinase Z",
+        target_type="SINGLE PROTEIN",
+        organism="Homo sapiens",
+        components=("P00000",),
+        description=(
+            "Receptor tyrosine kinase. Synthetic stand-in target used in the "
+            "Report-Generator-Agent demo; not a real ChEMBL record."
+        ),
+    ),
+    "egfr": _ChemblTargetFixture(
+        target_chembl_id="CHEMBL203",
+        target_name="Epidermal growth factor receptor erbB1",
+        target_type="SINGLE PROTEIN",
+        organism="Homo sapiens",
+        components=("P00533",),
+        description=(
+            "Receptor tyrosine kinase frequently dysregulated in non-small "
+            "cell lung cancer and other solid tumors."
+        ),
+    ),
+}
+
+
+class MockChemblConnector(ApiConnector):
+    """Tiny in-memory analog of the ChEMBL target_search MCP tool.
+
+    Supports two operations:
+    - `target_search`: filter by gene_symbol/target_name; returns
+      (target_chembl_id, target_name, target_type, organism, description)
+    - `get_mechanism`: per-target mechanism summary. Returns
+      (target_chembl_id, mechanism_summary).
+    """
+
+    connector_id = "mock_chembl"
+    allowed_operations = frozenset({"target_search", "get_mechanism"})
+
+    def call(
+        self, operation_id: str, parameters: Mapping[str, Any]
+    ) -> ApiCallResult:
+        if operation_id == "target_search":
+            return self._target_search(parameters)
+        if operation_id == "get_mechanism":
+            return self._get_mechanism(parameters)
+        raise ApiOperationError(
+            f"MockChemblConnector: unknown operation_id={operation_id!r}"
+        )
+
+    def _target_search(self, parameters: Mapping[str, Any]) -> ApiCallResult:
+        needle = str(
+            parameters.get("gene_symbol")
+            or parameters.get("target_name")
+            or ""
+        ).strip().lower()
+        matches: list[_ChemblTargetFixture] = []
+        for key, fix in _TARGET_FIXTURES.items():
+            if (
+                needle == key
+                or needle in fix.target_name.lower()
+                or needle in fix.target_chembl_id.lower()
+            ):
+                matches.append(fix)
+        columns = (
+            "target_chembl_id",
+            "target_name",
+            "target_type",
+            "organism",
+            "description",
+        )
+        rows = tuple(
+            (m.target_chembl_id, m.target_name, m.target_type, m.organism, m.description)
+            for m in matches
+        )
+        return ApiCallResult(
+            connector_id=self.connector_id,
+            operation_id="target_search",
+            parameters=dict(parameters),
+            columns=columns,
+            rows=rows,
+            raw={"matches": [m.__dict__ for m in matches]},
+            row_count=len(rows),
+            source="mock_chembl",
+        )
+
+    def _get_mechanism(self, parameters: Mapping[str, Any]) -> ApiCallResult:
+        target_id = str(parameters.get("target_chembl_id", "")).upper()
+        # Match by either explicit id or by reverse-mapping name → id
+        fixture: _ChemblTargetFixture | None = None
+        for fix in _TARGET_FIXTURES.values():
+            if fix.target_chembl_id.upper() == target_id:
+                fixture = fix
+                break
+        if fixture is None:
+            raise ApiOperationError(
+                f"MockChemblConnector.get_mechanism: target_chembl_id="
+                f"{target_id!r} not found"
+            )
+        # The "mechanism" payload is intentionally narrative; the IB
+        # Background section quotes it via citation.
+        mechanism_summary = (
+            f"Inhibitors of {fixture.target_name} block downstream "
+            "MAPK and PI3K-AKT signaling, with hypothesized antiproliferative "
+            "effects in tumors driven by activating mutations or amplification "
+            "of the receptor."
+        )
+        columns = ("target_chembl_id", "target_name", "action_type", "mechanism_summary")
+        rows = (
+            (
+                fixture.target_chembl_id,
+                fixture.target_name,
+                "INHIBITOR",
+                mechanism_summary,
+            ),
+        )
+        return ApiCallResult(
+            connector_id=self.connector_id,
+            operation_id="get_mechanism",
+            parameters=dict(parameters),
+            columns=columns,
+            rows=rows,
+            raw={"mechanism_summary": mechanism_summary},
+            row_count=1,
+            source="mock_chembl",
+        )
