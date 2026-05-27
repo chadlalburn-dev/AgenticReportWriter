@@ -19,6 +19,10 @@ from services.template_service.adapters.library_adapter import (
     LibraryAdapter,
     LibraryAdapterOptions,
 )
+from services.template_service.adapters.sample_reports_adapter import (
+    SampleReportsAdapter,
+    SampleReportsAdapterOptions,
+)
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,30 @@ class TemplateBuilder:
             )
         )
         template = adapter.from_file(path)
+        warnings = self._sanity_check(template)
+        return TemplateBuildResult(template=template, warnings=tuple(warnings))
+
+    def from_samples(
+        self,
+        sample_dir: str | Path,
+        *,
+        template_id: str,
+        title: str | None = None,
+        report_type: str = "imported_from_samples",
+        authored_by: str = "template-builder:sample-reports-adapter",
+        min_occurrence_ratio: float = 0.5,
+    ) -> TemplateBuildResult:
+        """Derive a template from multiple completed reports in a directory."""
+        adapter = SampleReportsAdapter(
+            SampleReportsAdapterOptions(
+                template_id=template_id,
+                title=title or "Derived template",
+                report_type=report_type,
+                authored_by=authored_by,
+                min_occurrence_ratio=min_occurrence_ratio,
+            )
+        )
+        template = adapter.from_directory(sample_dir)
         warnings = self._sanity_check(template)
         return TemplateBuildResult(template=template, warnings=tuple(warnings))
 

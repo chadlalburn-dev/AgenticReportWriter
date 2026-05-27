@@ -28,6 +28,10 @@ from services.template_service.adapters.library_adapter import (
     LibraryAdapterOptions,
     LibraryNotFound,
 )
+from services.template_service.adapters.sample_reports_adapter import (
+    SampleReportsAdapter,
+    SampleReportsAdapterOptions,
+)
 from services.template_service.builder import (
     TemplateBuildResult,
     TemplateBuilder,
@@ -39,6 +43,8 @@ __all__ = [
     "LibraryAdapter",
     "LibraryAdapterOptions",
     "LibraryNotFound",
+    "SampleReportsAdapter",
+    "SampleReportsAdapterOptions",
     "TemplateBuildResult",
     "TemplateBuilder",
 ]
