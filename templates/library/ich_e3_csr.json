@@ -1,0 +1,225 @@
+{
+  "template_id": "ich_e3_csr",
+  "version": "0.1.0",
+  "status": "draft",
+  "report_type": "ICH_E3_CSR",
+  "title": "Clinical Study Report (ICH E3)",
+  "metadata": {
+    "authored_by": "system:library",
+    "authored_at": "2026-05-26T00:00:00Z",
+    "source_origin": "from_library"
+  },
+  "global_style": {
+    "numbering": "decimal",
+    "citation_style": "footnote_numbered",
+    "heading_levels": 4
+  },
+  "sections": [
+    {
+      "section_id": "title_page",
+      "title": "Title Page",
+      "level": 1,
+      "generation": { "mode": "deterministic", "output_shape": "prose" },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "study_title", "prompt": "Study title", "required": true },
+        { "type": "free_text_input", "binding_id": "study_id", "prompt": "Study identifier (protocol number)", "required": true },
+        { "type": "free_text_input", "binding_id": "sponsor_name", "prompt": "Sponsor name", "required": true },
+        { "type": "free_text_input", "binding_id": "report_date", "prompt": "Report date (YYYY-MM-DD)", "required": true }
+      ],
+      "citation_policy": { "required": false, "granularity": "section", "min_citations_per_paragraph": 0 }
+    },
+    {
+      "section_id": "synopsis",
+      "title": "Synopsis",
+      "level": 1,
+      "generation": {
+        "mode": "llm",
+        "prompt_template": "Produce a structured study synopsis (~3-5 pages) covering: title, investigators, study center(s), publication reference, study period, phase, objectives, methodology, number of patients (planned and analyzed), diagnosis and main criteria for inclusion, test product/dose/route, reference therapy, duration of treatment, criteria for evaluation (efficacy, safety), statistical methods, summary of conclusions, and report date. Use {{bindings.study_id}} and {{bindings.protocol_documents}}.",
+        "expected_length_words_min": 1500,
+        "expected_length_words_max": 3500,
+        "style_directives": ["formal", "factual_only", "tabular_where_appropriate"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "study_id", "prompt": "Study identifier", "required": true },
+        { "type": "file_set", "binding_id": "protocol_documents", "filter_tags": ["protocol"], "required": true }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+    },
+    {
+      "section_id": "1",
+      "title": "Introduction",
+      "level": 1,
+      "generation": {
+        "mode": "llm",
+        "prompt_template": "Introduce the study {{bindings.study_id}}: rationale, background of disease/condition, prior work on the investigational product, and study objectives. Cite the Investigator's Brochure ({{bindings.ib_reference}}) and protocol ({{bindings.protocol_documents}}).",
+        "expected_length_words_min": 300,
+        "expected_length_words_max": 1200,
+        "style_directives": ["formal", "factual_only"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "study_id", "prompt": "Study identifier", "required": true },
+        { "type": "file_set", "binding_id": "ib_reference", "filter_tags": ["investigators_brochure"], "required": false },
+        { "type": "file_set", "binding_id": "protocol_documents", "filter_tags": ["protocol"], "required": true }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+    },
+    {
+      "section_id": "2",
+      "title": "Study Objectives",
+      "level": 1,
+      "generation": {
+        "mode": "llm",
+        "prompt_template": "State the primary and secondary objectives of {{bindings.study_id}} verbatim from {{bindings.protocol_documents}}. Distinguish efficacy and safety objectives.",
+        "expected_length_words_min": 150,
+        "expected_length_words_max": 800,
+        "style_directives": ["formal", "verbatim_where_quoted"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "study_id", "prompt": "Study identifier", "required": true },
+        { "type": "file_set", "binding_id": "protocol_documents", "filter_tags": ["protocol"], "required": true }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+    },
+    {
+      "section_id": "3",
+      "title": "Investigational Plan",
+      "level": 1,
+      "generation": { "mode": "manual", "output_shape": "prose" },
+      "citation_policy": { "required": false, "granularity": "section", "min_citations_per_paragraph": 0 },
+      "children": [
+        {
+          "section_id": "3.1",
+          "title": "Overall Study Design",
+          "level": 2,
+          "generation": {
+            "mode": "llm",
+            "prompt_template": "Describe the overall study design of {{bindings.study_id}}: type of trial (e.g., randomized, double-blind, placebo-controlled), number of arms, dose levels, treatment duration, and follow-up period. Cite the protocol ({{bindings.protocol_documents}}).",
+            "expected_length_words_min": 400,
+            "expected_length_words_max": 1500,
+            "style_directives": ["formal", "precise_units"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "study_id", "prompt": "Study identifier", "required": true },
+            { "type": "file_set", "binding_id": "protocol_documents", "filter_tags": ["protocol"], "required": true }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+        },
+        {
+          "section_id": "3.2",
+          "title": "Patient Selection",
+          "level": 2,
+          "generation": {
+            "mode": "llm",
+            "prompt_template": "Describe inclusion and exclusion criteria for {{bindings.study_id}}. Quote critical criteria verbatim from {{bindings.protocol_documents}}.",
+            "expected_length_words_min": 300,
+            "expected_length_words_max": 1500,
+            "style_directives": ["formal", "verbatim_where_quoted"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "study_id", "prompt": "Study identifier", "required": true },
+            { "type": "file_set", "binding_id": "protocol_documents", "filter_tags": ["protocol"], "required": true }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+        }
+      ]
+    },
+    {
+      "section_id": "4",
+      "title": "Study Population",
+      "level": 1,
+      "generation": {
+        "mode": "hybrid",
+        "prompt_template": "Describe the study population of {{bindings.study_id}}: disposition (screened, randomized, treated, completed, withdrawn) and baseline demographics (age, sex, race, prior therapies). Pull the disposition table verbatim from {{bindings.disposition_table}} and the demographics table from {{bindings.demographics_table}}.",
+        "expected_length_words_min": 400,
+        "expected_length_words_max": 2000,
+        "style_directives": ["formal", "tabular_where_appropriate"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "study_id", "prompt": "Study identifier", "required": true },
+        { "type": "named_query", "binding_id": "disposition_table", "source": "edc_warehouse", "query_id": "disposition_summary_v1", "parameters": {"study_id": "{{report.study_id}}"}, "required": true },
+        { "type": "named_query", "binding_id": "demographics_table", "source": "edc_warehouse", "query_id": "demographics_summary_v1", "parameters": {"study_id": "{{report.study_id}}"}, "required": true }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+      "validation_rules": [
+        { "rule": "must_cite_every_number", "severity": "error" }
+      ]
+    },
+    {
+      "section_id": "5",
+      "title": "Efficacy Evaluation",
+      "level": 1,
+      "generation": {
+        "mode": "hybrid",
+        "prompt_template": "Present efficacy results for {{bindings.study_id}} covering primary and secondary endpoints. Pull the primary endpoint analysis table from {{bindings.primary_endpoint_table}}; include subgroup analyses if available from {{bindings.subgroup_table}}.",
+        "expected_length_words_min": 1500,
+        "expected_length_words_max": 6000,
+        "style_directives": ["formal", "precise_units", "p_values_explicit"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "study_id", "prompt": "Study identifier", "required": true },
+        { "type": "named_query", "binding_id": "primary_endpoint_table", "source": "edc_warehouse", "query_id": "primary_endpoint_v2", "parameters": {"study_id": "{{report.study_id}}"}, "required": true },
+        { "type": "named_query", "binding_id": "subgroup_table", "source": "edc_warehouse", "query_id": "subgroup_analyses_v1", "parameters": {"study_id": "{{report.study_id}}"}, "required": false }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+      "validation_rules": [
+        { "rule": "must_cite_every_number", "severity": "error" },
+        { "rule": "no_unbound_claims", "severity": "error" }
+      ]
+    },
+    {
+      "section_id": "6",
+      "title": "Safety Evaluation",
+      "level": 1,
+      "generation": {
+        "mode": "hybrid",
+        "prompt_template": "Present safety findings for {{bindings.study_id}}: extent of exposure, adverse events overview, serious adverse events, deaths, discontinuations due to AEs, laboratory abnormalities, vital signs, and ECG findings. Pull AE summary verbatim from {{bindings.ae_summary_table}}.",
+        "expected_length_words_min": 1500,
+        "expected_length_words_max": 6000,
+        "style_directives": ["formal", "study_id_explicit", "ae_terminology_meddra"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "study_id", "prompt": "Study identifier", "required": true },
+        { "type": "named_query", "binding_id": "ae_summary_table", "source": "edc_warehouse", "query_id": "ae_summary_by_soc_v3", "parameters": {"compound_id": "{{report.compound_id}}"}, "required": true }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+      "validation_rules": [
+        { "rule": "must_cite_every_number", "severity": "error" },
+        { "rule": "no_unbound_claims", "severity": "error" },
+        { "rule": "ae_terms_in_meddra", "severity": "warn" }
+      ]
+    },
+    {
+      "section_id": "7",
+      "title": "Discussion and Overall Conclusions",
+      "level": 1,
+      "generation": {
+        "mode": "llm",
+        "prompt_template": "Provide an integrated discussion of the efficacy and safety findings for {{bindings.study_id}}: interpretation of primary and secondary endpoint results in context of the patient population, comparison with prior studies, limitations of the trial design, and conclusions regarding benefit/risk.",
+        "expected_length_words_min": 800,
+        "expected_length_words_max": 3000,
+        "style_directives": ["formal", "balanced_benefit_risk"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "study_id", "prompt": "Study identifier", "required": true },
+        { "type": "file_set", "binding_id": "all_study_docs", "filter_tags": ["study_report"], "required": false }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+    },
+    {
+      "section_id": "references",
+      "title": "References",
+      "level": 1,
+      "generation": { "mode": "deterministic", "output_shape": "list" },
+      "citation_policy": { "required": false, "granularity": "section", "min_citations_per_paragraph": 0 }
+    }
+  ]
+}

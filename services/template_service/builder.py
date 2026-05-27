@@ -15,6 +15,10 @@ from services.template_service.adapters.docx_adapter import (
     DocxAdapter,
     DocxAdapterOptions,
 )
+from services.template_service.adapters.library_adapter import (
+    LibraryAdapter,
+    LibraryAdapterOptions,
+)
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,30 @@ class TemplateBuilder:
             )
         )
         template = adapter.from_file(path)
+        warnings = self._sanity_check(template)
+        return TemplateBuildResult(template=template, warnings=tuple(warnings))
+
+    def from_library(
+        self,
+        template_id: str,
+        *,
+        clone_as_template_id: str | None = None,
+        clone_as_title: str | None = None,
+        authored_by: str | None = None,
+        library_root: str | Path | None = None,
+    ) -> TemplateBuildResult:
+        """Load a shipped library template. If clone_as_template_id is set,
+        the result is a fresh DRAFT clone the author can customize without
+        touching the library copy."""
+        adapter = LibraryAdapter(library_root=library_root)
+        options: LibraryAdapterOptions | None = None
+        if clone_as_template_id or clone_as_title or authored_by:
+            options = LibraryAdapterOptions(
+                clone_as_template_id=clone_as_template_id,
+                clone_as_title=clone_as_title,
+                new_authored_by=authored_by,
+            )
+        template = adapter.load(template_id, options=options)
         warnings = self._sanity_check(template)
         return TemplateBuildResult(template=template, warnings=tuple(warnings))
 

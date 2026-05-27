@@ -23,6 +23,11 @@ from services.template_service.adapters.docx_adapter import (
     DocxAdapter,
     DocxAdapterOptions,
 )
+from services.template_service.adapters.library_adapter import (
+    LibraryAdapter,
+    LibraryAdapterOptions,
+    LibraryNotFound,
+)
 from services.template_service.builder import (
     TemplateBuildResult,
     TemplateBuilder,
@@ -31,6 +36,9 @@ from services.template_service.builder import (
 __all__ = [
     "DocxAdapter",
     "DocxAdapterOptions",
+    "LibraryAdapter",
+    "LibraryAdapterOptions",
+    "LibraryNotFound",
     "TemplateBuildResult",
     "TemplateBuilder",
 ]

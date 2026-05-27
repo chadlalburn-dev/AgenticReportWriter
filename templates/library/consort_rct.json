@@ -1,0 +1,243 @@
+{
+  "template_id": "consort_rct",
+  "version": "0.1.0",
+  "status": "draft",
+  "report_type": "CONSORT_RCT",
+  "title": "Randomized Controlled Trial Report (CONSORT 2010)",
+  "metadata": {
+    "authored_by": "system:library",
+    "authored_at": "2026-05-26T00:00:00Z",
+    "source_origin": "from_library"
+  },
+  "global_style": {
+    "numbering": "decimal",
+    "citation_style": "footnote_numbered",
+    "heading_levels": 3
+  },
+  "sections": [
+    {
+      "section_id": "title",
+      "title": "Title and Abstract (CONSORT 1a, 1b)",
+      "level": 1,
+      "generation": {
+        "mode": "llm",
+        "prompt_template": "Produce a CONSORT-compliant title identifying the study as a randomized trial. Then produce a structured abstract covering: trial design, methods, results (including primary endpoint with effect size + CI), and conclusions. Reference: {{bindings.protocol_documents}}.",
+        "expected_length_words_min": 250,
+        "expected_length_words_max": 500,
+        "style_directives": ["formal", "structured_abstract", "primary_endpoint_with_ci"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "study_id", "prompt": "Trial identifier", "required": true },
+        { "type": "file_set", "binding_id": "protocol_documents", "filter_tags": ["protocol"], "required": true }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+    },
+    {
+      "section_id": "intro",
+      "title": "Introduction (CONSORT 2a, 2b)",
+      "level": 1,
+      "generation": {
+        "mode": "llm",
+        "prompt_template": "Provide scientific background and explanation of rationale; state specific objectives and pre-specified hypotheses for {{bindings.study_id}}. Cite {{bindings.protocol_documents}}.",
+        "expected_length_words_min": 300,
+        "expected_length_words_max": 1000,
+        "style_directives": ["formal", "factual_only"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "study_id", "prompt": "Trial identifier", "required": true },
+        { "type": "file_set", "binding_id": "protocol_documents", "filter_tags": ["protocol"], "required": true }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+    },
+    {
+      "section_id": "methods",
+      "title": "Methods (CONSORT 3-12)",
+      "level": 1,
+      "generation": { "mode": "manual", "output_shape": "prose" },
+      "citation_policy": { "required": false, "granularity": "section", "min_citations_per_paragraph": 0 },
+      "children": [
+        {
+          "section_id": "methods.trial_design",
+          "title": "Trial Design (CONSORT 3a, 3b)",
+          "level": 2,
+          "generation": {
+            "mode": "llm",
+            "prompt_template": "Describe trial design (e.g., parallel, factorial, crossover), allocation ratio, and any changes to methods after trial commencement. Cite {{bindings.protocol_documents}}.",
+            "expected_length_words_min": 150,
+            "expected_length_words_max": 600,
+            "style_directives": ["formal", "verbatim_where_quoted"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "study_id", "prompt": "Trial identifier", "required": true },
+            { "type": "file_set", "binding_id": "protocol_documents", "filter_tags": ["protocol"], "required": true }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+        },
+        {
+          "section_id": "methods.participants",
+          "title": "Participants (CONSORT 4a, 4b)",
+          "level": 2,
+          "generation": {
+            "mode": "llm",
+            "prompt_template": "Describe eligibility criteria and settings/locations where data were collected for {{bindings.study_id}}.",
+            "expected_length_words_min": 200,
+            "expected_length_words_max": 1000,
+            "style_directives": ["formal"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "study_id", "prompt": "Trial identifier", "required": true },
+            { "type": "file_set", "binding_id": "protocol_documents", "filter_tags": ["protocol"], "required": true }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+        },
+        {
+          "section_id": "methods.interventions",
+          "title": "Interventions (CONSORT 5)",
+          "level": 2,
+          "generation": {
+            "mode": "llm",
+            "prompt_template": "Describe interventions for each group in {{bindings.study_id}}, with sufficient detail to allow replication (doses, schedules, durations, mode of administration).",
+            "expected_length_words_min": 200,
+            "expected_length_words_max": 1500,
+            "style_directives": ["formal", "precise_units"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "study_id", "prompt": "Trial identifier", "required": true },
+            { "type": "file_set", "binding_id": "protocol_documents", "filter_tags": ["protocol"], "required": true }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+        },
+        {
+          "section_id": "methods.outcomes",
+          "title": "Outcomes (CONSORT 6a, 6b)",
+          "level": 2,
+          "generation": {
+            "mode": "llm",
+            "prompt_template": "Define primary and secondary outcomes for {{bindings.study_id}} with measurement methods. Note any changes after trial commencement.",
+            "expected_length_words_min": 200,
+            "expected_length_words_max": 1500,
+            "style_directives": ["formal", "verbatim_where_quoted"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "study_id", "prompt": "Trial identifier", "required": true },
+            { "type": "file_set", "binding_id": "protocol_documents", "filter_tags": ["protocol"], "required": true }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+        }
+      ]
+    },
+    {
+      "section_id": "results",
+      "title": "Results (CONSORT 13-19)",
+      "level": 1,
+      "generation": { "mode": "manual", "output_shape": "prose" },
+      "citation_policy": { "required": false, "granularity": "section", "min_citations_per_paragraph": 0 },
+      "children": [
+        {
+          "section_id": "results.flow",
+          "title": "Participant Flow Diagram (CONSORT 13a, 13b)",
+          "level": 2,
+          "generation": {
+            "mode": "hybrid",
+            "prompt_template": "Describe participant flow through each stage (assessment for eligibility, randomization, intervention allocation, follow-up, analysis). Use the disposition counts from {{bindings.disposition_table}}.",
+            "expected_length_words_min": 200,
+            "expected_length_words_max": 1000,
+            "style_directives": ["formal", "exact_counts"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "study_id", "prompt": "Trial identifier", "required": true },
+            { "type": "named_query", "binding_id": "disposition_table", "source": "edc_warehouse", "query_id": "disposition_summary_v1", "parameters": {"study_id": "{{report.study_id}}"}, "required": true }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+          "validation_rules": [
+            { "rule": "must_cite_every_number", "severity": "error" }
+          ]
+        },
+        {
+          "section_id": "results.outcomes_estimation",
+          "title": "Outcomes and Estimation (CONSORT 17a, 17b)",
+          "level": 2,
+          "generation": {
+            "mode": "hybrid",
+            "prompt_template": "For each primary and secondary outcome, present results for each group as estimated effect size with precision (e.g., 95% CI). Use the primary endpoint table from {{bindings.primary_endpoint_table}}.",
+            "expected_length_words_min": 400,
+            "expected_length_words_max": 2500,
+            "style_directives": ["formal", "effect_size_with_ci", "exact_p_values"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "study_id", "prompt": "Trial identifier", "required": true },
+            { "type": "named_query", "binding_id": "primary_endpoint_table", "source": "edc_warehouse", "query_id": "primary_endpoint_v2", "parameters": {"study_id": "{{report.study_id}}"}, "required": true }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+          "validation_rules": [
+            { "rule": "must_cite_every_number", "severity": "error" },
+            { "rule": "no_unbound_claims", "severity": "error" }
+          ]
+        },
+        {
+          "section_id": "results.harms",
+          "title": "Harms (CONSORT 19)",
+          "level": 2,
+          "generation": {
+            "mode": "hybrid",
+            "prompt_template": "Describe all important harms or unintended effects in each group for {{bindings.study_id}}. Use the AE summary from {{bindings.ae_summary_table}}.",
+            "expected_length_words_min": 300,
+            "expected_length_words_max": 2000,
+            "style_directives": ["formal", "ae_terminology_meddra", "exact_counts"],
+            "output_shape": "prose"
+          },
+          "data_bindings": [
+            { "type": "free_text_input", "binding_id": "study_id", "prompt": "Trial identifier", "required": true },
+            { "type": "named_query", "binding_id": "ae_summary_table", "source": "edc_warehouse", "query_id": "ae_summary_by_soc_v3", "parameters": {"compound_id": "{{report.compound_id}}"}, "required": true }
+          ],
+          "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 },
+          "validation_rules": [
+            { "rule": "must_cite_every_number", "severity": "error" }
+          ]
+        }
+      ]
+    },
+    {
+      "section_id": "discussion",
+      "title": "Discussion (CONSORT 20-22)",
+      "level": 1,
+      "generation": {
+        "mode": "llm",
+        "prompt_template": "Provide a discussion covering: trial limitations (sources of potential bias, imprecision), generalizability of findings, and interpretation consistent with results, balancing benefits and harms.",
+        "expected_length_words_min": 400,
+        "expected_length_words_max": 2000,
+        "style_directives": ["formal", "balanced_benefit_risk"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "study_id", "prompt": "Trial identifier", "required": true }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+    },
+    {
+      "section_id": "other",
+      "title": "Other Information (CONSORT 23-25)",
+      "level": 1,
+      "generation": {
+        "mode": "llm",
+        "prompt_template": "Report registration (trial registry name + number), where the full trial protocol can be accessed, and sources of funding + roles of funders for {{bindings.study_id}}.",
+        "expected_length_words_min": 50,
+        "expected_length_words_max": 400,
+        "style_directives": ["formal", "factual_only"],
+        "output_shape": "prose"
+      },
+      "data_bindings": [
+        { "type": "free_text_input", "binding_id": "study_id", "prompt": "Trial identifier", "required": true }
+      ],
+      "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
+    }
+  ]
+}
