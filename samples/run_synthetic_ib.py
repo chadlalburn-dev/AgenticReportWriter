@@ -36,6 +36,7 @@ from services.api_integration import (  # noqa: E402
     ApiCallGate,
     ApiConnectorRegistry,
     MockChemblConnector,
+    MockClinicalTrialsConnector,
 )
 from services.audit import (  # noqa: E402
     AnchorPeriod,
@@ -220,6 +221,7 @@ def main() -> int:
     # Introduction section's api_call binding (target_biology) can resolve.
     api_registry = ApiConnectorRegistry()
     api_registry.register(MockChemblConnector())
+    api_registry.register(MockClinicalTrialsConnector())
     api_gate = ApiCallGate(api_registry)
     print(f"API connectors:   {len(api_registry)} registered ({', '.join(api_registry.ids())})")
 
@@ -236,6 +238,9 @@ def main() -> int:
         # Target name routed to the ChEMBL connector via the
         # `target_biology` api_call binding in Section 1.
         "target_name": "Kinase Z",
+        # Indication keyword routed to the clinical-trials connector
+        # via Section 4.3's `competitor_trials` api_call binding.
+        "indication_keyword": "Kinase Z",
         "sponsor_name": metadata["compound"]["sponsor"],
         "ib_edition": metadata["compound"]["ib_edition"],
         "release_date": metadata["compound"]["ib_release_date"],

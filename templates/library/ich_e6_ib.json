@@ -241,7 +241,7 @@
           "level": 2,
           "generation": {
             "mode": "llm",
-            "prompt_template": "Summarize the marketing experience for {{bindings.product_name}}, if any. List countries of approval, approved indications, withdrawal/restriction history, and post-marketing safety findings from {{bindings.pv_reports}}. If the product is not marketed, state so explicitly.",
+            "prompt_template": "Summarize the marketing experience for {{bindings.product_name}}, if any. List countries of approval, approved indications, withdrawal/restriction history, and post-marketing safety findings from {{bindings.pv_reports}}. Also reference the active and recently completed trials registered for this product or its competitor class in {{bindings.competitor_trials}}. If the product is not marketed, state so explicitly.",
             "expected_length_words_min": 100,
             "expected_length_words_max": 1500,
             "style_directives": ["formal", "factual_only"],
@@ -249,7 +249,8 @@
           },
           "data_bindings": [
             { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name", "required": true },
-            { "type": "file_set", "binding_id": "pv_reports", "filter_tags": ["pharmacovigilance", "PSUR", "DSUR"], "required": false }
+            { "type": "file_set", "binding_id": "pv_reports", "filter_tags": ["pharmacovigilance", "PSUR", "DSUR"], "required": false },
+            { "type": "api_call", "binding_id": "competitor_trials", "connector_id": "mock_clinicaltrials", "endpoint": "search_trials", "parameters": {"condition": "{{report.indication_keyword}}"}, "required": false }
           ],
           "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
         }

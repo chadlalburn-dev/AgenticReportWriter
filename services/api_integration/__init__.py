@@ -35,6 +35,7 @@ from services.api_integration.gate import (
 from services.api_integration.mock_connector import (
     InMemoryApiConnector,
     MockChemblConnector,
+    MockClinicalTrialsConnector,
 )
 from services.api_integration.registry import (
     ApiConnectorRegistry,
@@ -50,4 +51,5 @@ __all__ = [
     "ApiSafetyViolation",
     "InMemoryApiConnector",
     "MockChemblConnector",
+    "MockClinicalTrialsConnector",
 ]

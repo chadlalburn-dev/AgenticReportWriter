@@ -223,3 +223,158 @@ class MockChemblConnector(ApiConnector):
             row_count=1,
             source="mock_chembl",
         )
+
+
+# --- MockClinicalTrialsConnector ------------------------------------------
+
+
+@dataclass(frozen=True)
+class _TrialFixture:
+    nct_id: str
+    title: str
+    phase: str
+    status: str
+    sponsor: str
+    intervention: str
+    condition: str
+    primary_endpoint: str
+    n_enrolled: int
+
+
+# A small seed of fictional trials anchored on Kinase Z so the synthetic
+# IB demo can reference related-trial context in Section 4.
+_TRIAL_FIXTURES: dict[str, _TrialFixture] = {
+    "NCT-MOCK-00001": _TrialFixture(
+        nct_id="NCT-MOCK-00001",
+        title="A Phase 1 Dose-Escalation Study of XYZ-001 in Advanced Solid Tumors",
+        phase="Phase 1",
+        status="Completed",
+        sponsor="Acme Therapeutics (synthetic)",
+        intervention="XYZ-001 (oral, 25-400 mg QD)",
+        condition="Advanced Kinase Z-positive solid tumors",
+        primary_endpoint="Maximum tolerated dose (MTD); RP2D selection",
+        n_enrolled=36,
+    ),
+    "NCT-MOCK-00002": _TrialFixture(
+        nct_id="NCT-MOCK-00002",
+        title="Phase 1/2 Expansion of XYZ-001 in Kinase Z-Positive Tumors",
+        phase="Phase 1/2",
+        status="Active, not recruiting",
+        sponsor="Acme Therapeutics (synthetic)",
+        intervention="XYZ-001 300 mg QD",
+        condition="Kinase Z-amplified solid tumors",
+        primary_endpoint="Objective response rate (RECIST 1.1)",
+        n_enrolled=84,
+    ),
+    "NCT-MOCK-00010": _TrialFixture(
+        nct_id="NCT-MOCK-00010",
+        title="Comparator Phase 2 Study of Competitor Compound A in Kinase Z-Driven NSCLC",
+        phase="Phase 2",
+        status="Recruiting",
+        sponsor="Competitor Pharma (synthetic)",
+        intervention="Compound A (oral)",
+        condition="Non-small cell lung cancer (Kinase Z-amplified)",
+        primary_endpoint="Progression-free survival",
+        n_enrolled=120,
+    ),
+}
+
+
+class MockClinicalTrialsConnector(ApiConnector):
+    """Tiny in-memory analog of a ClinicalTrials.gov-style registry.
+
+    Mirrors the shape of the live MCP tools (search_trials,
+    get_trial_details, search_by_sponsor) so a follow-up
+    `McpToolConnector` can swap in real data without changing the
+    binding contract. All data here is fictional; the seed compound is
+    the same XYZ-001 used in the synthetic IB corpus so the demo can
+    cite related-trial context coherently.
+    """
+
+    connector_id = "mock_clinicaltrials"
+    allowed_operations = frozenset(
+        {"search_trials", "get_trial_details", "search_by_sponsor"}
+    )
+
+    def call(
+        self, operation_id: str, parameters: Mapping[str, Any]
+    ) -> ApiCallResult:
+        if operation_id == "search_trials":
+            return self._search_trials(parameters)
+        if operation_id == "get_trial_details":
+            return self._get_trial_details(parameters)
+        if operation_id == "search_by_sponsor":
+            return self._search_by_sponsor(parameters)
+        raise ApiOperationError(
+            f"MockClinicalTrialsConnector: unknown operation_id={operation_id!r}"
+        )
+
+    def _search_trials(self, parameters: Mapping[str, Any]) -> ApiCallResult:
+        condition = str(parameters.get("condition", "")).strip().lower()
+        intervention = str(parameters.get("intervention", "")).strip().lower()
+        matches: list[_TrialFixture] = []
+        for trial in _TRIAL_FIXTURES.values():
+            cond_match = not condition or condition in trial.condition.lower()
+            interv_match = not intervention or intervention in trial.intervention.lower()
+            if cond_match and interv_match:
+                matches.append(trial)
+        return self._trials_to_result("search_trials", parameters, matches)
+
+    def _get_trial_details(self, parameters: Mapping[str, Any]) -> ApiCallResult:
+        nct_id = str(parameters.get("nct_id", "")).upper()
+        trial = _TRIAL_FIXTURES.get(nct_id)
+        if trial is None:
+            raise ApiOperationError(
+                f"MockClinicalTrialsConnector.get_trial_details: "
+                f"nct_id={nct_id!r} not found"
+            )
+        return self._trials_to_result("get_trial_details", parameters, [trial])
+
+    def _search_by_sponsor(self, parameters: Mapping[str, Any]) -> ApiCallResult:
+        sponsor = str(parameters.get("sponsor", "")).strip().lower()
+        matches = [
+            t for t in _TRIAL_FIXTURES.values() if sponsor and sponsor in t.sponsor.lower()
+        ]
+        return self._trials_to_result("search_by_sponsor", parameters, matches)
+
+    @staticmethod
+    def _trials_to_result(
+        operation_id: str,
+        parameters: Mapping[str, Any],
+        trials: list[_TrialFixture],
+    ) -> ApiCallResult:
+        columns = (
+            "nct_id",
+            "title",
+            "phase",
+            "status",
+            "sponsor",
+            "intervention",
+            "condition",
+            "primary_endpoint",
+            "n_enrolled",
+        )
+        rows = tuple(
+            (
+                t.nct_id,
+                t.title,
+                t.phase,
+                t.status,
+                t.sponsor,
+                t.intervention,
+                t.condition,
+                t.primary_endpoint,
+                t.n_enrolled,
+            )
+            for t in trials
+        )
+        return ApiCallResult(
+            connector_id="mock_clinicaltrials",
+            operation_id=operation_id,
+            parameters=dict(parameters),
+            columns=columns,
+            rows=rows,
+            raw={"trials": [t.__dict__ for t in trials]},
+            row_count=len(rows),
+            source="mock_clinicaltrials",
+        )
