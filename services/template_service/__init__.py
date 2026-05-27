@@ -23,6 +23,11 @@ from services.template_service.adapters.docx_adapter import (
     DocxAdapter,
     DocxAdapterOptions,
 )
+from services.template_service.adapters.from_scratch_adapter import (
+    FromScratchAdapter,
+    FromScratchAdapterOptions,
+    ScopingSpec,
+)
 from services.template_service.adapters.library_adapter import (
     LibraryAdapter,
     LibraryAdapterOptions,
@@ -40,11 +45,14 @@ from services.template_service.builder import (
 __all__ = [
     "DocxAdapter",
     "DocxAdapterOptions",
+    "FromScratchAdapter",
+    "FromScratchAdapterOptions",
     "LibraryAdapter",
     "LibraryAdapterOptions",
     "LibraryNotFound",
     "SampleReportsAdapter",
     "SampleReportsAdapterOptions",
+    "ScopingSpec",
     "TemplateBuildResult",
     "TemplateBuilder",
 ]

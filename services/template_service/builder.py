@@ -11,9 +11,16 @@ from pathlib import Path
 
 from shared.schemas import ReportTemplate
 
+from shared.llm import LlmClient
+
 from services.template_service.adapters.docx_adapter import (
     DocxAdapter,
     DocxAdapterOptions,
+)
+from services.template_service.adapters.from_scratch_adapter import (
+    FromScratchAdapter,
+    FromScratchAdapterOptions,
+    ScopingSpec,
 )
 from services.template_service.adapters.library_adapter import (
     LibraryAdapter,
@@ -80,6 +87,25 @@ class TemplateBuilder:
             )
         )
         template = adapter.from_directory(sample_dir)
+        warnings = self._sanity_check(template)
+        return TemplateBuildResult(template=template, warnings=tuple(warnings))
+
+    def from_scratch(
+        self,
+        scoping: ScopingSpec,
+        *,
+        client: LlmClient,
+        template_id: str,
+        authored_by: str = "template-builder:from-scratch-adapter",
+    ) -> TemplateBuildResult:
+        """Ask the LLM to propose a section structure from a scoping spec."""
+        adapter = FromScratchAdapter(
+            client,
+            FromScratchAdapterOptions(
+                template_id=template_id, authored_by=authored_by
+            ),
+        )
+        template = adapter.propose(scoping)
         warnings = self._sanity_check(template)
         return TemplateBuildResult(template=template, warnings=tuple(warnings))
 
