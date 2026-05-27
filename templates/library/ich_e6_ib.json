@@ -71,7 +71,7 @@
       "level": 1,
       "generation": {
         "mode": "llm",
-        "prompt_template": "Write a brief introduction (~500 words) for {{bindings.product_name}}: chemical name and structural class, therapeutic class and proposed indications, rationale for performing research with this product, and the general approach being followed. Cite any factual claims to source documents in {{bindings.background_docs}}.",
+        "prompt_template": "Write a brief introduction (~500 words) for {{bindings.product_name}}: chemical name and structural class, therapeutic class and proposed indications, rationale for performing research with this product, and the general approach being followed. Cite any factual claims to source documents in {{bindings.background_docs}} or to the target biology reference in {{bindings.target_biology}}.",
         "expected_length_words_min": 300,
         "expected_length_words_max": 800,
         "style_directives": ["formal", "factual_only"],
@@ -79,7 +79,8 @@
       },
       "data_bindings": [
         { "type": "free_text_input", "binding_id": "product_name", "prompt": "Product name", "required": true },
-        { "type": "file_set", "binding_id": "background_docs", "filter_tags": ["background", "mechanism"], "required": false }
+        { "type": "file_set", "binding_id": "background_docs", "filter_tags": ["background", "mechanism"], "required": false },
+        { "type": "api_call", "binding_id": "target_biology", "connector_id": "mock_chembl", "endpoint": "target_search", "parameters": {"target_name": "{{report.target_name}}"}, "required": false }
       ],
       "citation_policy": { "required": true, "granularity": "claim", "min_citations_per_paragraph": 1 }
     },
@@ -108,6 +109,8 @@
       "section_id": "3",
       "title": "Nonclinical Studies",
       "level": 1,
+      "generation": { "mode": "manual", "output_shape": "prose" },
+      "citation_policy": { "required": false, "granularity": "section", "min_citations_per_paragraph": 0 },
       "children": [
         {
           "section_id": "3.1",
@@ -182,6 +185,8 @@
       "section_id": "4",
       "title": "Effects in Humans",
       "level": 1,
+      "generation": { "mode": "manual", "output_shape": "prose" },
+      "citation_policy": { "required": false, "granularity": "section", "min_citations_per_paragraph": 0 },
       "children": [
         {
           "section_id": "4.1",

@@ -32,9 +32,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from services.api_integration import (  # noqa: E402
+    ApiCallGate,
+    ApiConnectorRegistry,
+    MockChemblConnector,
+)
 from services.audit import (  # noqa: E402
+    AnchorPeriod,
+    Anchorer,
     AuditQuery,
     AuditSink,
+    LocalRsaKeypair,
+    LocalRsaSigner,
     SqliteAuditStore,
     verify_chain,
 )
@@ -152,6 +161,15 @@ def main() -> int:
         "--drive-folder-id",
         help="Optional Drive folder ID to place the rendered Doc into",
     )
+    parser.add_argument(
+        "--anchor",
+        action="store_true",
+        help=(
+            "After generation, compute a signed Merkle root over the audit "
+            "chain (Validated-mode mechanic). Uses a local RSA key for the "
+            "PoC; production swaps in KmsRootSigner against a Cloud KMS HSM key."
+        ),
+    )
     args = parser.parse_args()
 
     metadata = json.loads(METADATA_PATH.read_text(encoding="utf-8"))
@@ -198,15 +216,26 @@ def main() -> int:
     safety_gate = SqlSafetyGate(executor=query_executor, registry=query_registry)
     print(f"Named queries:    {len(query_registry)} loaded from {QUERIES_DIR.name}/")
 
+    # API connector layer: register the mock ChEMBL connector so the IB
+    # Introduction section's api_call binding (target_biology) can resolve.
+    api_registry = ApiConnectorRegistry()
+    api_registry.register(MockChemblConnector())
+    api_gate = ApiCallGate(api_registry)
+    print(f"API connectors:   {len(api_registry)} registered ({', '.join(api_registry.ids())})")
+
     generator = ReportGenerator(
         fill_client=client,
         audit_sink=audit_sink,
         safety_gate=safety_gate,
+        api_gate=api_gate,
         max_retries_per_section=1,
     )
     inputs = {
         "product_name": metadata["compound"]["research_code"],
         "compound_id": metadata["compound"]["research_code"],
+        # Target name routed to the ChEMBL connector via the
+        # `target_biology` api_call binding in Section 1.
+        "target_name": "Kinase Z",
         "sponsor_name": metadata["compound"]["sponsor"],
         "ib_edition": metadata["compound"]["ib_edition"],
         "release_date": metadata["compound"]["ib_release_date"],
@@ -261,6 +290,33 @@ def main() -> int:
         encoding="utf-8",
     )
     print(f"Wrote run JSON:    {out_path}")
+
+    # Optional Validated-mode anchoring: sign a Merkle root over the chain.
+    if args.anchor:
+        if not project_chain:
+            print("Skipping --anchor: no events on the chain.")
+        else:
+            keypair = LocalRsaKeypair.generate(signer_id="local:demo-rsa-3072")
+            signer = LocalRsaSigner(keypair)
+            period = AnchorPeriod(
+                project_id=project_id,
+                period_start=project_chain[0].timestamp_utc,
+                period_end=project_chain[-1].timestamp_utc,
+            )
+            anchor = Anchorer(store=audit_store, signer=signer).anchor(
+                period, notes=["demo run; local RSA key (not HSM-backed)"]
+            )
+            anchor_path = OUTPUT_DIR / "anchor.json"
+            anchor_path.write_text(
+                anchor.model_dump_json(indent=2), encoding="utf-8"
+            )
+            # Also save the public key for any future verifier.
+            (OUTPUT_DIR / "anchor.pub.pem").write_bytes(keypair.public_pem)
+            print(f"Anchor written:   {anchor_path}")
+            print(
+                f"  merkle_root={anchor.merkle_root_hex[:24]}... "
+                f"signer={anchor.signer_id} events={anchor.event_count}"
+            )
 
     spec = spec_from_report(result.instance, result.citations)
     if args.render_gdoc:
