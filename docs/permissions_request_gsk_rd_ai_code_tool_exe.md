@@ -1,19 +1,43 @@
 # GCP permissions request — `gsk-rd-ai-code-tool-exe` (PRODUCTION TARGET)
 
-> **Status: deferred (Path B).** The MVP is being built on
-> `gsk-rd-pcs-sys-eng` first to avoid the VPC-SC perimeter overhead on
-> this project. This document is the eventual production-target
-> request — re-issue once the MVP is validated and VPC-SC ingress is
-> sorted. The active MVP request is in
-> [permissions_request_mvp_pcs_sys_eng.md](permissions_request_mvp_pcs_sys_eng.md).
+> **Status: Path B / production target.** The MVP runs first on
+> `gsk-rd-pcs-sys-eng` (see
+> [permissions_request_mvp_pcs_sys_eng.md](permissions_request_mvp_pcs_sys_eng.md)).
+> This document is the production request for Validated-mode operation.
+> It is materially different from the MVP request because this project
+> sits **inside a VPC Service Controls perimeter** — confirmed by Cloud
+> Shell diagnostic (multiple commands returned `VPC_SERVICE_CONTROLS`
+> violations). The perimeter, not IAM, is the dominant constraint here.
 
 **Requestor:** Chad Alburn (chad.l.alburn@gsk.com)
+**Account to grant:** `chad.l.alburn@gsk.com`
 **System:** Report Generator Agent (AI-assisted clinical/regulatory
 report generation; architecture in
 [docs/architecture-plan.md](architecture-plan.md))
 **Repo:** `chadlalburn-dev/AgenticReportWriter`
 **Target GCP project:** `gsk-rd-ai-code-tool-exe`
+**Project number:** `509644681263`
+**Google Workspace domain:** `gsk.com` (needed for the Google Docs
+rendering path — domain-wide delegation, see §6)
 **Date:** 2026-05-27
+
+## 0. Confirmed current state (Cloud Shell diagnostic, 2026-05-27)
+
+| Finding | Detail |
+|---|---|
+| Project number | `509644681263` |
+| **VPC Service Controls** | **Active perimeter.** `run.services.list`, `storage.buckets.list`, `artifacts.repositories.list` all returned `VPC_SERVICE_CONTROLS` violations from Cloud Shell. This is a network-policy boundary, not an IAM one. |
+| APIs already enabled | `artifactregistry`, `bigquery`, `bigquerystorage`, `iam`, `iamcredentials`, `run`, `secretmanager`, `storage` |
+| APIs NOT yet enabled (we need them) | `aiplatform` ⚠️, `cloudbuild`, `cloudkms`, `firestore`, `documentai`, `dlp`, `workflows`, `eventarc`, `pubsub`, `vpcaccess`, `iap` |
+| `iam.serviceAccounts.list` | **Works** for my user (returned 10 system SAs) — I have some read access today |
+| `iam.workloadIdentityPools.list` | **Denied** (`IAM_PERMISSION_DENIED`) — no WIF visibility yet |
+| BigQuery enabled | Yes — data-plane services are permitted inside this perimeter |
+
+**Headline:** `aiplatform.googleapis.com` is **not enabled** despite the
+project name — it must be enabled before any Claude call works. And the
+VPC-SC perimeter means even full IAM admin won't let me deploy/admin
+from Cloud Shell or my laptop without an ingress allowance or an
+in-perimeter deploy path (Cloud Build).
 
 > Companion to the GSK "Claude Code: Set up GitHub and GCP project
 > integration" Project. That Project covered the CI/CD-side
@@ -96,6 +120,19 @@ All service accounts are created **without** JSON keys. Workload
 identity binds them to the Cloud Run service at deploy time. The
 project's IAM policy must forbid `iam.serviceAccountKeys.create` on
 these SAs.
+
+## 3.5 VPC Service Controls — the dominant constraint (security team)
+
+These are **not** IAM grants I can self-serve; they need the network /
+security team that owns the perimeter. They block everything else, so
+they come first:
+
+| Need | Detail |
+|---|---|
+| **Developer ingress** | Add `chad.l.alburn@gsk.com` to a VPC-SC ingress policy so I can deploy + admin from outside the perimeter — OR confirm the expected pattern is "deploy via Cloud Build inside the perimeter only" (in which case I need `roles/cloudbuild.builds.editor` + a build trigger, and no ingress for my user). **Please advise which pattern GSK standardizes on.** |
+| **Cloud Run egress** | The agent calls external SaaS: GitHub (source), and later ChEMBL / bioRxiv / ClinicalTrials MCP endpoints. The perimeter's egress rules must permit these, or they must be reached via an approved proxy. |
+| **Service mesh inside perimeter** | Vertex AI, GCS, Firestore, Secret Manager, KMS must all be inside the same perimeter as the Cloud Run services so service-to-service calls don't cross the boundary. Confirm they are. |
+| **Local dev reality** | I cannot reach this project's services from my laptop or Cloud Shell through the perimeter. Local dev stays in stub mode (already supported); Cloud Run is the only environment that hits real services. Confirm this is acceptable, or provision a Cloud Workstations / in-perimeter VM. |
 
 ## 4. Networking + security baselines
 
