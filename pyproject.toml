@@ -31,6 +31,9 @@ dependencies = [
     "sqlglot>=25.0,<27",
     "tenacity>=8.2,<9",
     "structlog>=24.1,<25",
+    # FastAPI + uvicorn — the Cloud Run service runtime (api-gateway et al.)
+    "fastapi>=0.110,<1",
+    "uvicorn[standard]>=0.29,<1",
     # cryptography — local RSA signing for Validated-mode Merkle roots
     # (cloud KMS swap-in via google-cloud-kms is in the gcp extras)
     "cryptography>=43.0,<46",
