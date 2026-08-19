@@ -1,0 +1,334 @@
+{% import "base.html" as ui without context %}
+{% extends "base.html" %}
+
+{#
+  gallery.html — ENG-3
+  Two views off one template (contract C1):
+    view == "gallery"  ->  GET /       report-type picker + up to 3 recent runs
+    view == "runs"     ->  GET /runs   full run history table
+
+  base.html already wraps {% block content %} in .rg-container — do not add another.
+  The template-card loop variable is `tpl`, NOT `card`: base.html defines a macro
+  named `card`, which would shadow any context/loop variable of that name.
+
+  Accent budget (§8.5): "/" has NO orange element. "/runs" has none either, except
+  the empty state's "Draft your first report".
+#}
+
+{% block page_title %}{% if view == "runs" %}Run history · Report Generator{% else %}Report Generator{% endif %}{% endblock %}
+
+{% block breadcrumb %}
+{%- if view == "runs" %}
+<nav class="rg-crumb" aria-label="Breadcrumb">
+  <a class="rg-crumb__item rg-link" href="{{ url_for('gallery') }}">Report types</a>
+  <span class="rg-crumb__item" aria-current="page">Run history</span>
+</nav>
+{%- endif %}
+{% endblock %}
+
+{% block content %}
+{#- local lookup tables, declared inside the block so they are always in scope -#}
+{% set BADGE_TYPE = {
+     'named_query': 'sql', 'sql_query': 'sql', 'api_call': 'api',
+     'file_set': 'docx', 'file_ref': 'docx', 'computed_metric': 'computed'
+   } %}
+{% set KIND_ONE = {
+     'named_query': 'data query', 'sql_query': 'inline SQL query',
+     'api_call': 'API lookup', 'file_set': 'document set',
+     'file_ref': 'document', 'computed_metric': 'computed metric'
+   } %}
+{% set KIND_MANY = {
+     'named_query': 'data queries', 'sql_query': 'inline SQL queries',
+     'api_call': 'API lookups', 'file_set': 'document sets',
+     'file_ref': 'documents', 'computed_metric': 'computed metrics'
+   } %}
+{% set READY_STATE = {'ready': 'ok', 'gaps': 'warn', 'blocked': 'error', 'broken': 'error'} %}
+
+{% if view == "runs" %}
+{# ==================================================================== #}
+{# ==  RUN HISTORY  —  GET /runs                                     == #}
+{# ==================================================================== #}
+<div class="rg-stack-24">
+
+  <div class="rg-row rg-row--between">
+    <div class="rg-stack-8">
+      <h1 class="rg-title">Run history</h1>
+      <p class="rg-body-sm rg-subtle">
+        Every draft this machine has produced, including the ones that failed.
+        A failed run is evidence too — nothing is removed automatically.
+      </p>
+    </div>
+    <p class="rg-count">
+      <span class="rg-count__n">{{ runs | length }}</span>
+      <span class="rg-count__label">{{ 'run' if runs | length == 1 else 'runs' }} stored</span>
+    </p>
+  </div>
+
+  {% if runs %}
+  <div class="rg-toolbar">
+    <form class="rg-filters" method="get" action="{{ url_for('run_list') }}" role="search">
+      {%- if group_by_compound %}<input type="hidden" name="group" value="1">{% endif %}
+      <label class="rg-field__label" for="rg-run-filter">Filter runs</label>
+      <input class="rg-input rg-search" type="search" id="rg-run-filter" name="q"
+             value="{{ filter_q }}" placeholder="Compound, report type, status…"
+             autocomplete="off" aria-describedby="rg-run-filter-hint">
+      <p class="rg-field__hint" id="rg-run-filter-hint">
+        Filters the table as you type. Press <kbd class="rg-mono">/</kbd> to jump here.
+        Without JavaScript, use the Filter button.
+      </p>
+      {{ ui.btn('Filter', kind='secondary', type='submit', icon_name='search') }}
+    </form>
+
+    {#- WCAG 2.1.4: the "/" shortcut is a single printable character with no
+        modifier, so it must be switchable off. app.js reads exactly this id
+        (`shortcutsEnabled`), which previously existed only on the run page —
+        leaving "/" permanently on here with no way to disable it. -#}
+    <label class="rg-switch" for="rg-shortcuts-toggle" data-js-only>
+      <input type="checkbox" id="rg-shortcuts-toggle" checked>
+      <span class="rg-switch__track" aria-hidden="true"></span>
+      <span class="rg-switch__label">Single-key shortcuts</span>
+    </label>
+
+    <div class="rg-filters" role="group" aria-label="Grouping">
+      <a class="rg-pill" href="{{ url_for('run_list') }}{% if filter_q %}?q={{ filter_q | urlencode }}{% endif %}"
+         {%- if not group_by_compound %} aria-current="true"{% endif %}>
+        {%- if not group_by_compound %}{{ ui.icon('check', 'rg-icon--sm') }}{% endif -%}
+        <span>Newest first</span>
+      </a>
+      <a class="rg-pill" href="{{ url_for('run_list') }}?group=1{% if filter_q %}&amp;q={{ filter_q | urlencode }}{% endif %}"
+         {%- if group_by_compound %} aria-current="true"{% endif %}>
+        {%- if group_by_compound %}{{ ui.icon('check', 'rg-icon--sm') }}{% endif -%}
+        <span>Group by compound</span>
+      </a>
+    </div>
+
+    {{ ui.btn('New report', href=url_for('gallery'), kind='secondary', icon_name='play') }}
+  </div>
+
+  {#- .rg-table__wrap scrolls horizontally at narrow widths, so it has to be a
+      focusable region or that overflow is mouse-only (WCAG 2.1.1). -#}
+  <div class="rg-table__wrap" role="region" tabindex="0" aria-label="Run history">
+    <table class="rg-table rg-table--compact" id="rg-run-table">
+      <caption class="rg-table__caption">
+        Runs, newest first{% if group_by_compound %}, grouped by compound{% endif %}.
+        <span class="rg-vh">
+          Each row links to the draft for that run. Coverage counts how many sections carry at
+          least one citation. Flags mark sections that failed their checks, sections drafted with
+          no source data, and numbers in the prose that no citation covers.
+        </span>
+      </caption>
+      <thead>
+        <tr>
+          <th scope="col">Report</th>
+          <th scope="col">Input</th>
+          <th scope="col">Status</th>
+          <th scope="col">Coverage</th>
+          <th scope="col">Flags</th>
+          <th scope="col">Started</th>
+          <th scope="col">Took</th>
+          <th scope="col"><span class="rg-vh">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {%- set ns = namespace(group=None) %}
+        {%- for r in runs %}
+          {%- if group_by_compound and r.primary_input != ns.group %}
+            {%- set ns.group = r.primary_input %}
+        {#- This row labels the RUNS that follow it, not the eight columns it
+            spans, so the scope is rowgroup — scope="colgroup" told assistive
+            tech the compound name was a header for every column. -#}
+        <tr>
+          <th class="rg-overline" colspan="8" scope="rowgroup">
+            {{ r.primary_input if r.primary_input else 'No input recorded' }}
+          </th>
+        </tr>
+          {%- endif %}
+        <tr data-search="{{ (r.title ~ ' ' ~ r.template_title ~ ' ' ~ r.primary_input ~ ' ' ~ r.status_label ~ ' ' ~ r.run_id ~ ' ' ~ r.created_human) | lower }}">
+          <th scope="row">
+            <a class="rg-link" href="{{ url_for('run_detail', run_id=r.run_id) }}">{{ r.title }}</a>
+            <span class="rg-caption rg-subtle rg-mono">{{ r.run_id }}</span>
+          </th>
+          <td>{{ r.primary_input if r.primary_input else '—' }}</td>
+          <td>{{ ui.status_chip(r.status_state, r.status_label) }}</td>
+          <td>
+            <span>{{ r.coverage_text }}</span>
+            <span class="rg-caption rg-subtle">{{ r.n_citations }} citation{{ '' if r.n_citations == 1 else 's' }}</span>
+          </td>
+          <td>
+            {%- if r.n_sections_failed %}{{ ui.status_chip('error', r.n_sections_failed ~ ' failed checks') }}{% endif -%}
+            {%- if r.n_sections_no_data %}{{ ui.status_chip('warn', r.n_sections_no_data ~ ' without data') }}{% endif -%}
+            {%- if r.n_uncited_numbers %}{{ ui.status_chip('warn', r.n_uncited_numbers ~ ' uncited numbers') }}{% endif -%}
+            {%- if not (r.n_sections_failed or r.n_sections_no_data or r.n_uncited_numbers) -%}
+              {{ ui.status_chip('ok', 'None') }}
+            {%- endif %}
+          </td>
+          <td>{{ r.created_human }}</td>
+          <td class="rg-table__num">{{ r.duration_human }}</td>
+          <td>
+            <form method="post" action="{{ url_for('delete_run', run_id=r.run_id) }}">
+              {{ ui.btn('Delete', kind='danger', type='submit', icon_name='trash',
+                        aria_label='Delete run ' ~ r.title ~ ', ' ~ r.run_id) }}
+            </form>
+          </td>
+        </tr>
+        {%- endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% else %}
+  {{ ui.empty_state(
+       'No runs yet',
+       'Pick a report type and give it a compound or target. Nothing leaves this machine — drafts are written to a local folder and stay there.',
+       action_label='Draft your first report',
+       action_href=url_for('gallery'),
+       action_kind='primary',
+       icon_name='clock') }}
+  {% endif %}
+
+</div>
+
+{% else %}
+{# ==================================================================== #}
+{# ==  GALLERY (home)  —  GET /                                      == #}
+{# ==================================================================== #}
+<div class="rg-stack-24">
+
+  <div class="rg-stack-8">
+    <h1 class="rg-title">Draft a preclinical report</h1>
+    <p class="rg-body">
+      Pick a report type. The app pulls the study, assay, and document data that report is bound
+      to, drafts the narrative, and cites every value back to the study, page, cell, or query it
+      came from. You review it — the app never signs anything off.
+    </p>
+    <p class="rg-body-sm rg-subtle">
+      Discovery research use. Runs entirely on this machine against local data.
+    </p>
+  </div>
+
+  <section class="rg-stack-16" aria-labelledby="h-types">
+    <div class="rg-row rg-row--between">
+      <h2 class="rg-h2" id="h-types">Report types</h2>
+      {%- if cards %}
+      <p class="rg-count">
+        <span class="rg-count__n">{{ cards | length }}</span>
+        <span class="rg-count__label">available</span>
+      </p>
+      {%- endif %}
+    </div>
+
+    {% if cards %}
+    <ul class="rg-grid rg-grid--3">
+      {%- for tpl in cards %}
+      <li>
+        {#- aria-label keeps the link's accessible name short: without it the name is the
+            whole card body. The visible title is contained in it (WCAG 2.5.3). -#}
+        <a class="rg-card rg-tcard" href="{{ url_for('new_run', template_key=tpl.key) }}"
+           aria-label="{{ tpl.title }} — set up a run">
+          <h3 class="rg-tcard__title">{{ tpl.title }}</h3>
+          <p class="rg-tcard__desc">{{ tpl.description }}</p>
+
+          {%- if tpl.form_fields %}
+          <p class="rg-tcard__asks">
+            {{- ui.icon('search', 'rg-icon--sm') }}Asks you for:
+            {% for f in tpl.form_fields %}{{ f.prompt }}{{ '; ' if not loop.last }}{% endfor %}
+          </p>
+          {%- endif %}
+
+          <p class="rg-tcard__chips">
+            {%- for kind, n in tpl.source_counts | dictsort -%}
+              {{ ui.source_badge(
+                   BADGE_TYPE.get(kind, 'computed'),
+                   n ~ ' ' ~ (KIND_ONE.get(kind, kind) if n == 1 else KIND_MANY.get(kind, kind))) }}
+            {%- else -%}
+              {{ ui.source_badge('computed', 'No bound sources') }}
+            {%- endfor %}
+          </p>
+
+          <p class="rg-tcard__ready">
+            {{- ui.readiness(READY_STATE.get(tpl.readiness, 'neutral'), tpl.readiness_text) }}
+          </p>
+
+          {{ ui.meta_line([
+               ('Sections', tpl.n_sections),
+               ('Version', tpl.version),
+               ('Owner', tpl.owner)
+             ]) }}
+        </a>
+      </li>
+      {%- endfor %}
+    </ul>
+    {% else %}
+    {{ ui.empty_state(
+         'No runnable report templates found',
+         'Nothing in the template folder parsed into a runnable report. Add a Markdown file with YAML front-matter carrying report_type and title, then reload this page.',
+         icon_name='doc') }}
+    <p class="rg-caption rg-subtle rg-mono">{{ templates_dir }}</p>
+    {% endif %}
+
+    {% if unavailable %}
+    <details class="rg-details">
+      <summary>
+        {{- ui.icon('warn', 'rg-icon--warn rg-icon--sm') }}
+        <span>
+          {{ unavailable | length }} file{{ '' if unavailable | length == 1 else 's' }} in this
+          folder {{ 'is' if unavailable | length == 1 else 'are' }} not runnable
+        </span>
+      </summary>
+      <div class="rg-stack-8">
+        <p class="rg-body-sm rg-subtle">
+          These files sit alongside the report templates but did not parse. That is expected for
+          documentation and scaffolding files. The parser message is shown verbatim so a real
+          authoring mistake is never mistaken for one of them.
+        </p>
+        {%- set bad_rows = [] -%}
+        {%- for u in unavailable -%}
+          {{- bad_rows.append([u.key, u.error or 'Could not be parsed.']) or '' -}}
+        {%- endfor -%}
+        {{ ui.data_table(
+             ['File', 'Why it is not runnable'],
+             bad_rows,
+             caption='Files in the template folder that could not be parsed',
+             vh_note='Each row names a file and the parser message it produced.') }}
+        <p class="rg-caption rg-subtle rg-mono">{{ templates_dir }}</p>
+      </div>
+    </details>
+    {% endif %}
+  </section>
+
+  <hr class="rg-hr">
+
+  <section class="rg-stack-16" aria-labelledby="h-recent">
+    <div class="rg-row rg-row--between">
+      <h2 class="rg-h2" id="h-recent">Recent runs</h2>
+      {{ ui.btn('View all runs', href=url_for('run_list'), kind='ghost', icon_name='clock') }}
+    </div>
+
+    {% if recent %}
+    <ul class="rg-grid rg-grid--3">
+      {%- for r in recent %}
+      <li>
+        <a class="rg-card rg-runcard" href="{{ url_for('run_detail', run_id=r.run_id) }}"
+           aria-label="{{ r.title }} — {{ r.status_label }}, started {{ r.created_human }}">
+          <h3 class="rg-runcard__title">{{ r.title }}</h3>
+          <p class="rg-runcard__meta">{{ ui.status_chip(r.status_state, r.status_label) }}</p>
+          {{ ui.meta_line([
+               ('Started', r.created_human),
+               ('Took', r.duration_human),
+               ('Coverage', r.coverage_text)
+             ]) }}
+        </a>
+      </li>
+      {%- endfor %}
+    </ul>
+    {% else %}
+    {{ ui.empty_state(
+         'No runs yet',
+         'Choose a report type above to draft the first one.',
+         icon_name='clock') }}
+    {% endif %}
+  </section>
+
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,3971 @@
+"""Run store — template catalog, preflight, background generation, presenters.
+
+This module is the ONLY place the UI touches the generation engine. `ui.py`
+imports nothing from `services.generation_orchestrator`, `services.*_integration`,
+`services.template_service` or `shared.*` — it calls `RunStore` and renders the
+view models built here.
+
+Everything runs FULLY OFFLINE:
+
+  * `StubLlmClient` for plan / fill / critique — no Vertex, no ADC, no keys.
+  * `SqliteQueryExecutor` over `samples/synthetic_compound/edc.sqlite` behind a
+    `TolerantSqlSafetyGate` (fail-closed approval callback; unknown query ids
+    degrade to a deferred note instead of killing the run).
+  * `ApiCallGate` over the three bundled mock connectors (Confluence, ChEMBL,
+    ClinicalTrials).
+  * `LocalFileConnector` + the parser registry over the bundled synthetic
+    corpus (or any local folder the scientist points at).
+
+Nothing here writes outside `var/`. Nothing here opens a socket.
+
+This is DISCOVERY RESEARCH tooling. Every string that reaches the UI is written
+for a preclinical scientist reviewing a draft — never regulatory-process
+language.
+"""
+
+from __future__ import annotations
+
+import copy
+import csv
+import dataclasses
+import difflib
+import io
+import json
+import mimetypes
+import os
+import re
+import threading
+import traceback
+import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal
+
+from services.api_integration import (
+    ApiCallGate,
+    ApiConnectorRegistry,
+    MockChemblConnector,
+    MockClinicalTrialsConnector,
+    MockConfluenceConnector,
+)
+from services.audit import AuditEvent, AuditSink, AuditStore, InMemoryAuditStore
+from services.audit.schema import AuditAction
+from services.data_integration import (
+    NamedQueryRegistry,
+    SqlSafetyGate,
+    SqlSafetyViolation,
+    SqliteQueryExecutor,
+)
+from services.generation_orchestrator.orchestrator import ReportGenerator
+from services.generation_orchestrator.prompts import PROMPT_VERSION
+from services.generation_orchestrator.retrieval import BindingResolver
+from services.ingestion_service.connectors import ConnectorContext, LocalFileConnector
+from services.parsing_service.registry import default_registry
+from services.template_service import ReportDocError, load_report_doc
+from shared.llm import LlmRequest, LlmResponse, StubLlmClient
+from shared.schemas import CanonicalDocument, ParsedChunk, ReportTemplate, TemplateSection
+from shared.schemas.template import (
+    ApiCallBinding,
+    ComputedMetricBinding,
+    FileRefBinding,
+    FileSetBinding,
+    FreeTextInputBinding,
+    GenerationMode,
+    NamedQueryBinding,
+    SqlQueryBinding,
+)
+
+# ---------------------------------------------------------------------------
+# §7.1 Module constants
+# ---------------------------------------------------------------------------
+
+REPO_ROOT: Path = Path(__file__).resolve().parents[2]
+TEMPLATES_DIR: Path = REPO_ROOT / "report-templates"
+RUNS_ROOT: Path = REPO_ROOT / "var" / "runs"
+CORPUS_DIR: Path = REPO_ROOT / "samples" / "synthetic_compound" / "sources"
+QUERIES_DIR: Path = REPO_ROOT / "samples" / "synthetic_compound" / "queries"
+EDC_SQLITE: Path = REPO_ROOT / "samples" / "synthetic_compound" / "edc.sqlite"
+IB_TEMPLATE: Path = REPO_ROOT / "templates" / "library" / "ich_e6_ib.json"
+
+MAX_WORKERS: int = 2
+MAX_INPUT_LEN: int = 200
+MAX_RETRIES_PER_SECTION: int = 1
+KEEP_RUNS: int = 50
+
+INPUT_DEFAULTS: dict[str, str] = {
+    "compound_id": "XYZ-001",
+    "product_name": "XYZ-001",
+    "target_name": "Kinase Z",
+    "indication_keyword": "Kinase Z",
+}
+
+DRAFT_NOTICE: str = (
+    "AI-generated draft for human review. Generated {date} from "
+    "{template_id}@{version} using {model_version}. Every value must be "
+    "verified against its citation before use."
+)
+
+#: Appended to DRAFT_NOTICE when one or more sections were drafted with no
+#: resolved source data. Never omitted — a hollow section must look hollow.
+DRAFT_NOTICE_GAPS: str = (
+    " Drafted with no source data, verify from scratch: {sections}."
+)
+
+STUB_LLM_WARNING: str = (
+    "Stub LLM — the narrative is placeholder text. Citations and data are "
+    "real; the prose is not."
+)
+
+_PRIMARY_INPUT_ORDER = ("compound_id", "product_name", "target_name", "indication_keyword")
+
+_PARSEABLE_SUFFIXES = frozenset({".pdf", ".docx", ".xlsx"})
+
+
+# ---------------------------------------------------------------------------
+# §7.2 Literals
+# ---------------------------------------------------------------------------
+
+RunStatus = Literal[
+    "queued",
+    "preflight",
+    "ingesting",
+    "planning",
+    "generating",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+]
+SectionStatus = Literal[
+    "pending", "running", "retrying", "passed", "failed", "skipped", "cancelled"
+]
+Severity = Literal["blocker", "warning"]
+Readiness = Literal["ready", "gaps", "blocked", "broken"]
+Anchor = Literal["exact", "normalized", "sentence", "unanchored"]
+BandKind = Literal["none", "no_data", "failed"]
+
+TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"completed", "failed", "cancelled", "interrupted"}
+)
+
+STATUS_LABEL: dict[str, str] = {
+    "queued": "Queued",
+    "preflight": "Checking sources",
+    "ingesting": "Reading evidence folder",
+    "planning": "Planning sections",
+    "generating": "Drafting sections",
+    "completed": "Completed",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "interrupted": "Interrupted",
+}
+
+STATUS_STATE: dict[str, str] = {
+    "queued": "neutral",
+    "preflight": "running",
+    "ingesting": "running",
+    "planning": "running",
+    "generating": "running",
+    "completed": "ok",
+    "failed": "error",
+    "cancelled": "warn",
+    "interrupted": "warn",
+}
+
+#: Must stay byte-identical to the SECTION_LABEL map in /static/app.js (§6.2).
+SECTION_LABEL: dict[str, str] = {
+    "pending": "Waiting",
+    "running": "Drafting…",
+    "retrying": "Retrying",
+    "passed": "Drafted · checks passed",
+    "failed": "Drafted · checks failed",
+    "skipped": "Not generated (deterministic/manual section)",
+    "cancelled": "Cancelled",
+}
+
+SECTION_STATE: dict[str, str] = {
+    "pending": "neutral",
+    "running": "running",
+    "retrying": "warn",
+    "passed": "ok",
+    "failed": "error",
+    "skipped": "neutral",
+    # neutral, to stay in step with app.js SECTION_STATE and the progress_row
+    # macro in base.html — a chip must never change colour on the first poll.
+    "cancelled": "neutral",
+}
+
+PHASE_FOR_STATUS: dict[str, str] = {
+    "queued": "ingest",
+    "preflight": "ingest",
+    "ingesting": "ingest",
+    "planning": "plan",
+    "generating": "draft",
+    "completed": "done",
+    "failed": "done",
+    "cancelled": "done",
+    "interrupted": "done",
+}
+
+POLL_AFTER_MS: dict[str, int] = {
+    "queued": 2500,
+    "preflight": 1000,
+    "ingesting": 1000,
+    "planning": 1000,
+    "generating": 1000,
+}
+
+SOURCE_WORD: dict[str, str] = {
+    "pdf": "PDF document",
+    "docx": "Word document",
+    "xlsx": "Excel workbook",
+    "sql": "Database query",
+    "api": "External API",
+    "computed": "Computed value",
+}
+
+SOURCE_CAPTION: dict[str, str] = {
+    "pdf": "",
+    "docx": "Word documents have no fixed pages; located by heading.",
+    "xlsx": "No deep link into a workbook is possible.",
+    "sql": "Values as captured at {retrieved}.",
+    "api": (
+        "External API — response captured at retrieval time; not re-fetched."
+    ),
+    "computed": "Derived value — provenance not yet captured.",
+}
+
+BINDING_KIND_LABEL: dict[str, str] = {
+    "named_query": "Registered query",
+    "sql_query": "Inline SQL",
+    "file_set": "Evidence documents",
+    "file_ref": "Evidence document",
+    "computed_metric": "Computed metric",
+    "api_call": "API connector",
+    "free_text_input": "Run input",
+}
+
+AUDIT_GROUP: dict[str, tuple[str, str]] = {
+    AuditAction.GENERATION_REQUESTED.value: ("request", "Generation requested"),
+    AuditAction.GENERATION_PLAN_COMPLETED.value: ("plan", "Plan completed"),
+    AuditAction.GENERATION_SECTION_FILLED.value: ("section", "Section drafted"),
+    AuditAction.GENERATION_SECTION_CRITIQUED.value: ("section", "Section checked"),
+    AuditAction.CITATION_CREATED.value: ("citation", "Citation captured"),
+    AuditAction.LLM_CALL.value: ("llm", "Model call"),
+    AuditAction.GENERATION_COMPLETED.value: ("complete", "Generation completed"),
+}
+
+_EXTRA_LABEL: dict[str, str] = {
+    "attempt": "Attempt",
+    "compliance_mode": "Mode",
+    "n_chunks": "Chunks in pool",
+    "n_citations": "Citations",
+    "n_documents": "Documents",
+    "n_paragraphs": "Paragraphs",
+    "n_sections": "Sections",
+    "overall_summary_len": "Plan summary length",
+    "section_id": "Section",
+    "source_doc_id": "Source",
+    "source_type": "Source type",
+    "template_id": "Template",
+    "template_version": "Template version",
+    "verdict": "Verdict",
+}
+
+
+class RunNotTerminal(RuntimeError):
+    """Raised when a result is requested for a run that is still working."""
+
+
+class RunCancelled(RuntimeError):
+    """Raised inside the worker thread when the user cancelled the run."""
+
+
+# ---------------------------------------------------------------------------
+# §7.3 Dataclasses
+# ---------------------------------------------------------------------------
+
+
+class _Dict:
+    """Mixin giving every view model a JSON-safe `to_dict()`."""
+
+    def to_dict(self) -> dict[str, Any]:
+        return _jsonable(dataclasses.asdict(self))  # type: ignore[call-overload]
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, datetime):
+        return _iso(value)
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+@dataclass
+class FormField(_Dict):
+    binding_id: str
+    prompt: str
+    required: bool
+    default: str
+    used_by_sections: int
+
+
+@dataclass
+class SourceSpec(_Dict):
+    binding_id: str
+    kind: str
+    label: str
+    detail: str
+    section_ids: list[str]
+    status: str
+    status_text: str
+    fix_hint: str
+
+
+@dataclass
+class SectionOutline(_Dict):
+    section_id: str
+    title: str
+    level: int
+    instruction: str
+    source_ids: list[str]
+    mode: str
+
+
+@dataclass
+class TemplateCard(_Dict):
+    key: str
+    path: str
+    ok: bool
+    error: str | None
+    template_id: str
+    title: str
+    description: str
+    version: str
+    owner: str
+    n_sections: int
+    form_fields: list[FormField]
+    source_counts: dict[str, int]
+    sources_ready: int
+    sources_total: int
+    readiness: Readiness
+    readiness_text: str
+
+
+@dataclass
+class PreflightIssue(_Dict):
+    severity: Severity
+    code: str
+    binding_id: str
+    section_id: str
+    message: str
+    fix_hint: str
+
+
+@dataclass
+class PreflightReport(_Dict):
+    verdict: str
+    headline: str
+    sources: list[SourceSpec]
+    issues: list[PreflightIssue]
+    sections_without_data: list[str]
+    blocked: bool
+
+
+@dataclass
+class SectionProgress(_Dict):
+    section_id: str
+    title: str
+    level: int
+    status: SectionStatus = "pending"
+    status_label: str = "Waiting"
+    attempts: int = 0
+    n_paragraphs: int = 0
+    n_citations: int = 0
+    notes: list[str] = field(default_factory=list)
+    started_at: str | None = None
+    finished_at: str | None = None
+
+
+@dataclass
+class RunError(_Dict):
+    kind: str
+    message: str
+    detail: str
+
+
+@dataclass
+class RunSummary(_Dict):
+    run_id: str
+    template_key: str
+    template_title: str
+    template_version: str
+    title: str
+    inputs: dict[str, str]
+    primary_input: str
+    evidence_folder: str
+    status: RunStatus
+    status_label: str
+    status_state: str
+    terminal: bool
+    created_at: str
+    started_at: str | None
+    finished_at: str | None
+    created_human: str
+    duration_s: float | None
+    duration_human: str
+    model_version: str
+    instance_id: str | None
+    n_sections: int
+    n_sections_cited: int
+    n_sections_no_data: int
+    n_sections_failed: int
+    n_claims: int
+    n_claims_cited: int
+    n_uncited_numbers: int
+    n_citations: int
+    n_bindings_resolved: int
+    n_bindings_deferred: int
+    coverage_text: str
+
+
+@dataclass
+class RunRecord(_Dict):
+    run_id: str
+    template_key: str
+    template_title: str
+    template_version: str
+    template_id: str
+    title: str
+    inputs: dict[str, str]
+    evidence_folder: str
+    status: RunStatus
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    sections: list[SectionProgress] = field(default_factory=list)
+    preflight: list[PreflightIssue] = field(default_factory=list)
+    instance_id: str | None = None
+    model_version: str = "stub"
+    prompt_version: str = ""
+    compliance_mode: str = "rd"
+    n_documents: int = 0
+    n_chunks: int = 0
+    n_citations: int = 0
+    n_audit_events: int = 0
+    plan_summary: str | None = None
+    error: RunError | None = None
+    version: int = 0
+
+
+# --- draft view models -----------------------------------------------------
+
+
+@dataclass
+class NumberChip(_Dict):
+    token: str
+    found: bool
+    label: str
+
+
+@dataclass
+class CitationRef(_Dict):
+    n: int
+    citation_id: str
+    source_type: str
+    aria_label: str
+    approx: bool
+
+
+@dataclass
+class CitationView(_Dict):
+    n: int
+    citation_id: str
+    source_type: str
+    source_word: str
+    title: str
+    uri_display: str
+    uri_copy: str
+    open_url: str | None
+    locator_rows: list[tuple[str, str]]
+    snippet: str
+    snippet_grid: list[list[str]] | None
+    retrieved_iso: str
+    retrieved_human: str
+    version_label: str
+    version_value: str
+    number_chips: list[NumberChip]
+    claim_text: str
+    section_id: str
+    section_title: str
+    chunk_id: str | None
+    doc_id: str
+    instance_id: str
+    caption: str
+
+
+@dataclass
+class ClaimView(_Dict):
+    claim_idx: int
+    anchor: Anchor
+    text: str
+    citations: list[CitationRef]
+    uncited: bool
+
+
+@dataclass
+class Segment(_Dict):
+    kind: str
+    text: str
+    claim: ClaimView | None
+    marks: list[tuple[str, bool]] | None
+
+
+@dataclass
+class ParagraphView(_Dict):
+    para_idx: int
+    segments: list[Segment]
+    n_uncited_numbers: int
+    orphan_claims: list[ClaimView]
+
+
+@dataclass
+class DataTableView(_Dict):
+    binding_id: str
+    caption: str
+    columns: list[str]
+    rows: list[list[str]]
+    source_label: str
+    row_count: int
+    citation_n: int | None
+    citation_id: str | None
+    retrieved_human: str
+    status: str
+    deferred_note: str | None
+    vh_note: str
+
+
+@dataclass
+class SectionView(_Dict):
+    section_id: str
+    title: str
+    level: int
+    heading_tag: str
+    critique_status: str
+    critique_notes: list[str]
+    notes_short: list[str]
+    paragraphs: list[ParagraphView]
+    tables: list[DataTableView]
+    n_citations: int
+    n_uncited_numbers: int
+    band: BandKind
+    band_title: str
+    band_body: str
+
+
+@dataclass
+class LedgerRow(_Dict):
+    binding_id: str
+    kind: str
+    label: str
+    detail: str
+    status: str
+    status_text: str
+    row_count: int | None
+    section_ids: list[str]
+    citation_ns: list[int]
+    deferred_note: str | None
+    fix_hint: str | None
+    columns: list[str]
+    rows: list[list[str]]
+    sql: str | None
+
+
+@dataclass
+class EventView(_Dict):
+    ts_human: str
+    action: str
+    action_label: str
+    target: str
+    notes: list[str]
+    extra_pairs: list[tuple[str, str]]
+    group: str
+
+
+@dataclass
+class OutlineItem(_Dict):
+    section_id: str
+    title: str
+    level: int
+    state: str
+    label: str
+
+
+@dataclass
+class TrustBar(_Dict):
+    n_sections: int
+    n_claims: int
+    n_claims_cited: int
+    n_uncited_numbers: int
+    n_sections_no_data: int
+    n_sections_failed: int
+    n_citations: int
+    n_integrity_errors: int
+    clean: bool
+    state: str
+    headline: str
+
+
+@dataclass
+class DraftView(_Dict):
+    trust: TrustBar
+    outline: list[OutlineItem]
+    sections: list[SectionView]
+    citations: list[CitationView]
+    ledger: list[LedgerRow]
+    ledger_summary: str
+    coverage_columns: list[str]
+    coverage_rows: list[tuple[str, list[int]]]
+    events: list[EventView]
+    notice: str
+    hollow: bool
+
+
+# ---------------------------------------------------------------------------
+# Small utilities
+# ---------------------------------------------------------------------------
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(value: datetime | None = None) -> str:
+    dt = value or _now()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        text = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _human_ts(value: str | datetime | None) -> str:
+    dt = _parse_iso(value) if isinstance(value, str) else value
+    if dt is None:
+        return "—"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    local = dt.astimezone()
+    return local.strftime("%d %b %Y, %H:%M")
+
+
+def _human_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "—"
+    if seconds < 1:
+        return "under a second"
+    total = int(round(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def _truncate(text: str, limit: int) -> str:
+    text = " ".join(str(text).split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _plural(n: int, one: str, many: str | None = None) -> str:
+    return one if n == 1 else (many or one + "s")
+
+
+# ---------------------------------------------------------------------------
+# §7.6 Engine wiring (offline)
+# ---------------------------------------------------------------------------
+
+_CITE_RE = re.compile(r"\[citation_id=([0-9a-f-]+)\]")
+
+
+class TolerantSqlSafetyGate(SqlSafetyGate):
+    """`SqlSafetyGate` that fails *soft* for the two engine-fatal cases.
+
+    `NamedQueryRegistry.get()` raises `KeyError` and `NamedQuery.validate_args`
+    raises `ValueError`; `BindingResolver._resolve_named_query` only catches
+    `SqlSafetyViolation`, so either would abort the whole run. Converting them
+    means an unresolved binding degrades to a `deferred_note`, which the UI
+    surfaces loudly instead of losing the run.
+    """
+
+    def run_named_query(
+        self,
+        query_id: str,
+        parameters: Any,
+        *,
+        actor_id: str = "system:orchestrator",
+    ) -> Any:
+        try:
+            return super().run_named_query(query_id, parameters, actor_id=actor_id)
+        except KeyError as exc:
+            raise SqlSafetyViolation(
+                "UNKNOWN_NAMED_QUERY",
+                f"{query_id!r} is not in the named-query registry",
+            ) from exc
+        except ValueError as exc:
+            raise SqlSafetyViolation("BAD_QUERY_PARAMETERS", str(exc)) from exc
+
+
+def build_llm_client() -> StubLlmClient:
+    """Deterministic offline stub — plan / fill / critique.
+
+    Moved verbatim from `main.py::_smart_stub()`. This is the single swap
+    point for `VertexLlmClient` when cloud access lands.
+    """
+    stub = StubLlmClient(strict=True)
+
+    stub.register_handler(
+        lambda r: r.response_schema_name == "PlanOutput",
+        lambda r: stub.make_response(
+            parsed_json={"overall_summary": "Dev-server stub plan.", "section_plans": []}
+        ),
+    )
+
+    def _fill(r: LlmRequest) -> LlmResponse:
+        msg = r.messages[-1].content
+        ids = _CITE_RE.findall(msg)
+        m = re.search(r"Target length:\s*(\d+)-(\d+)", msg)
+        lo, hi = (int(m.group(1)), int(m.group(2))) if m else (200, 800)
+        body = (
+            "This section was produced by the local dev-server stub LLM; "
+            "wire Vertex AI Claude for real text. "
+        ) * max(1, ((lo + hi) // 2) // 20)
+        words = body.split()
+        if len(words) > hi:
+            body = " ".join(words[:hi])
+        claims = [{"text": "Stub claim.", "citation_ids": [ids[0]]}] if ids else []
+        return stub.make_response(
+            parsed_json={"paragraphs": [{"text": body, "claims": claims}]}
+        )
+
+    stub.register_handler(lambda r: r.response_schema_name == "FillOutput", _fill)
+    stub.register_handler(
+        lambda r: r.response_schema_name == "CritiqueOutput",
+        lambda r: stub.make_response(parsed_json={"verdict": "pass", "issues": []}),
+    )
+    return stub
+
+
+def build_api_gate() -> ApiCallGate:
+    """Confluence + ChEMBL + ClinicalTrials mocks. All in-process, no network."""
+    registry = ApiConnectorRegistry()
+    registry.register(MockConfluenceConnector())
+    registry.register(MockChemblConnector())
+    registry.register(MockClinicalTrialsConnector())
+    return ApiCallGate(registry)
+
+
+_QUERY_REGISTRY: NamedQueryRegistry | None = None
+_QUERY_REGISTRY_LOCK = threading.Lock()
+
+
+def query_registry() -> NamedQueryRegistry:
+    """Process-wide named-query registry over `samples/synthetic_compound/queries`."""
+    global _QUERY_REGISTRY
+    with _QUERY_REGISTRY_LOCK:
+        if _QUERY_REGISTRY is None:
+            registry = NamedQueryRegistry()
+            if QUERIES_DIR.is_dir():
+                try:
+                    registry.load_directory(QUERIES_DIR)
+                except Exception:  # pragma: no cover - malformed local YAML
+                    pass
+            _QUERY_REGISTRY = registry
+        return _QUERY_REGISTRY
+
+
+def build_sql_gate() -> TolerantSqlSafetyGate:
+    """Read-only SQLite gate. The approval callback stays fail-closed
+    (`deny_all` by default), so inline LLM-drafted SQL never executes."""
+    executor = SqliteQueryExecutor(EDC_SQLITE, source="sqlite", read_only=True)
+    return TolerantSqlSafetyGate(executor=executor, registry=query_registry())
+
+
+_CORPUS_CACHE: dict[str, tuple[list[CanonicalDocument], dict[str, list[ParsedChunk]]]] = {}
+_CORPUS_LOCK = threading.Lock()
+
+
+def load_corpus(
+    folder: str | Path,
+) -> tuple[list[CanonicalDocument], dict[str, list[ParsedChunk]]]:
+    """Ingest + parse a local evidence folder. Cached per process, per folder.
+
+    The result is immutable after build and shared read-only across workers.
+    Measured on the bundled corpus: 13 documents / 123 chunks / ~0.3 s.
+    """
+    key = str(Path(folder).resolve())
+    with _CORPUS_LOCK:
+        cached = _CORPUS_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    connector = LocalFileConnector()
+    context = ConnectorContext(tenant_id="gsk", team_id="local", run_id="report-agent-ui")
+    parsers = default_registry()
+    documents: list[CanonicalDocument] = []
+    chunks_by_doc: dict[str, list[ParsedChunk]] = {}
+    for doc, raw in connector.ingest(key, context):
+        try:
+            chunks = list(parsers.parse(doc, raw))
+        except Exception:
+            # An unparseable file must not take the whole folder down.
+            continue
+        documents.append(doc)
+        chunks_by_doc[doc.doc_id] = chunks
+
+    built = (documents, chunks_by_doc)
+    with _CORPUS_LOCK:
+        _CORPUS_CACHE.setdefault(key, built)
+        return _CORPUS_CACHE[key]
+
+
+def _infer_tags(path: Path) -> list[str]:
+    """Mirror of `LocalFileConnector._infer_tags_from_path` (engine is read-only).
+
+    Used by preflight so we can answer "do any documents match these tags?"
+    without reading or parsing a single byte.
+    """
+    anchor = path.anchor.rstrip("\\/")
+    return [p.name.lower() for p in path.parents if p.name and p.name != anchor]
+
+
+@dataclass(frozen=True)
+class _ScannedDoc:
+    title: str
+    path: str
+    tags: tuple[str, ...]
+
+
+def scan_evidence_folder(folder: str | Path) -> list[_ScannedDoc]:
+    """Cheap metadata-only walk (no bytes read) used by preflight."""
+    root = Path(folder)
+    if not root.is_dir():
+        return []
+    out: list[_ScannedDoc] = []
+    try:
+        candidates = sorted(root.rglob("*"))
+    except OSError:
+        return []
+    for path in candidates:
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        if path.suffix.lower() not in _PARSEABLE_SUFFIXES:
+            mime, _ = mimetypes.guess_type(path.name)
+            if mime is None:
+                continue
+        out.append(
+            _ScannedDoc(
+                title=path.stem,
+                path=path.resolve().as_posix(),
+                tags=tuple(_infer_tags(path)),
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Progress plumbing
+# ---------------------------------------------------------------------------
+
+
+class ProgressAuditSink(AuditSink):
+    """Audit sink that mirrors generation events into live run progress.
+
+    Two hard rules:
+      * the progress callback may never break generation — every exception it
+        raises is swallowed;
+      * cancellation is checked *before* the callback and propagates as
+        `RunCancelled` so the worker can unwind cleanly.
+    """
+
+    def __init__(
+        self,
+        store: AuditStore,
+        *,
+        on_event: Any,
+        cancel_event: threading.Event,
+    ) -> None:
+        super().__init__(store)
+        self._on_event = on_event
+        self._cancel = cancel_event
+
+    def emit(self, event: AuditEvent) -> AuditEvent:
+        stamped = super().emit(event)
+        if self._cancel.is_set():
+            raise RunCancelled("cancelled by the user")
+        try:
+            self._on_event(stamped)
+        except Exception:  # noqa: BLE001 - progress must never break generation
+            pass
+        return stamped
+
+
+# ---------------------------------------------------------------------------
+# Anchoring, numbers, citation presentation (§7.7)
+# ---------------------------------------------------------------------------
+
+#: Copied, not imported — `services/generation_orchestrator/critic.py` is
+#: read-only for this workstream.
+NUMBER_RE = re.compile(r"\b\d[\d,]*(?:\.\d+)?\s*%?")
+
+#: Suppresses the digits inside a compound code (``XYZ-001``, ``CHEMBL203``).
+_CODE_CTX_RE = re.compile(r"[A-Za-z]-?$")
+
+#: Sentence terminator: `.`/`!`/`?` followed by whitespace or end of string.
+#: Deliberately NOT `[^.!?]+` — that splits "12.5 mg" mid-number and would
+#: anchor a citation marker to the fragment "5 mg".
+_SENTENCE_END_RE = re.compile(r"[.!?]+(?=\s|$)")
+
+_FOLD = {
+    "‘": "'",
+    "’": "'",
+    "‚": "'",
+    "“": '"',
+    "”": '"',
+    "–": "-",
+    "—": "-",
+    "−": "-",
+    " ": " ",
+    "…": ".",
+}
+
+_STOPWORDS = frozenset(
+    """
+    the and for with from that this was were are been being have has had not but
+    its their which when where while into over under than then they them was
+    """.split()
+)
+
+_TIER_RANK = {"exact": 0, "normalized": 1, "sentence": 2}
+_DICE_THRESHOLD = 0.60
+
+
+def _normalize_with_map(text: str) -> tuple[str, list[int]]:
+    """Whitespace-collapsed, quote-folded, lowercased text + offset map.
+
+    `index_map[i]` is the raw offset of normalized character `i`; the map has
+    one extra trailing entry equal to `len(text)` so a normalized end offset
+    maps to a raw end offset.
+    """
+    out: list[str] = []
+    index_map: list[int] = []
+    prev_space = False
+    for i, ch in enumerate(text):
+        if ch.isspace():
+            if prev_space:
+                continue
+            out.append(" ")
+            index_map.append(i)
+            prev_space = True
+            continue
+        prev_space = False
+        folded = _FOLD.get(ch, ch).lower()
+        if len(folded) != 1:
+            folded = folded[0] if folded else ch
+        out.append(folded)
+        index_map.append(i)
+    index_map.append(len(text))
+    return "".join(out), index_map
+
+
+def _content_tokens(text: str) -> list[str]:
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    return [t for t in tokens if len(t) >= 3 and t not in _STOPWORDS]
+
+
+def _dice(a: list[str], b: list[str]) -> float:
+    if not a or not b:
+        return 0.0
+    if len(a) < 2 or len(b) < 2:
+        set_a, set_b = set(a), set(b)
+    else:
+        set_a = {(a[i], a[i + 1]) for i in range(len(a) - 1)}
+        set_b = {(b[i], b[i + 1]) for i in range(len(b) - 1)}
+    if not set_a or not set_b:
+        return 0.0
+    return 2 * len(set_a & set_b) / (len(set_a) + len(set_b))
+
+
+def _sentence_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for match in _SENTENCE_END_RE.finditer(text):
+        s, e = _trim_span(text, start, match.end())
+        if e > s:
+            spans.append((s, e))
+        start = match.end()
+    if start < len(text):
+        s, e = _trim_span(text, start, len(text))
+        if e > s:
+            spans.append((s, e))
+    return spans
+
+
+def _trim_span(text: str, start: int, end: int) -> tuple[int, int]:
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    return start, end
+
+
+def _find_claim_span(
+    paragraph: str,
+    norm_paragraph: str,
+    index_map: list[int],
+    claim_text: str,
+) -> tuple[int, int, str] | None:
+    """Return (start, end, tier) of the paragraph span backing `claim_text`."""
+    needle = claim_text.strip()
+    if not needle:
+        return None
+
+    # Tier A — exact substring.
+    pos = paragraph.find(needle)
+    if pos >= 0:
+        start, end = _trim_span(paragraph, pos, pos + len(needle))
+        if end > start:
+            return start, end, "exact"
+
+    # Tier B — normalised substring.
+    norm_needle, _ = _normalize_with_map(needle)
+    norm_needle = norm_needle.strip()
+    if norm_needle:
+        pos = norm_paragraph.find(norm_needle)
+        if pos >= 0:
+            raw_start = index_map[pos]
+            raw_end = index_map[min(pos + len(norm_needle), len(index_map) - 1)]
+            start, end = _trim_span(paragraph, raw_start, raw_end)
+            if end > start:
+                return start, end, "normalized"
+
+    # Tier C — best sentence by Dice over content-word bigrams.
+    claim_tokens = _content_tokens(needle)
+    if claim_tokens:
+        best: tuple[float, int, int] | None = None
+        for s, e in _sentence_spans(paragraph):
+            score = _dice(claim_tokens, _content_tokens(paragraph[s:e]))
+            if best is None or score > best[0]:
+                best = (score, s, e)
+        if best is not None and best[0] >= _DICE_THRESHOLD:
+            return best[1], best[2], "sentence"
+
+    return None
+
+
+def _number_marks(text: str) -> tuple[list[tuple[str, bool]], int]:
+    """Split a run of prose into (fragment, is_uncited_number) pairs.
+
+    Digits that are part of an identifier (``XYZ-001``, ``CHEMBL203``) are
+    emitted as ordinary text, never as an uncited-number warning — the engine's
+    critic does flag them, which is exactly the false positive we suppress here.
+    """
+    marks: list[tuple[str, bool]] = []
+    flagged = 0
+    cursor = 0
+    for match in NUMBER_RE.finditer(text):
+        start, end = match.start(), match.end()
+        context = text[max(0, start - 6) : start]
+        suppressed = bool(_CODE_CTX_RE.search(context))
+        if suppressed:
+            continue
+        if start > cursor:
+            marks.append((text[cursor:start], False))
+        marks.append((text[start:end], True))
+        flagged += 1
+        cursor = end
+    if cursor < len(text):
+        marks.append((text[cursor:], False))
+    if not marks and text:
+        marks.append((text, False))
+    return marks, flagged
+
+
+def _number_tokens(text: str) -> list[str]:
+    out: list[str] = []
+    for match in NUMBER_RE.finditer(text):
+        context = text[max(0, match.start() - 6) : match.start()]
+        if _CODE_CTX_RE.search(context):
+            continue
+        token = match.group(0).strip()
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
+def _number_found_in(token: str, haystack: str) -> bool:
+    bare = token.rstrip("%").strip()
+    plain = bare.replace(",", "")
+    hay_plain = haystack.replace(",", "")
+    if bare and bare in haystack:
+        return True
+    if plain and plain in hay_plain:
+        return True
+    try:
+        value = float(plain)
+    except ValueError:
+        return False
+    for match in NUMBER_RE.finditer(hay_plain):
+        candidate = match.group(0).strip().rstrip("%").replace(",", "")
+        try:
+            if abs(float(candidate) - value) < 1e-9:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Template catalog
+# ---------------------------------------------------------------------------
+
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
+@dataclass
+class _ParsedTemplate:
+    key: str
+    path: Path
+    template: ReportTemplate | None
+    error: str | None
+    description: str
+    owner: str
+
+
+def _read_front_matter(path: Path) -> dict[str, Any]:
+    try:
+        import yaml
+
+        text = path.read_text(encoding="utf-8")
+        match = _FRONTMATTER_RE.match(text)
+        if not match:
+            return {}
+        loaded = yaml.safe_load(match.group(1))
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:  # noqa: BLE001 - front matter is best-effort metadata
+        return {}
+
+
+def _clean_error(message: str) -> str:
+    """Strip the absolute path prefix `load_report_doc` bakes into its errors."""
+    text = str(message)
+    if ": " in text:
+        head, _, tail = text.partition(": ")
+        if ("\\" in head or "/" in head) and tail:
+            return tail
+    return text
+
+
+# ---------------------------------------------------------------------------
+# RunStore
+# ---------------------------------------------------------------------------
+
+
+class RunStore:
+    """Template catalog + preflight + threaded generation + presenters.
+
+    Thread-safety: one `RLock` guards the in-memory record map. Every mutation
+    bumps `RunRecord.version` and rewrites `run.json` atomically, so a browser
+    refresh (or a process restart) always sees a coherent state.
+    """
+
+    def __init__(
+        self,
+        root: Path = RUNS_ROOT,
+        templates_dir: Path = TEMPLATES_DIR,
+    ) -> None:
+        self._root = Path(root)
+        self._templates_dir = Path(templates_dir)
+        self._lock = threading.RLock()
+        self._records: dict[str, RunRecord] = {}
+        self._metrics: dict[str, dict[str, int]] = {}
+        self._cancel_events: dict[str, threading.Event] = {}
+        self._futures: dict[str, Future[None]] = {}
+        self._draft_cache: dict[str, DraftView] = {}
+        self._template_cache: dict[str, tuple[tuple[float, int], _ParsedTemplate]] = {}
+        self._template_lock = threading.RLock()
+        self._executor = ThreadPoolExecutor(
+            max_workers=MAX_WORKERS, thread_name_prefix="rg-run"
+        )
+        self._closed = False
+
+        self._root.mkdir(parents=True, exist_ok=True)
+        self._rehydrate()
+        self.prune(keep=KEEP_RUNS)
+
+    # -- templates ---------------------------------------------------------
+
+    def _parse_template(self, path: Path) -> _ParsedTemplate:
+        key = path.stem
+        try:
+            stat = path.stat()
+            stamp = (stat.st_mtime, stat.st_size)
+        except OSError:
+            stamp = (0.0, 0)
+        with self._template_lock:
+            cached = self._template_cache.get(key)
+            if cached is not None and cached[0] == stamp:
+                return cached[1]
+
+        description = ""
+        owner = ""
+        front = _read_front_matter(path)
+        if front:
+            description = " ".join(str(front.get("description", "") or "").split())
+            owner = str(front.get("owner", "") or "")
+        try:
+            template = load_report_doc(path)
+            parsed = _ParsedTemplate(key, path, template, None, description, owner)
+        except Exception as exc:  # noqa: BLE001 - ReportDocError + pydantic errors
+            parsed = _ParsedTemplate(
+                key, path, None, _clean_error(exc), description, owner
+            )
+
+        with self._template_lock:
+            self._template_cache[key] = (stamp, parsed)
+        return parsed
+
+    def _template_paths(self) -> list[Path]:
+        if not self._templates_dir.is_dir():
+            return []
+        return sorted(self._templates_dir.glob("*.md"))
+
+    def _card_for(self, parsed: _ParsedTemplate) -> TemplateCard:
+        if parsed.template is None:
+            return TemplateCard(
+                key=parsed.key,
+                path=str(parsed.path),
+                ok=False,
+                error=parsed.error,
+                template_id="",
+                title=parsed.key,
+                description=parsed.description,
+                version="",
+                owner=parsed.owner,
+                n_sections=0,
+                form_fields=[],
+                source_counts={},
+                sources_ready=0,
+                sources_total=0,
+                readiness="broken",
+                readiness_text="Not runnable — this file is not a report template.",
+            )
+
+        template = parsed.template
+        sections = template.all_sections()
+        fields = _form_fields(sections)
+        specs = _source_specs(
+            sections,
+            inputs={f.binding_id: f.default for f in fields},
+            evidence_folder=CORPUS_DIR,
+        )
+        counts: dict[str, int] = {}
+        for spec in specs:
+            counts[spec.kind] = counts.get(spec.kind, 0) + 1
+        ready = sum(1 for s in specs if s.status == "ready")
+        total = len(specs)
+
+        if total == 0:
+            readiness: Readiness = "gaps"
+            readiness_text = "No bound data sources — narrative only."
+        elif ready == total:
+            readiness = "ready"
+            readiness_text = f"All {total} {_plural(total, 'source')} ready"
+        elif ready == 0:
+            readiness = "gaps"
+            readiness_text = f"0 of {total} sources ready"
+        else:
+            readiness = "gaps"
+            readiness_text = f"{ready} of {total} sources ready"
+
+        return TemplateCard(
+            key=parsed.key,
+            path=str(parsed.path),
+            ok=True,
+            error=None,
+            template_id=template.template_id,
+            title=template.title,
+            description=parsed.description,
+            version=template.version,
+            owner=parsed.owner,
+            n_sections=len(sections),
+            form_fields=fields,
+            source_counts=counts,
+            sources_ready=ready,
+            sources_total=total,
+            readiness=readiness,
+            readiness_text=readiness_text,
+        )
+
+    def list_templates(self) -> tuple[list[TemplateCard], list[TemplateCard]]:
+        runnable: list[TemplateCard] = []
+        unavailable: list[TemplateCard] = []
+        for path in self._template_paths():
+            card = self._card_for(self._parse_template(path))
+            (runnable if card.ok else unavailable).append(card)
+        runnable.sort(key=lambda c: c.title.lower())
+        unavailable.sort(key=lambda c: c.key.lower())
+        return runnable, unavailable
+
+    def _parsed_or_raise(self, key: str) -> _ParsedTemplate:
+        path = self._templates_dir / f"{key}.md"
+        if "/" in key or "\\" in key or not path.is_file():
+            raise KeyError(f"unknown report template: {key!r}")
+        return self._parse_template(path)
+
+    def get_template(self, key: str) -> TemplateCard:
+        return self._card_for(self._parsed_or_raise(key))
+
+    def _template_or_raise(self, key: str) -> ReportTemplate:
+        parsed = self._parsed_or_raise(key)
+        if parsed.template is None:
+            raise ValueError(parsed.error or f"{key} could not be parsed")
+        return parsed.template
+
+    def template_outline(self, key: str) -> list[SectionOutline]:
+        parsed = self._parsed_or_raise(key)
+        if parsed.template is None:
+            return []
+        out: list[SectionOutline] = []
+        for section in parsed.template.all_sections():
+            out.append(
+                SectionOutline(
+                    section_id=section.section_id,
+                    title=section.title,
+                    level=section.level,
+                    instruction=section.generation.prompt_template or "",
+                    source_ids=[
+                        b.binding_id
+                        for b in section.data_bindings
+                        if not isinstance(b, FreeTextInputBinding)
+                    ],
+                    mode=section.generation.mode.value,
+                )
+            )
+        return out
+
+    def default_inputs(self, key: str) -> dict[str, str]:
+        card = self.get_template(key)
+        return {f.binding_id: f.default for f in card.form_fields}
+
+    # -- evidence folder ---------------------------------------------------
+
+    def describe_evidence(
+        self, folder: str | None = None
+    ) -> tuple[str, str, str | None]:
+        """(resolved_path, human_label, inline_error).
+
+        Never raises and never blocks the primary action: an unusable folder
+        falls back to the bundled synthetic corpus and reports the reason.
+        """
+        raw = (folder or "").strip()
+        error: str | None = None
+        target = CORPUS_DIR
+        if raw:
+            candidate = Path(raw).expanduser()
+            if candidate.is_dir():
+                target = candidate
+            else:
+                error = (
+                    f"{raw} is not a readable folder — using the bundled sample "
+                    "corpus instead."
+                )
+        resolved = target.resolve()
+        docs = scan_evidence_folder(resolved)
+        is_sample = resolved == CORPUS_DIR.resolve()
+        name = "Sample corpus (synthetic XYZ-001)" if is_sample else resolved.name
+        label = f"{name} · {len(docs)} {_plural(len(docs), 'document')}"
+        with _CORPUS_LOCK:
+            cached = _CORPUS_CACHE.get(str(resolved))
+        if cached is not None:
+            n_chunks = sum(len(c) for c in cached[1].values())
+            label += f" · {n_chunks} {_plural(n_chunks, 'chunk')}"
+        return str(resolved), label, error
+
+    def _resolve_evidence(self, folder: str | None) -> tuple[Path, PreflightIssue | None]:
+        raw = (folder or "").strip()
+        if not raw:
+            return CORPUS_DIR.resolve(), None
+        candidate = Path(raw).expanduser()
+        if candidate.is_dir():
+            return candidate.resolve(), None
+        return (
+            CORPUS_DIR.resolve(),
+            PreflightIssue(
+                severity="warning",
+                code="EVIDENCE_FOLDER_UNREADABLE",
+                binding_id="evidence_folder",
+                section_id="",
+                message=(
+                    f"Evidence folder {raw!r} could not be read; the bundled "
+                    "sample corpus was used instead."
+                ),
+                fix_hint=(
+                    "Point this at a folder of .pdf / .docx / .xlsx files on "
+                    "this machine, or leave it blank for the sample corpus."
+                ),
+            ),
+        )
+
+    # -- preflight ---------------------------------------------------------
+
+    def preflight(
+        self,
+        key: str,
+        inputs: dict[str, str],
+        evidence_folder: str | None = None,
+    ) -> PreflightReport:
+        parsed = self._parsed_or_raise(key)
+        folder, folder_issue = self._resolve_evidence(evidence_folder)
+        if parsed.template is None:
+            return PreflightReport(
+                verdict="blocked",
+                headline="This file is not a runnable report template.",
+                sources=[],
+                issues=[
+                    PreflightIssue(
+                        severity="blocker",
+                        code="TEMPLATE_UNPARSEABLE",
+                        binding_id="",
+                        section_id="",
+                        message=parsed.error or "The template could not be parsed.",
+                        fix_hint="Fix the template file and reload this page.",
+                    )
+                ],
+                sections_without_data=[],
+                blocked=True,
+            )
+
+        sections = parsed.template.all_sections()
+        fields = _form_fields(sections)
+        cleaned = {f.binding_id: (inputs.get(f.binding_id) or "").strip() for f in fields}
+        specs, codes = _source_specs_with_codes(
+            sections, inputs=cleaned, evidence_folder=folder
+        )
+
+        issues: list[PreflightIssue] = []
+        for f in fields:
+            if f.required and not cleaned.get(f.binding_id):
+                issues.append(
+                    PreflightIssue(
+                        severity="blocker",
+                        code="MISSING_REQUIRED_INPUT",
+                        binding_id=f.binding_id,
+                        section_id="",
+                        message=f"{f.prompt} is required.",
+                        fix_hint="Enter a value to continue.",
+                    )
+                )
+        if folder_issue is not None:
+            issues.append(folder_issue)
+        for spec in specs:
+            if spec.status == "ready":
+                continue
+            issues.append(
+                PreflightIssue(
+                    severity="warning",
+                    code=codes.get(spec.binding_id, "SOURCE_NOT_READY"),
+                    binding_id=spec.binding_id,
+                    section_id=spec.section_ids[0] if spec.section_ids else "",
+                    message=spec.status_text,
+                    fix_hint=spec.fix_hint,
+                )
+            )
+
+        by_binding = {s.binding_id: s for s in specs}
+        without_data: list[str] = []
+        for section in sections:
+            bound = [
+                b.binding_id
+                for b in section.data_bindings
+                if not isinstance(b, FreeTextInputBinding)
+            ]
+            if not bound or all(
+                by_binding.get(bid) is None or by_binding[bid].status != "ready"
+                for bid in bound
+            ):
+                without_data.append(section.title)
+
+        blocked = any(i.severity == "blocker" for i in issues)
+        ready = sum(1 for s in specs if s.status == "ready")
+        total = len(specs)
+        if blocked:
+            verdict = "blocked"
+            headline = "Fill in the required inputs before drafting."
+        elif ready == total and not without_data:
+            verdict = "ready"
+            headline = (
+                f"All {total} {_plural(total, 'source')} resolved — every section "
+                "has data to cite."
+            )
+        else:
+            verdict = "gaps"
+            n_gap = len(without_data)
+            headline = (
+                f"{ready} of {total} sources ready. "
+                f"{n_gap} {_plural(n_gap, 'section')} will be drafted with no "
+                "source data — treat those as unverified."
+            )
+        issues.sort(key=lambda i: (0 if i.severity == "blocker" else 1, i.binding_id))
+        return PreflightReport(
+            verdict=verdict,
+            headline=headline,
+            sources=specs,
+            issues=issues,
+            sections_without_data=without_data,
+            blocked=blocked,
+        )
+
+    # -- run lifecycle -----------------------------------------------------
+
+    def validate_inputs(
+        self, key: str, raw: dict[str, str]
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        card = self.get_template(key)
+        cleaned: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        for f in card.form_fields:
+            value = str(raw.get(f.binding_id, "") or "").strip()
+            if not value:
+                if f.required:
+                    errors[f.binding_id] = f"{f.prompt} is required."
+                continue
+            if len(value) > MAX_INPUT_LEN:
+                errors[f.binding_id] = (
+                    f"Keep this under {MAX_INPUT_LEN} characters "
+                    f"(currently {len(value)})."
+                )
+                cleaned[f.binding_id] = value[:MAX_INPUT_LEN]
+                continue
+            cleaned[f.binding_id] = value
+        # Unknown keys are dropped, not surfaced — the form posts extras
+        # (evidence_folder) that are not template inputs.
+        return cleaned, errors
+
+    def create(
+        self,
+        key: str,
+        inputs: dict[str, str],
+        evidence_folder: str | None = None,
+    ) -> RunRecord:
+        card = self.get_template(key)
+        if not card.ok:
+            raise ValueError(card.error or "This template cannot be run.")
+
+        cleaned, errors = self.validate_inputs(key, inputs)
+        if errors:
+            raise ValueError("; ".join(f"{k}: {v}" for k, v in sorted(errors.items())))
+
+        report = self.preflight(key, cleaned, evidence_folder)
+        if report.blocked:
+            raise ValueError(report.headline)
+
+        folder, _ = self._resolve_evidence(evidence_folder)
+        template = self._template_or_raise(key)
+
+        run_id = uuid.uuid4().hex[:12]
+        created = _iso()
+        primary = _primary_input(cleaned)
+        sections = [
+            SectionProgress(
+                section_id=s.section_id,
+                title=s.title,
+                level=s.level,
+                status=(
+                    "skipped"
+                    if s.generation.mode
+                    in (GenerationMode.DETERMINISTIC, GenerationMode.MANUAL)
+                    else "pending"
+                ),
+                status_label=(
+                    SECTION_LABEL["skipped"]
+                    if s.generation.mode
+                    in (GenerationMode.DETERMINISTIC, GenerationMode.MANUAL)
+                    else SECTION_LABEL["pending"]
+                ),
+            )
+            for s in template.all_sections()
+        ]
+        record = RunRecord(
+            run_id=run_id,
+            template_key=key,
+            template_title=card.title,
+            template_version=card.version,
+            template_id=card.template_id,
+            title=f"{card.title} — {primary}" if primary else card.title,
+            inputs=cleaned,
+            evidence_folder=str(folder),
+            status="queued",
+            created_at=created,
+            sections=sections,
+            preflight=list(report.issues),
+            prompt_version=PROMPT_VERSION,
+            compliance_mode="rd",
+        )
+
+        with self._lock:
+            self._records[run_id] = record
+            self._cancel_events[run_id] = threading.Event()
+            record.version = 1
+            self._flush(record)
+            if self._closed:
+                raise RuntimeError("run store is shutting down")
+            self._futures[run_id] = self._executor.submit(self._worker, run_id)
+            return copy.deepcopy(record)
+
+    def get(self, run_id: str) -> RunRecord:
+        with self._lock:
+            record = self._records.get(run_id)
+            if record is None:
+                raise KeyError(f"unknown run: {run_id!r}")
+            return copy.deepcopy(record)
+
+    def summary(self, run_id: str) -> RunSummary:
+        with self._lock:
+            record = self._records.get(run_id)
+            if record is None:
+                raise KeyError(f"unknown run: {run_id!r}")
+            return self._summary_locked(record)
+
+    def list_runs(self, limit: int = 200) -> list[RunSummary]:
+        with self._lock:
+            records = sorted(
+                self._records.values(), key=lambda r: r.created_at, reverse=True
+            )
+            return [self._summary_locked(r) for r in records[: max(0, limit)]]
+
+    def recent(self, limit: int = 3) -> list[RunSummary]:
+        return self.list_runs(limit=limit)
+
+    def progress_payload(self, run_id: str) -> dict[str, object]:
+        with self._lock:
+            record = self._records.get(run_id)
+            if record is None:
+                raise KeyError(f"unknown run: {run_id!r}")
+            record = copy.deepcopy(record)
+
+        total = len(record.sections)
+        done = sum(1 for s in record.sections if s.status in ("passed", "skipped"))
+        failed = sum(1 for s in record.sections if s.status == "failed")
+        skipped = sum(1 for s in record.sections if s.status == "skipped")
+        percent = int(round(100 * (done + failed) / total)) if total else 100
+        terminal = record.status in TERMINAL_STATUSES
+
+        return {
+            "run_id": record.run_id,
+            "version": record.version,
+            "status": record.status,
+            "status_label": STATUS_LABEL.get(record.status, record.status),
+            "terminal": terminal,
+            "poll_after_ms": 0 if terminal else POLL_AFTER_MS.get(record.status, 1500),
+            "template_key": record.template_key,
+            "template_title": record.template_title,
+            "template_version": record.template_version,
+            "title": record.title,
+            "inputs": dict(record.inputs),
+            "created_at": record.created_at,
+            "started_at": record.started_at,
+            "finished_at": record.finished_at,
+            "phase": PHASE_FOR_STATUS.get(record.status, "draft"),
+            "progress": {
+                "sections_total": total,
+                "sections_done": done,
+                "sections_failed": failed,
+                "sections_skipped": skipped,
+                "percent": percent if not terminal else 100,
+            },
+            "sections": [
+                {
+                    "section_id": s.section_id,
+                    "title": s.title,
+                    "level": s.level,
+                    "status": s.status,
+                    "status_label": s.status_label,
+                    "attempts": s.attempts,
+                    "n_paragraphs": s.n_paragraphs,
+                    "n_citations": s.n_citations,
+                    "notes": [_truncate(n, 240) for n in s.notes],
+                }
+                for s in record.sections
+            ],
+            "preflight": [i.to_dict() for i in record.preflight],
+            "totals": {
+                "documents": record.n_documents,
+                "chunks": record.n_chunks,
+                "citations": record.n_citations,
+                "audit_events": record.n_audit_events,
+            },
+            "instance_id": record.instance_id,
+            "model_version": record.model_version,
+            "error": record.error.to_dict() if record.error else None,
+            "result_url": f"/api/runs/{record.run_id}" if terminal else None,
+            "html_url": f"/runs/{record.run_id}",
+        }
+
+    def result_payload(self, run_id: str) -> dict[str, object]:
+        with self._lock:
+            record = self._records.get(run_id)
+            if record is None:
+                raise KeyError(f"unknown run: {run_id!r}")
+            if record.status not in TERMINAL_STATUSES:
+                raise RunNotTerminal(record.status)
+            summary = self._summary_locked(record)
+        payload = self._read_json(self._run_dir(run_id) / "result.json") or {
+            "instance": None,
+            "citations": [],
+            "audit_events": [],
+        }
+        return {
+            "run": summary.to_dict(),
+            "instance": payload.get("instance"),
+            "citations": payload.get("citations", []),
+            "audit_events": payload.get("audit_events", []),
+        }
+
+    def draft_view(self, run_id: str) -> DraftView | None:
+        with self._lock:
+            record = self._records.get(run_id)
+            if record is None:
+                raise KeyError(f"unknown run: {run_id!r}")
+            if record.status not in TERMINAL_STATUSES:
+                return None
+            cached = self._draft_cache.get(run_id)
+            if cached is not None:
+                return cached
+            snapshot = copy.deepcopy(record)
+
+        result = self._read_json(self._run_dir(run_id) / "result.json")
+        if not result or not result.get("instance"):
+            return None
+        ledger_raw = self._read_json(self._run_dir(run_id) / "sources.json") or []
+        view = _build_draft_view(snapshot, result, ledger_raw)
+        with self._lock:
+            self._draft_cache[run_id] = view
+            self._metrics[run_id] = _metrics_from_draft(view, snapshot)
+            self._records[run_id].version += 1
+            self._flush(self._records[run_id])
+        return view
+
+    def cancel(self, run_id: str) -> bool:
+        with self._lock:
+            record = self._records.get(run_id)
+            if record is None or record.status in TERMINAL_STATUSES:
+                return False
+            event = self._cancel_events.get(run_id)
+            if event is not None:
+                event.set()
+            future = self._futures.get(run_id)
+            if future is not None and future.cancel():
+                self._finish_locked(record, "cancelled", None)
+            return True
+
+    def delete(self, run_id: str) -> bool:
+        with self._lock:
+            record = self._records.pop(run_id, None)
+            event = self._cancel_events.pop(run_id, None)
+            self._futures.pop(run_id, None)
+            self._draft_cache.pop(run_id, None)
+            self._metrics.pop(run_id, None)
+        if event is not None:
+            event.set()
+        if record is None:
+            return False
+        _rmtree(self._run_dir(run_id))
+        return True
+
+    # -- exports / files ---------------------------------------------------
+
+    def markdown_export(self, run_id: str) -> str:
+        summary = self.summary(run_id)
+        record = self.get(run_id)
+        draft = self.draft_view(run_id)
+        return _markdown_export(summary, record, draft)
+
+    def citations_csv(self, run_id: str) -> str:
+        summary = self.summary(run_id)
+        draft = self.draft_view(run_id)
+        return _citations_csv(summary, draft)
+
+    def source_path(self, run_id: str, doc_id: str) -> Path | None:
+        try:
+            record = self.get(run_id)
+        except KeyError:
+            return None
+        raw = str(doc_id or "")
+        for prefix in ("local://local::", "local://", "local::"):
+            if raw.startswith(prefix):
+                raw = raw[len(prefix) :]
+                break
+        if not raw:
+            return None
+        try:
+            candidate = Path(raw).resolve()
+            root = Path(record.evidence_folder).resolve()
+        except OSError:
+            return None
+        if not candidate.is_file():
+            return None
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None
+        return candidate
+
+    # -- demo + shutdown ---------------------------------------------------
+
+    def ib_demo(self) -> dict[str, object]:
+        """The synthetic Investigator's Brochure demo — unchanged shape.
+
+        Moved verbatim from `main.py::generate_ib_demo`.
+        """
+        from collections import Counter
+
+        template = ReportTemplate.model_validate(
+            json.loads(IB_TEMPLATE.read_text(encoding="utf-8"))
+        )
+        documents, chunks_by_doc = load_corpus(CORPUS_DIR)
+        generator = ReportGenerator(
+            fill_client=build_llm_client(),
+            api_gate=build_api_gate(),
+            max_retries_per_section=1,
+        )
+        result = generator.generate(
+            template=template,
+            documents=list(documents),
+            chunks_by_doc=dict(chunks_by_doc),
+            free_text_inputs={
+                "product_name": "XYZ-001",
+                "compound_id": "XYZ-001",
+                "target_name": "Kinase Z",
+                "indication_keyword": "Kinase Z",
+                "sponsor_name": "Acme Therapeutics (synthetic)",
+                "ib_edition": "Edition 1.0",
+                "release_date": "2026-05-27",
+            },
+            project_id="dev/api-demo",
+            tenant_id="gsk",
+            actor_id="api-gateway-dev",
+        )
+        action_counts = Counter(e.action.value for e in result.audit_events)
+        return {
+            "instance_id": result.instance.instance_id,
+            "template": (
+                f"{result.instance.template_id}@{result.instance.template_version}"
+            ),
+            "documents_ingested": len(documents),
+            "chunks": sum(len(c) for c in chunks_by_doc.values()),
+            "sections": len(template.all_sections()),
+            "citations": len(result.citations),
+            "audit_events": len(result.audit_events),
+            "audit_by_action": dict(action_counts),
+            "note": (
+                "Generated with the dev-server StubLlmClient. Wire Vertex AI "
+                "Claude (VertexLlmClient) for real text."
+            ),
+        }
+
+    def shutdown(self, wait: bool = False) -> None:
+        with self._lock:
+            self._closed = True
+            for event in self._cancel_events.values():
+                event.set()
+        try:
+            self._executor.shutdown(wait=wait, cancel_futures=True)
+        except TypeError:  # pragma: no cover - Python < 3.9
+            self._executor.shutdown(wait=wait)
+
+    def prune(self, keep: int = KEEP_RUNS) -> int:
+        """Drop the oldest runs beyond `keep`. Returns the number removed."""
+        with self._lock:
+            records = sorted(
+                self._records.values(), key=lambda r: r.created_at, reverse=True
+            )
+            doomed = [
+                r.run_id
+                for r in records[keep:]
+                if r.status in TERMINAL_STATUSES
+            ]
+        for run_id in doomed:
+            self.delete(run_id)
+        return len(doomed)
+
+    # -- internals: persistence -------------------------------------------
+
+    def _run_dir(self, run_id: str) -> Path:
+        return self._root / run_id
+
+    @staticmethod
+    def _read_json(path: Path) -> dict[str, Any] | list[Any] | None:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def _write_json(self, path: Path, payload: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.parent / (path.name + ".tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+
+    def _flush(self, record: RunRecord) -> None:
+        """Write `run.json`. Caller holds the lock."""
+        payload = record.to_dict()
+        payload["metrics"] = self._metrics.get(record.run_id, {})
+        try:
+            self._write_json(self._run_dir(record.run_id) / "run.json", payload)
+        except OSError:
+            pass
+
+    def _rehydrate(self) -> None:
+        for run_json in sorted(self._root.glob("*/run.json")):
+            run_id = run_json.parent.name
+            payload = self._read_json(run_json)
+            if not isinstance(payload, dict):
+                self._records[run_id] = _unreadable_record(run_id)
+                continue
+            try:
+                record = _record_from_dict(payload)
+            except Exception:  # noqa: BLE001 - a corrupt file must not kill boot
+                self._records[run_id] = _unreadable_record(run_id)
+                continue
+            metrics = payload.get("metrics")
+            if isinstance(metrics, dict):
+                self._metrics[run_id] = {
+                    str(k): int(v) for k, v in metrics.items() if isinstance(v, (int, float))
+                }
+            if record.status not in TERMINAL_STATUSES:
+                record.status = "interrupted"
+                record.finished_at = record.finished_at or _iso()
+                record.error = RunError(
+                    kind="process_restart",
+                    message=(
+                        "The app restarted while this run was still drafting, so "
+                        "it was stopped."
+                    ),
+                    detail=(
+                        "No worker thread survives a restart. Start the run again "
+                        "from the template — nothing was written to any source."
+                    ),
+                )
+                for section in record.sections:
+                    if section.status in ("running", "retrying"):
+                        section.status = "failed"
+                        section.status_label = SECTION_LABEL["failed"]
+                    elif section.status == "pending":
+                        section.status = "cancelled"
+                        section.status_label = SECTION_LABEL["cancelled"]
+                record.version += 1
+                self._records[run_id] = record
+                self._flush(record)
+            else:
+                self._records[run_id] = record
+            self._cancel_events[run_id] = threading.Event()
+
+    # -- internals: mutation ----------------------------------------------
+
+    def _mutate(self, run_id: str, mutator: Any) -> None:
+        with self._lock:
+            record = self._records.get(run_id)
+            if record is None:
+                return
+            mutator(record)
+            record.version += 1
+            self._flush(record)
+
+    def _finish_locked(
+        self, record: RunRecord, status: RunStatus, error: RunError | None
+    ) -> None:
+        record.status = status
+        record.finished_at = _iso()
+        record.error = error
+        for section in record.sections:
+            if section.status in ("running", "retrying"):
+                section.status = "failed" if status == "failed" else "cancelled"
+                section.status_label = SECTION_LABEL[section.status]
+                section.finished_at = record.finished_at
+            elif section.status == "pending":
+                section.status = "cancelled"
+                section.status_label = SECTION_LABEL["cancelled"]
+        record.version += 1
+        self._flush(record)
+
+    def _summary_locked(self, record: RunRecord) -> RunSummary:
+        metrics = self._metrics.get(record.run_id, {})
+        started = _parse_iso(record.started_at)
+        finished = _parse_iso(record.finished_at)
+        duration = (finished - started).total_seconds() if started and finished else None
+        n_sections = len(record.sections)
+        n_cited = metrics.get("n_sections_cited", 0)
+        return RunSummary(
+            run_id=record.run_id,
+            template_key=record.template_key,
+            template_title=record.template_title,
+            template_version=record.template_version,
+            title=record.title,
+            inputs=dict(record.inputs),
+            primary_input=_primary_input(record.inputs),
+            evidence_folder=record.evidence_folder,
+            status=record.status,
+            status_label=STATUS_LABEL.get(record.status, record.status),
+            status_state=STATUS_STATE.get(record.status, "neutral"),
+            terminal=record.status in TERMINAL_STATUSES,
+            created_at=record.created_at,
+            started_at=record.started_at,
+            finished_at=record.finished_at,
+            created_human=_human_ts(record.created_at),
+            duration_s=duration,
+            duration_human=_human_duration(duration),
+            model_version=record.model_version,
+            instance_id=record.instance_id,
+            n_sections=n_sections,
+            n_sections_cited=n_cited,
+            n_sections_no_data=metrics.get("n_sections_no_data", 0),
+            n_sections_failed=metrics.get(
+                "n_sections_failed",
+                sum(1 for s in record.sections if s.status == "failed"),
+            ),
+            n_claims=metrics.get("n_claims", 0),
+            n_claims_cited=metrics.get("n_claims_cited", 0),
+            n_uncited_numbers=metrics.get("n_uncited_numbers", 0),
+            n_citations=metrics.get("n_citations", record.n_citations),
+            n_bindings_resolved=metrics.get("n_bindings_resolved", 0),
+            n_bindings_deferred=metrics.get("n_bindings_deferred", 0),
+            coverage_text=f"{n_cited}/{n_sections} sections cited"
+            if n_sections
+            else "no sections",
+        )
+
+    # -- internals: the worker --------------------------------------------
+
+    def _worker(self, run_id: str) -> None:
+        cancel = self._cancel_events.get(run_id) or threading.Event()
+        try:
+            self._run_generation(run_id, cancel)
+        except RunCancelled:
+            with self._lock:
+                record = self._records.get(run_id)
+                if record is not None and record.status not in TERMINAL_STATUSES:
+                    self._finish_locked(record, "cancelled", None)
+        except BaseException as exc:  # noqa: BLE001 - a run must never hang forever
+            detail = "".join(traceback.format_exception(exc))[-4000:]
+            with self._lock:
+                record = self._records.get(run_id)
+                if record is not None and record.status not in TERMINAL_STATUSES:
+                    self._finish_locked(
+                        record,
+                        "failed",
+                        RunError(
+                            kind=type(exc).__name__,
+                            message=_truncate(str(exc) or type(exc).__name__, 400),
+                            detail=detail,
+                        ),
+                    )
+            if not isinstance(exc, Exception):
+                raise
+        finally:
+            with self._lock:
+                self._futures.pop(run_id, None)
+
+    def _run_generation(self, run_id: str, cancel: threading.Event) -> None:
+        record = self.get(run_id)
+        if cancel.is_set():
+            raise RunCancelled("cancelled before start")
+
+        template = self._template_or_raise(record.template_key)
+        section_index = {s.section_id: s for s in template.all_sections()}
+
+        self._mutate(
+            run_id,
+            lambda r: (
+                setattr(r, "status", "preflight"),
+                setattr(r, "started_at", _iso()),
+            ),
+        )
+
+        # --- ingest -------------------------------------------------------
+        self._mutate(run_id, lambda r: setattr(r, "status", "ingesting"))
+        documents, chunks_by_doc = load_corpus(record.evidence_folder)
+        n_chunks = sum(len(c) for c in chunks_by_doc.values())
+        self._mutate(
+            run_id,
+            lambda r: (
+                setattr(r, "n_documents", len(documents)),
+                setattr(r, "n_chunks", n_chunks),
+            ),
+        )
+        if cancel.is_set():
+            raise RunCancelled("cancelled during ingestion")
+
+        # --- wiring -------------------------------------------------------
+        sql_gate = build_sql_gate()
+        api_gate = build_api_gate()
+        store = InMemoryAuditStore()
+        sink = ProgressAuditSink(
+            store,
+            on_event=lambda e: self._on_audit_event(run_id, e),
+            cancel_event=cancel,
+        )
+        generator = ReportGenerator(
+            fill_client=build_llm_client(),
+            audit_sink=sink,
+            safety_gate=sql_gate,
+            api_gate=api_gate,
+            max_retries_per_section=MAX_RETRIES_PER_SECTION,
+        )
+
+        self._mutate(run_id, lambda r: setattr(r, "status", "planning"))
+        result = generator.generate(
+            template=template,
+            documents=list(documents),
+            chunks_by_doc=dict(chunks_by_doc),
+            free_text_inputs=dict(record.inputs),
+            compliance_mode="rd",
+            project_id=f"local/{run_id}",
+            tenant_id="gsk",
+            actor_id="report-generator-ui",
+        )
+        if cancel.is_set():
+            raise RunCancelled("cancelled during generation")
+
+        # --- persist the engine output -----------------------------------
+        payload = {
+            "instance": result.instance.model_dump(mode="json"),
+            "citations": [c.model_dump(mode="json") for c in result.citations],
+            "audit_events": [e.model_dump(mode="json") for e in result.audit_events],
+        }
+        self._write_json(self._run_dir(run_id) / "result.json", payload)
+
+        # --- sources ledger (the GeneratedTable the engine never emits) ---
+        ledger = _build_ledger(
+            template=template,
+            inputs=dict(record.inputs),
+            documents=documents,
+            chunks_by_doc=chunks_by_doc,
+            citations=payload["citations"],
+            sql_gate=sql_gate,
+            api_gate=api_gate,
+            evidence_folder=Path(record.evidence_folder),
+        )
+        self._write_json(
+            self._run_dir(run_id) / "sources.json", [row.to_dict() for row in ledger]
+        )
+
+        model_version = _model_version_from_events(result.audit_events)
+        n_citations = len(result.citations)
+        n_events = len(result.audit_events)
+        instance_id = result.instance.instance_id
+        plan_summary = result.instance.plan_summary
+        finished = _iso()
+
+        # Build the review view BEFORE flipping the run to `completed`, so the
+        # history table never sees a terminal run with empty metrics.
+        snapshot = self.get(run_id)
+        snapshot.instance_id = instance_id
+        snapshot.model_version = model_version
+        snapshot.n_citations = n_citations
+        snapshot.n_audit_events = n_events
+        snapshot.finished_at = finished
+        snapshot.status = "completed"
+        try:
+            view: DraftView | None = _build_draft_view(
+                snapshot, payload, [row.to_dict() for row in ledger]
+            )
+            metrics = _metrics_from_draft(view, snapshot) if view else {}
+        except Exception:  # noqa: BLE001 - a presenter bug must not fail the run
+            view, metrics = None, {}
+
+        def _complete(r: RunRecord) -> None:
+            r.instance_id = instance_id
+            r.model_version = model_version
+            r.n_citations = n_citations
+            r.n_audit_events = n_events
+            r.plan_summary = plan_summary
+            r.status = "completed"
+            r.finished_at = finished
+            if view is not None:
+                self._draft_cache[run_id] = view
+                self._metrics[run_id] = metrics
+            for generated in _walk_generated(result.instance.sections):
+                sp = _find_section(r, generated.section_id)
+                if sp is None:
+                    continue
+                template_section = section_index.get(generated.section_id)
+                is_stub_section = template_section is not None and (
+                    template_section.generation.mode
+                    in (GenerationMode.DETERMINISTIC, GenerationMode.MANUAL)
+                )
+                sp.n_paragraphs = len(generated.paragraphs)
+                sp.notes = list(generated.critique_notes)
+                sp.finished_at = r.finished_at
+                if is_stub_section:
+                    sp.status = "skipped"
+                elif generated.critique_status == "failed_after_retries":
+                    sp.status = "failed"
+                else:
+                    sp.status = "passed"
+                sp.status_label = SECTION_LABEL[sp.status]
+            for sp in r.sections:
+                if sp.status in ("pending", "running", "retrying"):
+                    sp.status = "failed"
+                    sp.status_label = SECTION_LABEL["failed"]
+                    sp.finished_at = r.finished_at
+
+        self._mutate(run_id, _complete)
+
+    def _on_audit_event(self, run_id: str, event: AuditEvent) -> None:
+        """Mirror one engine audit event into live run progress.
+
+        Exactly one mutation (and therefore one `run.json` write) per event.
+        Called from the worker thread via `ProgressAuditSink`.
+        """
+        action = event.action.value
+        extra = event.extra or {}
+        section_id = event.target_id
+        attempt = int(extra.get("attempt", 1) or 1)
+        version = event.target_version or ""
+        notes = [str(n) for n in (event.notes or [])]
+
+        def _apply(r: RunRecord) -> None:
+            r.n_audit_events += 1
+
+            if action == AuditAction.GENERATION_REQUESTED.value:
+                r.status = "planning"
+                r.instance_id = event.target_id
+                return
+
+            if action == AuditAction.GENERATION_PLAN_COMPLETED.value:
+                r.status = "generating"
+                return
+
+            if action == AuditAction.GENERATION_SECTION_FILLED.value:
+                r.status = "generating"
+                if version:
+                    r.model_version = version
+                sp = _find_section(r, section_id)
+                if sp is None:
+                    return
+                sp.status = "running"
+                sp.status_label = SECTION_LABEL["running"]
+                sp.attempts = attempt
+                sp.n_paragraphs = int(extra.get("n_paragraphs", 0) or 0)
+                sp.n_citations = int(extra.get("n_citations", 0) or 0)
+                sp.started_at = sp.started_at or _iso()
+                return
+
+            if action == AuditAction.GENERATION_SECTION_CRITIQUED.value:
+                sp = _find_section(r, section_id)
+                if sp is None:
+                    return
+                sp.attempts = attempt
+                sp.notes = notes
+                if str(extra.get("verdict", "")) == "pass":
+                    sp.status = "passed"
+                    sp.finished_at = _iso()
+                elif attempt <= MAX_RETRIES_PER_SECTION:
+                    sp.status = "retrying"
+                else:
+                    sp.status = "failed"
+                    sp.finished_at = _iso()
+                sp.status_label = SECTION_LABEL[sp.status]
+                return
+
+            if action == AuditAction.CITATION_CREATED.value:
+                r.n_citations += 1
+                return
+
+            if action == AuditAction.GENERATION_COMPLETED.value:
+                r.n_citations = int(extra.get("n_citations", 0) or 0) or r.n_citations
+
+        self._mutate(run_id, _apply)
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers used by RunStore
+# ---------------------------------------------------------------------------
+
+
+def _find_section(record: RunRecord, section_id: str) -> SectionProgress | None:
+    for section in record.sections:
+        if section.section_id == section_id:
+            return section
+    return None
+
+
+def _walk_generated(sections: list[Any]) -> list[Any]:
+    """Depth-first flatten of a `GeneratedSection` tree."""
+    out: list[Any] = []
+
+    def walk(items: list[Any]) -> None:
+        for item in items:
+            out.append(item)
+            walk(list(getattr(item, "children", []) or []))
+
+    walk(list(sections))
+    return out
+
+
+def _model_version_from_events(events: list[AuditEvent]) -> str:
+    for event in events:
+        if (
+            event.action == AuditAction.GENERATION_SECTION_FILLED
+            and event.target_version
+        ):
+            return event.target_version
+    return "stub"
+
+
+def _primary_input(inputs: dict[str, str]) -> str:
+    for key in _PRIMARY_INPUT_ORDER:
+        value = (inputs.get(key) or "").strip()
+        if value:
+            return value
+    for value in inputs.values():
+        if str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _unreadable_record(run_id: str) -> RunRecord:
+    return RunRecord(
+        run_id=run_id,
+        template_key="",
+        template_title="",
+        template_version="",
+        template_id="",
+        title=f"Unreadable run — {run_id}",
+        inputs={},
+        evidence_folder="",
+        status="interrupted",
+        created_at=_iso(datetime.fromtimestamp(0, tz=timezone.utc)),
+        finished_at=_iso(),
+        error=RunError(
+            kind="unreadable_run",
+            message="This run's saved state could not be read.",
+            detail="var/runs/{}/run.json is missing or corrupt.".format(run_id),
+        ),
+    )
+
+
+def _record_from_dict(payload: dict[str, Any]) -> RunRecord:
+    sections = [
+        SectionProgress(
+            section_id=str(s.get("section_id", "")),
+            title=str(s.get("title", "")),
+            level=int(s.get("level", 2) or 2),
+            status=s.get("status", "pending"),
+            status_label=str(s.get("status_label", "")),
+            attempts=int(s.get("attempts", 0) or 0),
+            n_paragraphs=int(s.get("n_paragraphs", 0) or 0),
+            n_citations=int(s.get("n_citations", 0) or 0),
+            notes=list(s.get("notes", []) or []),
+            started_at=s.get("started_at"),
+            finished_at=s.get("finished_at"),
+        )
+        for s in payload.get("sections", []) or []
+    ]
+    preflight = [
+        PreflightIssue(
+            severity=i.get("severity", "warning"),
+            code=str(i.get("code", "")),
+            binding_id=str(i.get("binding_id", "")),
+            section_id=str(i.get("section_id", "")),
+            message=str(i.get("message", "")),
+            fix_hint=str(i.get("fix_hint", "")),
+        )
+        for i in payload.get("preflight", []) or []
+    ]
+    error_raw = payload.get("error")
+    error = (
+        RunError(
+            kind=str(error_raw.get("kind", "")),
+            message=str(error_raw.get("message", "")),
+            detail=str(error_raw.get("detail", "")),
+        )
+        if isinstance(error_raw, dict)
+        else None
+    )
+    return RunRecord(
+        run_id=str(payload["run_id"]),
+        template_key=str(payload.get("template_key", "")),
+        template_title=str(payload.get("template_title", "")),
+        template_version=str(payload.get("template_version", "")),
+        template_id=str(payload.get("template_id", "")),
+        title=str(payload.get("title", "")),
+        inputs={str(k): str(v) for k, v in (payload.get("inputs") or {}).items()},
+        evidence_folder=str(payload.get("evidence_folder", "")),
+        status=payload.get("status", "interrupted"),
+        created_at=str(payload.get("created_at", _iso())),
+        started_at=payload.get("started_at"),
+        finished_at=payload.get("finished_at"),
+        sections=sections,
+        preflight=preflight,
+        instance_id=payload.get("instance_id"),
+        model_version=str(payload.get("model_version", "stub")),
+        prompt_version=str(payload.get("prompt_version", "")),
+        compliance_mode=str(payload.get("compliance_mode", "rd")),
+        n_documents=int(payload.get("n_documents", 0) or 0),
+        n_chunks=int(payload.get("n_chunks", 0) or 0),
+        n_citations=int(payload.get("n_citations", 0) or 0),
+        n_audit_events=int(payload.get("n_audit_events", 0) or 0),
+        plan_summary=payload.get("plan_summary"),
+        error=error,
+        version=int(payload.get("version", 0) or 0),
+    )
+
+
+def _rmtree(path: Path) -> None:
+    import shutil
+
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except OSError:  # pragma: no cover - defensive
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Template introspection helpers
+# ---------------------------------------------------------------------------
+
+
+def _form_fields(sections: list[TemplateSection]) -> list[FormField]:
+    seen: dict[str, FormField] = {}
+    for section in sections:
+        for binding in section.data_bindings:
+            if not isinstance(binding, FreeTextInputBinding):
+                continue
+            existing = seen.get(binding.binding_id)
+            if existing is None:
+                seen[binding.binding_id] = FormField(
+                    binding_id=binding.binding_id,
+                    prompt=binding.prompt,
+                    required=binding.required,
+                    default=INPUT_DEFAULTS.get(binding.binding_id, ""),
+                    used_by_sections=1,
+                )
+            else:
+                existing.used_by_sections += 1
+    return list(seen.values())
+
+
+def _substitute(value: str, inputs: dict[str, str]) -> str:
+    return re.sub(
+        r"\{\{\s*report\.([\w]+)\s*\}\}",
+        lambda m: inputs.get(m.group(1)) or m.group(0),
+        str(value),
+    )
+
+
+def _params_detail(parameters: dict[str, str], inputs: dict[str, str]) -> str:
+    if not parameters:
+        return "no parameters"
+    return ", ".join(
+        f"{k} = {_substitute(v, inputs)}" for k, v in sorted(parameters.items())
+    )
+
+
+def _near_miss(query_id: str, known: list[str]) -> str | None:
+    matches = difflib.get_close_matches(query_id, known, n=1, cutoff=0.7)
+    return matches[0] if matches else None
+
+
+def _source_specs_with_codes(
+    sections: list[TemplateSection],
+    *,
+    inputs: dict[str, str],
+    evidence_folder: Path,
+) -> tuple[list[SourceSpec], dict[str, str]]:
+    """One `SourceSpec` per distinct non-input binding, in first-seen order,
+    plus the preflight `code` for every spec that is not ready."""
+    registry = query_registry()
+    known_queries = registry.ids()
+    api_registry = _api_connector_index()
+    scanned = scan_evidence_folder(evidence_folder)
+
+    order: list[str] = []
+    by_id: dict[str, SourceSpec] = {}
+    codes: dict[str, str] = {}
+
+    for section in sections:
+        for binding in section.data_bindings:
+            if isinstance(binding, FreeTextInputBinding):
+                continue
+            bid = binding.binding_id
+            if bid in by_id:
+                if section.section_id not in by_id[bid].section_ids:
+                    by_id[bid].section_ids.append(section.section_id)
+                continue
+            order.append(bid)
+            spec, code = _spec_for_binding(
+                binding,
+                section_id=section.section_id,
+                inputs=inputs,
+                registry=registry,
+                known_queries=known_queries,
+                api_registry=api_registry,
+                scanned=scanned,
+            )
+            by_id[bid] = spec
+            if code:
+                codes[bid] = code
+    return [by_id[bid] for bid in order], codes
+
+
+def _source_specs(
+    sections: list[TemplateSection],
+    *,
+    inputs: dict[str, str],
+    evidence_folder: Path,
+) -> list[SourceSpec]:
+    return _source_specs_with_codes(
+        sections, inputs=inputs, evidence_folder=evidence_folder
+    )[0]
+
+
+_API_INDEX: dict[str, frozenset[str]] | None = None
+
+
+def _api_connector_index() -> dict[str, frozenset[str]]:
+    global _API_INDEX
+    if _API_INDEX is None:
+        _API_INDEX = {
+            c.connector_id: frozenset(c.allowed_operations)
+            for c in (
+                MockConfluenceConnector(),
+                MockChemblConnector(),
+                MockClinicalTrialsConnector(),
+            )
+        }
+    return _API_INDEX
+
+
+def _spec_for_binding(
+    binding: Any,
+    *,
+    section_id: str,
+    inputs: dict[str, str],
+    registry: NamedQueryRegistry,
+    known_queries: list[str],
+    api_registry: dict[str, frozenset[str]],
+    scanned: list[_ScannedDoc],
+) -> tuple[SourceSpec, str | None]:
+    """Return the source spec and, when it is not ready, its preflight code."""
+    bid = binding.binding_id
+    sections = [section_id]
+
+    def spec(
+        kind: str,
+        label: str,
+        detail: str,
+        status: str,
+        status_text: str,
+        fix_hint: str = "",
+    ) -> SourceSpec:
+        return SourceSpec(
+            binding_id=bid,
+            kind=kind,
+            label=label,
+            detail=detail,
+            section_ids=sections,
+            status=status,
+            status_text=status_text,
+            fix_hint=fix_hint,
+        )
+
+    if isinstance(binding, NamedQueryBinding):
+        label = (
+            f"Registered query {binding.source}.{binding.query_id}"
+            if binding.source
+            else f"Registered query {binding.query_id}"
+        )
+        detail = _params_detail(binding.parameters, inputs)
+        if binding.query_id not in known_queries:
+            hint = _near_miss(binding.query_id, known_queries)
+            fix = (f"Did you mean {hint!r}? " if hint else "") + (
+                f"Add a YAML file with id: {binding.query_id} to "
+                f"{QUERIES_DIR.as_posix()}/"
+            )
+            return (
+                spec(
+                    "named_query",
+                    label,
+                    detail,
+                    "gap",
+                    f"Named query {binding.query_id!r} is not in the registry; "
+                    "sections using it will be drafted without that table.",
+                    fix,
+                ),
+                "UNKNOWN_NAMED_QUERY",
+            )
+        query = registry.get(binding.query_id)
+        params = {k: _substitute(v, inputs) for k, v in binding.parameters.items()}
+        try:
+            query.validate_args(dict(params))
+        except ValueError as exc:
+            return (
+                spec(
+                    "named_query",
+                    label,
+                    detail,
+                    "gap",
+                    f"Query parameters do not match the registry: {exc}",
+                    "Registered parameters: "
+                    + (", ".join(sorted(query.parameters)) or "none"),
+                ),
+                "BAD_QUERY_PARAMETERS",
+            )
+        n = len(query.parameters)
+        return (
+            spec(
+                "named_query",
+                label,
+                detail,
+                "ready",
+                f"Ready — registered query, {n} {_plural(n, 'parameter')}",
+            ),
+            None,
+        )
+
+    if isinstance(binding, ApiCallBinding):
+        label = f"{binding.connector_id}.{binding.endpoint}"
+        detail = _params_detail(binding.parameters, inputs)
+        allowed = api_registry.get(binding.connector_id)
+        if allowed is None:
+            known = ", ".join(sorted(api_registry)) or "none"
+            return (
+                spec(
+                    "api_call",
+                    label,
+                    detail,
+                    "gap",
+                    f"Connector {binding.connector_id!r} is not registered; this "
+                    "source will be skipped.",
+                    f"Registered connectors: {known}",
+                ),
+                "UNKNOWN_CONNECTOR",
+            )
+        if binding.endpoint not in allowed:
+            return (
+                spec(
+                    "api_call",
+                    label,
+                    detail,
+                    "gap",
+                    f"Operation {binding.endpoint!r} is not allowed on connector "
+                    f"{binding.connector_id!r}.",
+                    "Allowed operations: " + ", ".join(sorted(allowed)),
+                ),
+                "OPERATION_NOT_ALLOWED",
+            )
+        return (
+            spec(
+                "api_call",
+                label,
+                detail,
+                "ready",
+                "Ready — connector registered, operation allowed",
+            ),
+            None,
+        )
+
+    if isinstance(binding, FileSetBinding):
+        tags = {t.lower() for t in binding.filter_tags}
+        detail = "matches any of: " + (", ".join(binding.filter_tags) or "(no tags)")
+        matches = [d for d in scanned if tags & set(d.tags)] if tags else []
+        if not matches:
+            return (
+                spec(
+                    "file_set",
+                    "Evidence documents",
+                    detail,
+                    "gap",
+                    "No documents in the evidence folder match any of these tags.",
+                    "Tags come from the folder names above each file. Put the "
+                    "documents in a folder named after one of the tags.",
+                ),
+                "NO_MATCHING_DOCUMENTS",
+            )
+        n = len(matches)
+        return (
+            spec(
+                "file_set",
+                "Evidence documents",
+                detail,
+                "ready",
+                f"Ready — {n} matching {_plural(n, 'document')}",
+            ),
+            None,
+        )
+
+    if isinstance(binding, FileRefBinding):
+        found = any(d.path and d.path in binding.doc_id for d in scanned)
+        if not found:
+            return (
+                spec(
+                    "file_ref",
+                    "Evidence document",
+                    binding.doc_id,
+                    "gap",
+                    "That document is not in the evidence folder.",
+                    "Copy the file into the evidence folder, or edit the template.",
+                ),
+                "NO_MATCHING_DOCUMENTS",
+            )
+        return (
+            spec(
+                "file_ref",
+                "Evidence document",
+                binding.doc_id,
+                "ready",
+                "Ready — document found",
+            ),
+            None,
+        )
+
+    if isinstance(binding, SqlQueryBinding):
+        return (
+            spec(
+                "sql_query",
+                f"Inline SQL against {binding.source or 'the warehouse'}",
+                _truncate(binding.sql, 160),
+                "unavailable",
+                "Inline SQL is never executed here — only registered queries run.",
+                "Promote this SQL to a reviewed named query in "
+                f"{QUERIES_DIR.as_posix()}/ and reference it by query_id.",
+            ),
+            "INLINE_SQL_NOT_APPROVED",
+        )
+
+    if isinstance(binding, ComputedMetricBinding):
+        return (
+            spec(
+                "computed_metric",
+                f"Computed metric {binding.metric_id}",
+                _params_detail(binding.parameters, inputs),
+                "unavailable",
+                "Computed metrics are not executed in this build.",
+                "Use a registered query for now.",
+            ),
+            "COMPUTED_METRIC_NOT_EXECUTED",
+        )
+
+    return (  # pragma: no cover - exhaustiveness guard
+        spec(
+            getattr(getattr(binding, "type", None), "value", "unknown"),
+            bid,
+            "",
+            "unavailable",
+            "Unrecognised binding type.",
+        ),
+        "UNKNOWN_BINDING_TYPE",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sources ledger (§7.6) — replaces the GeneratedTable the filler never emits
+# ---------------------------------------------------------------------------
+
+
+def _build_ledger(
+    *,
+    template: ReportTemplate,
+    inputs: dict[str, str],
+    documents: list[CanonicalDocument],
+    chunks_by_doc: dict[str, list[ParsedChunk]],
+    citations: list[dict[str, Any]],
+    sql_gate: SqlSafetyGate,
+    api_gate: ApiCallGate,
+    evidence_folder: Path,
+) -> list[LedgerRow]:
+    resolver = BindingResolver(
+        chunks_by_doc=chunks_by_doc,
+        docs_by_id={d.doc_id: d for d in documents},
+        free_text_inputs=inputs,
+        safety_gate=sql_gate,
+        api_gate=api_gate,
+    )
+    doc_titles = {d.doc_id: (d.title or Path(d.source_id).stem) for d in documents}
+
+    # Join keys: SQL/API citations set source_doc_id == binding_id; file
+    # citations carry retrieval_chunk_id.
+    cited_binding_ids = {
+        str(c.get("source_doc_id"))
+        for c in citations
+        if c.get("source_type") in ("sql", "api")
+    }
+    cited_chunk_ids = {
+        str(c.get("retrieval_chunk_id"))
+        for c in citations
+        if c.get("retrieval_chunk_id")
+    }
+
+    specs = {
+        s.binding_id: s
+        for s in _source_specs(
+            template.all_sections(), inputs=inputs, evidence_folder=evidence_folder
+        )
+    }
+
+    rows: list[LedgerRow] = []
+    seen: set[str] = set()
+    for section in template.all_sections():
+        for binding in section.data_bindings:
+            if isinstance(binding, FreeTextInputBinding):
+                continue
+            bid = binding.binding_id
+            if bid in seen:
+                for row in rows:
+                    if row.binding_id == bid and section.section_id not in row.section_ids:
+                        row.section_ids.append(section.section_id)
+                continue
+            seen.add(bid)
+            rows.append(
+                _ledger_row(
+                    binding=binding,
+                    section_id=section.section_id,
+                    resolver=resolver,
+                    spec=specs.get(bid),
+                    doc_titles=doc_titles,
+                    cited_binding_ids=cited_binding_ids,
+                    cited_chunk_ids=cited_chunk_ids,
+                )
+            )
+    return rows
+
+
+class _OneBindingSection:
+    """Minimal duck-type so `BindingResolver.resolve` can run one binding."""
+
+    def __init__(self, binding: Any) -> None:
+        self.data_bindings = [binding]
+
+
+def _ledger_row(
+    *,
+    binding: Any,
+    section_id: str,
+    resolver: BindingResolver,
+    spec: SourceSpec | None,
+    doc_titles: dict[str, str],
+    cited_binding_ids: set[str],
+    cited_chunk_ids: set[str],
+) -> LedgerRow:
+    bid = binding.binding_id
+    kind = getattr(getattr(binding, "type", None), "value", "unknown")
+    label = spec.label if spec else bid
+    detail = (spec.detail.split("|", 1)[-1] if spec else "") or ""
+    fix_hint = spec.fix_hint if spec and spec.fix_hint else None
+
+    columns: list[str] = []
+    rows: list[list[str]] = []
+    row_count: int | None = None
+    deferred: str | None = None
+    sql_text: str | None = None
+
+    try:
+        resolved = resolver.resolve(_OneBindingSection(binding)).bindings[0]  # type: ignore[arg-type]
+    except Exception as exc:  # noqa: BLE001 - the ledger must never fail the page
+        resolved = None
+        deferred = f"Could not resolve this source: {exc}"
+
+    is_cited = False
+    if resolved is not None:
+        deferred = resolved.deferred_note
+        if resolved.query_result is not None:
+            q = resolved.query_result
+            columns = list(q.columns)
+            rows = [["" if c is None else str(c) for c in row] for row in q.rows]
+            row_count = q.row_count
+            is_cited = bid in cited_binding_ids
+        elif resolved.api_result is not None:
+            a = resolved.api_result
+            columns = list(a.columns)
+            rows = [["" if c is None else str(c) for c in row] for row in a.rows]
+            row_count = a.row_count
+            is_cited = bid in cited_binding_ids
+        elif resolved.chunks:
+            per_doc: dict[str, int] = {}
+            for chunk in resolved.chunks:
+                per_doc[chunk.source_doc_id] = per_doc.get(chunk.source_doc_id, 0) + 1
+            columns = ["Document", "Extracts in pool"]
+            rows = [
+                [doc_titles.get(doc_id, Path(doc_id).name), str(n)]
+                for doc_id, n in sorted(per_doc.items())
+            ]
+            row_count = len(resolved.chunks)
+            is_cited = any(c.chunk_id in cited_chunk_ids for c in resolved.chunks)
+
+    if isinstance(binding, NamedQueryBinding):
+        try:
+            sql_text = query_registry().get(binding.query_id).sql
+        except KeyError:
+            sql_text = None
+
+    unit = "extract" if kind in ("file_set", "file_ref") else "row"
+    if deferred or (row_count is None and not columns):
+        status = "unavailable"
+        status_text = "Not resolved — nothing was pulled for this source."
+    elif is_cited:
+        status = "cited"
+        status_text = (
+            f"Pulled and cited — {row_count} {_plural(row_count or 0, unit)}"
+        )
+    else:
+        status = "resolved_uncited"
+        status_text = (
+            f"Pulled but not cited — {row_count} "
+            f"{_plural(row_count or 0, unit)} went unused by the draft"
+        )
+
+    return LedgerRow(
+        binding_id=bid,
+        kind=kind,
+        label=label,
+        detail=detail,
+        status=status,
+        status_text=status_text,
+        row_count=row_count,
+        section_ids=[section_id],
+        citation_ns=[],
+        deferred_note=deferred,
+        fix_hint=fix_hint,
+        columns=columns,
+        rows=rows,
+        sql=sql_text,
+    )
+
+
+def _ledger_from_dicts(payload: list[Any]) -> list[LedgerRow]:
+    out: list[LedgerRow] = []
+    for item in payload or []:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            LedgerRow(
+                binding_id=str(item.get("binding_id", "")),
+                kind=str(item.get("kind", "")),
+                label=str(item.get("label", "")),
+                detail=str(item.get("detail", "")),
+                status=str(item.get("status", "unavailable")),
+                status_text=str(item.get("status_text", "")),
+                row_count=item.get("row_count"),
+                section_ids=[str(s) for s in item.get("section_ids", []) or []],
+                citation_ns=[int(n) for n in item.get("citation_ns", []) or []],
+                deferred_note=item.get("deferred_note"),
+                fix_hint=item.get("fix_hint"),
+                columns=[str(c) for c in item.get("columns", []) or []],
+                rows=[[str(c) for c in row] for row in item.get("rows", []) or []],
+                sql=item.get("sql"),
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Draft presenters (§7.7)
+# ---------------------------------------------------------------------------
+
+
+def _flatten_instance_sections(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+
+    def walk(items: list[dict[str, Any]]) -> None:
+        for item in items:
+            out.append(item)
+            walk(list(item.get("children") or []))
+
+    walk(list(sections or []))
+    return out
+
+
+def _source_uri_parts(citation: dict[str, Any]) -> tuple[str, str, str]:
+    """(title, uri_display, uri_copy) for a citation's `source_uri`."""
+    uri = str(citation.get("source_uri", ""))
+    display = uri
+    for prefix in ("local://local::", "local://", "local::"):
+        if display.startswith(prefix):
+            display = display[len(prefix) :]
+            break
+    title = Path(display).name if display else uri
+    return (title or uri), display, display
+
+
+def _locator_rows(
+    citation: dict[str, Any], retrieved_human: str
+) -> tuple[list[tuple[str, str]], str, str, str]:
+    """(<dt>/<dd> rows, caption, version_label, version_value)."""
+    source_type = str(citation.get("source_type", ""))
+    locator = citation.get("locator") or {}
+    version = str(citation.get("source_doc_version", ""))
+    rows: list[tuple[str, str]] = []
+    caption = SOURCE_CAPTION.get(source_type, "")
+
+    if source_type == "pdf":
+        if locator.get("page") is not None:
+            rows.append(("Page", str(locator["page"])))
+        if locator.get("paragraph_index") is not None:
+            rows.append(("Paragraph", str(locator["paragraph_index"])))
+        trail = locator.get("heading_trail") or []
+        if trail:
+            rows.append(("Heading trail", " › ".join(str(t) for t in trail)))
+        rows.append(("Content hash", version))
+        rows.append(("Retrieved", retrieved_human))
+        return rows, caption, "Content hash", version
+
+    if source_type == "docx":
+        trail = locator.get("heading_trail") or []
+        rows.append(("Heading trail", " › ".join(str(t) for t in trail) or "(top)"))
+        if locator.get("paragraph_index") is not None:
+            rows.append(("Paragraph", str(locator["paragraph_index"])))
+        rows.append(("Content hash", version))
+        rows.append(("Retrieved", retrieved_human))
+        return rows, caption, "Content hash", version
+
+    if source_type == "xlsx":
+        rows.append(("Sheet", str(locator.get("sheet", ""))))
+        rows.append(("Cell range", str(locator.get("cell_range", ""))))
+        rows.append(("Content hash", version))
+        rows.append(("Retrieved", retrieved_human))
+        return rows, caption, "Content hash", version
+
+    if source_type == "sql":
+        rows.append(("Query", str(locator.get("query_id", ""))))
+        params = locator.get("query_parameters") or {}
+        rows.append(
+            (
+                "Parameters",
+                ", ".join(f"{k} = {v}" for k, v in sorted(params.items())) or "none",
+            )
+        )
+        if locator.get("row_filter"):
+            rows.append(("Row filter", str(locator["row_filter"])))
+        rows.append(("Rows returned", version))
+        rows.append(("Retrieved", retrieved_human))
+        return (
+            rows,
+            caption.format(retrieved=retrieved_human),
+            "Rows returned",
+            version,
+        )
+
+    if source_type == "api":
+        endpoint = str(locator.get("endpoint", ""))
+        connector, _, operation = endpoint.partition(".")
+        rows.append(("Connector", connector or endpoint))
+        rows.append(("Operation", operation or "—"))
+        params = locator.get("api_parameters") or {}
+        rows.append(
+            (
+                "Parameters",
+                ", ".join(f"{k} = {v}" for k, v in sorted(params.items())) or "none",
+            )
+        )
+        rows.append(("Rows returned", version))
+        rows.append(("Retrieved", retrieved_human))
+        return rows, caption, "Rows returned", version
+
+    rows.append(("Retrieved", retrieved_human))
+    return rows, caption, "Version", version
+
+
+def _build_draft_view(
+    record: RunRecord,
+    result: dict[str, Any],
+    ledger_raw: list[Any],
+) -> DraftView:
+    instance = result.get("instance") or {}
+    instance_id = str(instance.get("instance_id", "")) or (record.instance_id or "")
+    citations_raw: list[dict[str, Any]] = list(result.get("citations") or [])
+    citations_by_id = {str(c.get("citation_id")): c for c in citations_raw}
+    generated_sections = _flatten_instance_sections(list(instance.get("sections") or []))
+
+    # --- pass 1: number citations by first appearance in document order ---
+    numbering: dict[str, int] = {}
+    first_use: dict[str, tuple[str, str, str]] = {}  # cid -> (section_id, title, claim)
+    for gen in generated_sections:
+        section_id = str(gen.get("section_id", ""))
+        section_title = str(gen.get("title", ""))
+        for paragraph in gen.get("paragraphs") or []:
+            for claim in paragraph.get("claims") or []:
+                for cid in claim.get("citation_ids") or []:
+                    cid = str(cid)
+                    if cid in numbering:
+                        continue
+                    numbering[cid] = len(numbering) + 1
+                    first_use[cid] = (
+                        section_id,
+                        section_title,
+                        str(claim.get("text", "")),
+                    )
+    for cid in citations_by_id:
+        if cid not in numbering:
+            numbering[cid] = len(numbering) + 1
+            first_use.setdefault(cid, ("", "", ""))
+
+    integrity_errors = 0
+
+    def _ref_for(cid: str, approx: bool) -> CitationRef:
+        nonlocal integrity_errors
+        citation = citations_by_id.get(cid)
+        if citation is None:
+            integrity_errors += 1
+            return CitationRef(
+                n=0,
+                citation_id=cid,
+                source_type="computed",
+                aria_label=(
+                    "Broken citation — the draft references a source that was "
+                    "not captured."
+                ),
+                approx=approx,
+            )
+        n = numbering[cid]
+        source_type = str(citation.get("source_type", "computed"))
+        title, _, _ = _source_uri_parts(citation)
+        return CitationRef(
+            n=n,
+            citation_id=cid,
+            source_type=source_type,
+            aria_label=(
+                f"Citation {n}, {SOURCE_WORD.get(source_type, source_type)}: {title}"
+                + (" (approximate placement)" if approx else "")
+            ),
+            approx=approx,
+        )
+
+    # --- pass 2: sections, paragraphs, anchoring --------------------------
+    ledger = _ledger_from_dicts(ledger_raw)
+    ledger_by_id = {row.binding_id: row for row in ledger}
+    citation_ns_by_binding: dict[str, list[int]] = {}
+    citation_ids_by_binding: dict[str, list[str]] = {}
+    for cid, citation in citations_by_id.items():
+        if str(citation.get("source_type")) in ("sql", "api"):
+            binding_id = str(citation.get("source_doc_id"))
+            citation_ns_by_binding.setdefault(binding_id, []).append(numbering[cid])
+            citation_ids_by_binding.setdefault(binding_id, []).append(cid)
+
+    section_views: list[SectionView] = []
+    outline: list[OutlineItem] = []
+    total_claims = 0
+    total_claims_cited = 0
+    total_uncited_numbers = 0
+    coverage_rows: list[tuple[str, list[int]]] = []
+    coverage_columns = [row.binding_id for row in ledger]
+
+    for gen in generated_sections:
+        section_id = str(gen.get("section_id", ""))
+        title = str(gen.get("title", ""))
+        level = int(gen.get("level", 2) or 2)
+        critique_status = str(gen.get("critique_status", "pending"))
+        critique_notes = [str(n) for n in gen.get("critique_notes") or []]
+
+        paragraphs: list[ParagraphView] = []
+        section_cids: set[str] = set()
+        section_uncited = 0
+        for p_idx, paragraph in enumerate(gen.get("paragraphs") or []):
+            view = _anchor_paragraph(p_idx, paragraph, _ref_for)
+            paragraphs.append(view)
+            section_uncited += view.n_uncited_numbers
+            for claim in paragraph.get("claims") or []:
+                total_claims += 1
+                cids = [str(c) for c in claim.get("citation_ids") or []]
+                if cids:
+                    total_claims_cited += 1
+                section_cids.update(cids)
+        total_uncited_numbers += section_uncited
+
+        # Deterministic data blocks for this section, from the ledger.
+        tables = [
+            _table_view(
+                ledger_by_id[bid],
+                citation_ns_by_binding.get(bid, []),
+                citation_ids_by_binding.get(bid, []),
+                record,
+            )
+            for bid in _section_binding_ids(ledger, section_id)
+            if bid in ledger_by_id
+        ]
+
+        n_section_citations = len(section_cids)
+        if critique_status == "failed_after_retries":
+            band: BandKind = "failed"
+            band_title = "Checks failed after a retry"
+            band_body = (
+                "The automated check flagged this section and the retry did not "
+                "clear it. Read the notes below and rewrite anything you cannot "
+                "verify."
+            )
+        elif n_section_citations == 0:
+            band = "no_data"
+            band_title = "No source data"
+            band_body = (
+                "No source data resolved for this section. Narrative only — "
+                "treat every statement as unverified."
+            )
+        else:
+            band = "none"
+            band_title = ""
+            band_body = ""
+
+        section_views.append(
+            SectionView(
+                section_id=section_id,
+                title=title,
+                level=level,
+                heading_tag=f"h{min(max(level, 2), 4)}",
+                critique_status=critique_status,
+                critique_notes=critique_notes,
+                notes_short=[_truncate(n, 240) for n in critique_notes],
+                paragraphs=paragraphs,
+                tables=tables,
+                n_citations=n_section_citations,
+                n_uncited_numbers=section_uncited,
+                band=band,
+                band_title=band_title,
+                band_body=band_body,
+            )
+        )
+        outline.append(
+            OutlineItem(
+                section_id=section_id,
+                title=title,
+                level=level,
+                state="error"
+                if band == "failed"
+                else ("warn" if band == "no_data" or section_uncited else "ok"),
+                label=(
+                    "Checks failed"
+                    if band == "failed"
+                    else (
+                        "No source data"
+                        if band == "no_data"
+                        else (
+                            f"{section_uncited} uncited "
+                            f"{_plural(section_uncited, 'number')}"
+                            if section_uncited
+                            else f"{n_section_citations} "
+                            f"{_plural(n_section_citations, 'citation')}"
+                        )
+                    )
+                ),
+            )
+        )
+
+        counts: list[int] = []
+        for bid in coverage_columns:
+            ns = set(citation_ns_by_binding.get(bid, []))
+            counts.append(
+                sum(1 for cid in section_cids if numbering.get(cid, -1) in ns)
+                if ns
+                else _file_citation_count(section_cids, citations_by_id, bid, ledger_by_id)
+            )
+        coverage_rows.append((title, counts))
+
+    # --- pass 3: citation appendix ---------------------------------------
+    citation_views: list[CitationView] = []
+    for cid, n in sorted(numbering.items(), key=lambda kv: kv[1]):
+        citation = citations_by_id.get(cid)
+        if citation is None:
+            continue
+        citation_views.append(
+            _citation_view(
+                n=n,
+                citation=citation,
+                first_use=first_use.get(cid, ("", "", "")),
+                run_id=record.run_id,
+                instance_id=instance_id,
+            )
+        )
+
+    # --- ledger citation numbers -----------------------------------------
+    for row in ledger:
+        row.citation_ns = sorted(citation_ns_by_binding.get(row.binding_id, []))
+        if not row.citation_ns and row.kind in ("file_set", "file_ref"):
+            row.citation_ns = sorted(
+                {
+                    numbering[cid]
+                    for cid, c in citations_by_id.items()
+                    if str(c.get("source_type")) in ("pdf", "docx", "xlsx")
+                    and _doc_in_ledger_row(c, row)
+                }
+            )
+
+    n_cited_rows = sum(1 for r in ledger if r.status == "cited" or r.citation_ns)
+    n_unavailable = sum(1 for r in ledger if r.status == "unavailable")
+    ledger_summary = (
+        f"{len(ledger)} bound {_plural(len(ledger), 'source')} · "
+        f"{n_cited_rows} cited in the draft · "
+        f"{n_unavailable} could not be resolved"
+    )
+
+    # --- trust bar --------------------------------------------------------
+    n_no_data = sum(1 for s in section_views if s.band == "no_data")
+    n_failed = sum(1 for s in section_views if s.band == "failed")
+    n_citations = len(citation_views)
+    clean = (
+        n_no_data == 0
+        and n_failed == 0
+        and total_uncited_numbers == 0
+        and integrity_errors == 0
+        and n_citations > 0
+    )
+    if integrity_errors or n_failed:
+        state = "error"
+    elif not clean:
+        state = "warn"
+    else:
+        state = "ok"
+    if n_citations == 0:
+        headline = (
+            "No citations at all — nothing in this draft is backed by a source."
+        )
+    elif clean:
+        headline = (
+            f"{total_claims_cited} of {total_claims} claims cited across "
+            f"{len(section_views)} sections; no uncited numbers."
+        )
+    else:
+        parts = []
+        if n_no_data:
+            parts.append(f"{n_no_data} {_plural(n_no_data, 'section')} with no data")
+        if n_failed:
+            parts.append(f"{n_failed} failed {_plural(n_failed, 'check')}")
+        if total_uncited_numbers:
+            parts.append(
+                f"{total_uncited_numbers} uncited "
+                f"{_plural(total_uncited_numbers, 'number')}"
+            )
+        if integrity_errors:
+            parts.append(
+                f"{integrity_errors} broken {_plural(integrity_errors, 'citation')}"
+            )
+        headline = (
+            f"{total_claims_cited} of {total_claims} claims cited — "
+            + ", ".join(parts)
+            + ". Verify before use."
+        )
+
+    trust = TrustBar(
+        n_sections=len(section_views),
+        n_claims=total_claims,
+        n_claims_cited=total_claims_cited,
+        n_uncited_numbers=total_uncited_numbers,
+        n_sections_no_data=n_no_data,
+        n_sections_failed=n_failed,
+        n_citations=n_citations,
+        n_integrity_errors=integrity_errors,
+        clean=clean,
+        state=state,
+        headline=headline,
+    )
+
+    events = [
+        _event_view(e, {s.section_id: s.title for s in section_views})
+        for e in result.get("audit_events") or []
+    ]
+
+    notice = _notice_for(record, [s.title for s in section_views if s.band == "no_data"])
+
+    return DraftView(
+        trust=trust,
+        outline=outline,
+        sections=section_views,
+        citations=citation_views,
+        ledger=ledger,
+        ledger_summary=ledger_summary,
+        coverage_columns=coverage_columns,
+        coverage_rows=coverage_rows,
+        events=events,
+        notice=notice,
+        hollow=n_citations == 0,
+    )
+
+
+def _notice_for(record: RunRecord, hollow_sections: list[str]) -> str:
+    notice = DRAFT_NOTICE.format(
+        date=_human_ts(record.finished_at or record.created_at),
+        template_id=record.template_id or record.template_key,
+        version=record.template_version,
+        model_version=record.model_version,
+    )
+    if hollow_sections:
+        notice += DRAFT_NOTICE_GAPS.format(sections="; ".join(hollow_sections))
+    return notice
+
+
+def _section_binding_ids(ledger: list[LedgerRow], section_id: str) -> list[str]:
+    return [row.binding_id for row in ledger if section_id in row.section_ids]
+
+
+def _doc_in_ledger_row(citation: dict[str, Any], row: LedgerRow) -> bool:
+    """Does this file citation come from a document this ledger row pulled?
+
+    File-set rows list documents by their display title, which is the file
+    stem — so the join key is the stem, not the full filename.
+    """
+    if row.kind not in ("file_set", "file_ref"):
+        return False
+    stem = Path(str(citation.get("source_doc_id", ""))).stem
+    if not stem:
+        return False
+    return any(stem == (cell or "").strip() for cells in row.rows for cell in cells)
+
+
+def _file_citation_count(
+    section_cids: set[str],
+    citations_by_id: dict[str, dict[str, Any]],
+    binding_id: str,
+    ledger_by_id: dict[str, LedgerRow],
+) -> int:
+    row = ledger_by_id.get(binding_id)
+    if row is None or row.kind not in ("file_set", "file_ref"):
+        return 0
+    total = 0
+    for cid in section_cids:
+        citation = citations_by_id.get(cid)
+        if citation is None:
+            continue
+        if str(citation.get("source_type")) not in ("pdf", "docx", "xlsx"):
+            continue
+        if _doc_in_ledger_row(citation, row):
+            total += 1
+    return total
+
+
+def _table_view(
+    row: LedgerRow,
+    citation_ns: list[int],
+    citation_ids: list[str],
+    record: RunRecord,
+) -> DataTableView:
+    n = citation_ns[0] if citation_ns else None
+    cid = citation_ids[0] if citation_ids else None
+    if row.status == "unavailable":
+        status = "unavailable"
+    elif citation_ns or row.status == "cited":
+        status = "cited"
+    else:
+        status = "uncited"
+    caption = f"{row.label} — {row.binding_id}"
+    vh_note = (
+        "Deterministic data table. Values inserted unchanged from "
+        f"{BINDING_KIND_LABEL.get(row.kind, row.kind)} {row.binding_id}; "
+        "not written by the model."
+    )
+    return DataTableView(
+        binding_id=row.binding_id,
+        caption=caption,
+        columns=list(row.columns),
+        rows=[list(r) for r in row.rows],
+        source_label=row.label,
+        row_count=row.row_count or 0,
+        citation_n=n,
+        citation_id=cid,
+        retrieved_human=_human_ts(record.finished_at or record.created_at),
+        status=status,
+        deferred_note=row.deferred_note,
+        vh_note=vh_note,
+    )
+
+
+def _anchor_paragraph(
+    para_idx: int, paragraph: dict[str, Any], ref_for: Any
+) -> ParagraphView:
+    text = str(paragraph.get("text", ""))
+    claims = list(paragraph.get("claims") or [])
+    norm_text, index_map = _normalize_with_map(text)
+
+    candidates: list[tuple[int, int, int, str, int]] = []  # rank, -len, start, tier, idx
+    tiers: dict[int, str] = {}
+    spans: dict[int, tuple[int, int]] = {}
+    for idx, claim in enumerate(claims):
+        found = _find_claim_span(text, norm_text, index_map, str(claim.get("text", "")))
+        if found is None:
+            tiers[idx] = "unanchored"
+            continue
+        start, end, tier = found
+        candidates.append((_TIER_RANK[tier], -(end - start), start, tier, idx))
+        spans[idx] = (start, end)
+        tiers[idx] = tier
+
+    accepted: dict[int, tuple[int, int, str]] = {}
+    taken: list[tuple[int, int]] = []
+    for _rank, _neg_len, start, tier, idx in sorted(candidates):
+        end = spans[idx][1]
+        if any(start < t_end and end > t_start for t_start, t_end in taken):
+            tiers[idx] = "unanchored"
+            continue
+        taken.append((start, end))
+        accepted[idx] = (start, end, tier)
+
+    def _claim_view(idx: int, span_text: str) -> ClaimView:
+        claim = claims[idx]
+        cids = [str(c) for c in claim.get("citation_ids") or []]
+        approx = tiers.get(idx) == "sentence"
+        return ClaimView(
+            claim_idx=idx,
+            anchor=tiers.get(idx, "unanchored"),  # type: ignore[arg-type]
+            text=span_text,
+            citations=[ref_for(cid, approx) for cid in cids],
+            uncited=not cids,
+        )
+
+    segments: list[Segment] = []
+    n_uncited = 0
+    cursor = 0
+    for idx, (start, end, _tier) in sorted(accepted.items(), key=lambda kv: kv[1][0]):
+        if start > cursor:
+            marks, flagged = _number_marks(text[cursor:start])
+            segments.append(
+                Segment(kind="text", text=text[cursor:start], claim=None, marks=marks)
+            )
+            n_uncited += flagged
+        span_text = text[start:end]
+        segments.append(
+            Segment(
+                kind="claim",
+                text=span_text,
+                claim=_claim_view(idx, span_text),
+                marks=None,
+            )
+        )
+        cursor = end
+    if cursor < len(text):
+        marks, flagged = _number_marks(text[cursor:])
+        segments.append(Segment(kind="text", text=text[cursor:], claim=None, marks=marks))
+        n_uncited += flagged
+
+    orphans = [
+        _claim_view(idx, str(claims[idx].get("text", "")))
+        for idx in range(len(claims))
+        if idx not in accepted
+    ]
+
+    return ParagraphView(
+        para_idx=para_idx,
+        segments=segments,
+        n_uncited_numbers=n_uncited,
+        orphan_claims=orphans,
+    )
+
+
+def _citation_view(
+    *,
+    n: int,
+    citation: dict[str, Any],
+    first_use: tuple[str, str, str],
+    run_id: str,
+    instance_id: str,
+) -> CitationView:
+    source_type = str(citation.get("source_type", "computed"))
+    retrieved_iso = str(citation.get("retrieved_at", ""))
+    retrieved_human = _human_ts(retrieved_iso)
+    title, uri_display, uri_copy = _source_uri_parts(citation)
+    rows, caption, version_label, version_value = _locator_rows(citation, retrieved_human)
+    snippet = str(citation.get("snippet", ""))
+    doc_id = str(citation.get("source_doc_id", ""))
+    locator = citation.get("locator") or {}
+    if source_type == "sql":
+        title = str(locator.get("query_id") or doc_id or title)
+    elif source_type == "api":
+        title = str(locator.get("endpoint") or doc_id or title)
+
+    open_url: str | None = None
+    if source_type in ("pdf", "docx", "xlsx") and doc_id:
+        from urllib.parse import quote
+
+        open_url = f"/runs/{run_id}/source/{quote(doc_id, safe='')}"
+        page = (citation.get("locator") or {}).get("page")
+        if source_type == "pdf" and page:
+            open_url += f"#page={page}"
+
+    snippet_grid: list[list[str]] | None = None
+    if source_type == "xlsx" and snippet:
+        snippet_grid = [line.split("\t") for line in snippet.splitlines() if line.strip()]
+
+    claim_text = first_use[2]
+    chips = [
+        NumberChip(
+            token=token,
+            found=_number_found_in(token, snippet),
+            label=(
+                f"{token} — found in snippet"
+                if _number_found_in(token, snippet)
+                else f"{token} — not found in the captured "
+                f"{len(snippet)}-character snippet"
+            ),
+        )
+        for token in _number_tokens(claim_text)
+    ]
+
+    return CitationView(
+        n=n,
+        citation_id=str(citation.get("citation_id", "")),
+        source_type=source_type,
+        source_word=SOURCE_WORD.get(source_type, source_type),
+        title=title,
+        uri_display=uri_display,
+        uri_copy=uri_copy,
+        open_url=open_url,
+        locator_rows=rows,
+        snippet=snippet,
+        snippet_grid=snippet_grid,
+        retrieved_iso=retrieved_iso,
+        retrieved_human=retrieved_human,
+        version_label=version_label,
+        version_value=version_value,
+        number_chips=chips,
+        claim_text=claim_text,
+        section_id=first_use[0],
+        section_title=first_use[1],
+        chunk_id=citation.get("retrieval_chunk_id"),
+        doc_id=doc_id,
+        instance_id=instance_id,
+        caption=caption,
+    )
+
+
+def _event_view(event: dict[str, Any], titles: dict[str, str]) -> EventView:
+    action = str(event.get("action", ""))
+    group, label = AUDIT_GROUP.get(
+        action, ("section", action.replace("_", " ").capitalize())
+    )
+    target_id = str(event.get("target_id", ""))
+    target_type = str(event.get("target_type", ""))
+    if target_type == "section":
+        target = f"{target_id} · {titles.get(target_id, '')}".strip(" ·")
+    elif target_type == "report_instance":
+        target = "This report"
+    else:
+        target = target_id
+    extra = event.get("extra") or {}
+    pairs = [
+        (_EXTRA_LABEL.get(str(k), str(k).replace("_", " ").capitalize()), str(v))
+        for k, v in extra.items()
+        if k != "report_instance_id" and v not in (None, "")
+    ]
+    return EventView(
+        ts_human=_human_ts(str(event.get("timestamp_utc", ""))),
+        action=action,
+        action_label=label,
+        target=target,
+        notes=[_truncate(n, 240) for n in event.get("notes") or []],
+        extra_pairs=pairs,
+        group=group,
+    )
+
+
+def _metrics_from_draft(view: DraftView, record: RunRecord) -> dict[str, int]:
+    return {
+        "n_sections_cited": sum(1 for s in view.sections if s.n_citations > 0),
+        "n_sections_no_data": view.trust.n_sections_no_data,
+        "n_sections_failed": view.trust.n_sections_failed,
+        "n_claims": view.trust.n_claims,
+        "n_claims_cited": view.trust.n_claims_cited,
+        "n_uncited_numbers": view.trust.n_uncited_numbers,
+        "n_citations": view.trust.n_citations,
+        "n_integrity_errors": view.trust.n_integrity_errors,
+        "n_bindings_resolved": sum(
+            1 for r in view.ledger if r.status != "unavailable"
+        ),
+        "n_bindings_deferred": sum(
+            1 for r in view.ledger if r.status == "unavailable"
+        ),
+        "n_documents": record.n_documents,
+        "n_chunks": record.n_chunks,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Exports
+# ---------------------------------------------------------------------------
+
+
+def _markdown_export(
+    summary: RunSummary, record: RunRecord, draft: DraftView | None
+) -> str:
+    out: list[str] = []
+    out.append(f"# {record.title}")
+    out.append("")
+    if draft is not None:
+        out.append(f"> **{draft.notice}**")
+    else:
+        out.append(
+            "> **AI-generated draft for human review. This run produced no draft "
+            f"— status: {summary.status_label}.**"
+        )
+    out.append(">")
+    out.append(f"> {STUB_LLM_WARNING}")
+    out.append("")
+    out.append("| | |")
+    out.append("|---|---|")
+    out.append(f"| Report type | {record.template_title} ({record.template_key}) |")
+    out.append(f"| Template | {record.template_id}@{record.template_version} |")
+    out.append(f"| Run | {record.run_id} |")
+    out.append(f"| Created | {summary.created_human} |")
+    out.append(f"| Status | {summary.status_label} |")
+    out.append(f"| Model | {record.model_version} |")
+    out.append(f"| Prompt version | {record.prompt_version} |")
+    out.append(f"| Mode | R&D / discovery |")
+    out.append(f"| Evidence folder | {record.evidence_folder} |")
+    for key, value in sorted(record.inputs.items()):
+        out.append(f"| Input · {key} | {value} |")
+    out.append("")
+
+    if draft is None:
+        out.append("_No draft was produced for this run._")
+        if record.error:
+            out.append("")
+            out.append(f"**{record.error.kind}** — {record.error.message}")
+        return "\n".join(out) + "\n"
+
+    out.append(f"_{draft.trust.headline}_")
+    out.append("")
+
+    for section in draft.sections:
+        out.append(f"{'#' * min(max(section.level, 2), 4)} {section.title}")
+        out.append("")
+        if section.band != "none":
+            out.append(f"> **{section.band_title}.** {section.band_body}")
+            out.append("")
+        for paragraph in section.paragraphs:
+            buf: list[str] = []
+            for segment in paragraph.segments:
+                if segment.kind == "claim" and segment.claim is not None:
+                    marker = "".join(f"[{c.n}]" for c in segment.claim.citations)
+                    buf.append(segment.text + marker)
+                else:
+                    buf.append(segment.text)
+            out.append(" ".join("".join(buf).split()))
+            out.append("")
+            for claim in paragraph.orphan_claims:
+                marker = "".join(f"[{c.n}]" for c in claim.citations)
+                flag = "" if claim.citations else " *(uncited)*"
+                out.append(f"- {claim.text}{marker}{flag}")
+            if paragraph.orphan_claims:
+                out.append("")
+        for table in section.tables:
+            out.append(f"**{table.caption}** — {table.source_label}")
+            out.append("")
+            if table.deferred_note or not table.columns:
+                out.append(
+                    f"> Not resolved. {table.deferred_note or 'No data was pulled.'}"
+                )
+                out.append("")
+                continue
+            out.append("| " + " | ".join(table.columns) + " |")
+            out.append("|" + "|".join("---" for _ in table.columns) + "|")
+            for row in table.rows:
+                out.append("| " + " | ".join(str(c) for c in row) + " |")
+            out.append("")
+            out.append(f"_{table.vh_note}_")
+            out.append("")
+        if section.notes_short:
+            out.append("_Check notes:_")
+            for note in section.notes_short:
+                out.append(f"- {note}")
+            out.append("")
+
+    out.append("## References")
+    out.append("")
+    for citation in draft.citations:
+        out.append(f"**[{citation.n}]** {citation.title} — {citation.source_word}")
+        out.append("")
+        for term, value in citation.locator_rows:
+            out.append(f"- {term}: {value}")
+        out.append(f"- Source: {citation.uri_display}")
+        if citation.caption:
+            out.append(f"- Note: {citation.caption}")
+        out.append("")
+        snippet = _truncate(citation.snippet, 500)
+        if snippet:
+            out.append(f"> {snippet}")
+            out.append("")
+
+    out.append("## Sources pulled")
+    out.append("")
+    out.append(f"_{draft.ledger_summary}_")
+    out.append("")
+    out.append("| Source | Kind | Status | Rows | Cited as |")
+    out.append("|---|---|---|---|---|")
+    for row in draft.ledger:
+        ns = ", ".join(f"[{n}]" for n in row.citation_ns) or "—"
+        out.append(
+            f"| {row.binding_id} | {BINDING_KIND_LABEL.get(row.kind, row.kind)} | "
+            f"{row.status_text} | {row.row_count if row.row_count is not None else '—'} "
+            f"| {ns} |"
+        )
+    out.append("")
+    return "\n".join(out) + "\n"
+
+
+_CSV_COLUMNS = [
+    "n",
+    "citation_id",
+    "source_type",
+    "source_word",
+    "title",
+    "source_uri",
+    "locator",
+    "version_label",
+    "version_value",
+    "retrieved_at",
+    "section_id",
+    "section_title",
+    "claim_text",
+    "snippet",
+    "chunk_id",
+    "doc_id",
+    "run_id",
+    "instance_id",
+    "template",
+    "model_version",
+    "notice",
+]
+
+
+def _citations_csv(summary: RunSummary, draft: DraftView | None) -> str:
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(_CSV_COLUMNS)
+    if draft is None:
+        return buffer.getvalue()
+    template = f"{summary.template_key}@{summary.template_version}"
+    for citation in draft.citations:
+        writer.writerow(
+            [
+                citation.n,
+                citation.citation_id,
+                citation.source_type,
+                citation.source_word,
+                citation.title,
+                citation.uri_display,
+                "; ".join(f"{t}: {v}" for t, v in citation.locator_rows),
+                citation.version_label,
+                citation.version_value,
+                citation.retrieved_iso,
+                citation.section_id,
+                citation.section_title,
+                citation.claim_text,
+                citation.snippet,
+                citation.chunk_id or "",
+                citation.doc_id,
+                summary.run_id,
+                citation.instance_id,
+                template,
+                summary.model_version,
+                draft.notice,
+            ]
+        )
+    return buffer.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Process-wide singleton
+# ---------------------------------------------------------------------------
+
+_STORE: RunStore | None = None
+_STORE_LOCK = threading.Lock()
+
+
+def get_store() -> RunStore:
+    """Process-wide `RunStore` singleton. Thread-safe and idempotent."""
+    global _STORE
+    if _STORE is None:
+        with _STORE_LOCK:
+            if _STORE is None:
+                _STORE = RunStore()
+    return _STORE
+
+
+__all__ = [
+    "Anchor",
+    "BandKind",
+    "CitationRef",
+    "CitationView",
+    "ClaimView",
+    "CORPUS_DIR",
+    "DataTableView",
+    "DRAFT_NOTICE",
+    "DraftView",
+    "EDC_SQLITE",
+    "EventView",
+    "FormField",
+    "INPUT_DEFAULTS",
+    "LedgerRow",
+    "MAX_INPUT_LEN",
+    "MAX_WORKERS",
+    "NumberChip",
+    "OutlineItem",
+    "ParagraphView",
+    "PreflightIssue",
+    "PreflightReport",
+    "QUERIES_DIR",
+    "REPO_ROOT",
+    "RUNS_ROOT",
+    "Readiness",
+    "RunCancelled",
+    "RunError",
+    "RunNotTerminal",
+    "RunRecord",
+    "RunStatus",
+    "RunStore",
+    "RunSummary",
+    "SECTION_LABEL",
+    "STATUS_LABEL",
+    "STUB_LLM_WARNING",
+    "SectionOutline",
+    "SectionProgress",
+    "SectionStatus",
+    "SectionView",
+    "Segment",
+    "Severity",
+    "SourceSpec",
+    "TEMPLATES_DIR",
+    "TERMINAL_STATUSES",
+    "TemplateCard",
+    "TolerantSqlSafetyGate",
+    "TrustBar",
+    "build_api_gate",
+    "build_llm_client",
+    "build_sql_gate",
+    "get_store",
+    "load_corpus",
+    "query_registry",
+]

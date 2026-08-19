@@ -1,0 +1,1168 @@
+{% import "base.html" as ui without context %}
+{% extends "base.html" %}
+{#
+  run.html — ENG-4
+  ---------------------------------------------------------------------------
+  ONE template, four states, selected by the normative decision table in §3.3:
+
+      if not run.terminal          -> progress view
+      elif run.status == "failed"  -> failure card THEN the partial draft
+      elif tab == "sources"        -> sources ledger
+      elif tab == "log"            -> event stream
+      else                         -> cited draft   (default)
+
+  #rg-refs (references appendix) and #rg-inspector (inspector shell) are
+  rendered ONLY by the draft body — app.js clones <article id="ref-N"> out of
+  the appendix into the inspector. There is no citation fetch and no
+  client-side rendering of report content anywhere.
+
+  Context (§3.3): request, nav_active, run, record, tab, draft, poll_url,
+  tabs, partial. Every shared macro comes from base.html via `ui.` and is
+  context-free. The local macros below take everything they need as
+  arguments for the same reason. The "safe" filter is banned everywhere in this
+  app — model-written prose must stay escaped.
+#}
+
+{#- ========================================================================
+    NAME COLLISION GUARD — read before editing.
+
+    base.html defines a macro called `tabs`. When this template extends
+    base.html, the parent's root runs AFTER this template's root and writes
+    its macros into the same context, so inside {% block %} the name `tabs`
+    resolves to that macro and no longer to the `tabs` context variable from
+    §3.3. Capture the real value here, while the context is still ours.
+    (Any other context variable that shares a name with a base.html macro
+    would need the same treatment; `tabs` is the only one run.html has.)
+    ===================================================================== -#}
+{% set _tab_items = tabs | default([], true) %}
+
+{#- ========================================================================
+    LOCAL HELPERS — private to this template, not shared macros.
+    ===================================================================== -#}
+
+{#- One run of prose between claims. `marks` is documented as
+    (fragment, is_uncited_number); a 3-tuple or a string kind is also
+    tolerated so a digit inside a compound code can render as
+    rg-num--ignored rather than as a false uncited-number warning. -#}
+{%- macro _prose(marks, fallback) -%}
+  {%- if marks -%}
+    {%- for m in marks -%}
+      {%- set frag = m[0] -%}
+      {%- set flag = m[1] if m | length > 1 else false -%}
+      {%- set ignored = m[2] if m | length > 2 else false -%}
+      {%- if flag is string -%}
+        {%- if flag == "uncited" -%}<mark class="rg-uncited" title="Number not covered by a citation">{{ frag }}</mark>
+        {%- elif flag == "ignored" -%}<span class="rg-num--ignored" title="Part of an identifier">{{ frag }}</span>
+        {%- else -%}{{ frag }}{%- endif -%}
+      {%- elif ignored -%}<span class="rg-num--ignored" title="Part of an identifier">{{ frag }}</span>
+      {%- elif flag -%}<mark class="rg-uncited" title="Number not covered by a citation">{{ frag }}</mark>
+      {%- else -%}{{ frag }}{%- endif -%}
+    {%- endfor -%}
+  {%- else -%}{{ fallback }}{%- endif -%}
+{%- endmacro -%}
+
+{#- A claim plus its citation markers. NOTHING may sit between the closing
+    </span> of the claim text and the first marker (§8.4), or the marker
+    detaches from the sentence on line wrap. -#}
+{#- An uncited claim used to be marked by the warn tint alone. Colour must
+    never be the only channel (§8), and the paragraph-level .rg-para__flags
+    cluster does not cover this case — it counts uncited NUMBERS, and a claim
+    can be uncited without containing one. So an uncited claim gets its own
+    icon-plus-word marker in the slot where its citation would have been. -#}
+{%- macro _claim(c) -%}
+  <span class="rg-claim{{ " rg-claim--uncited" if c.uncited }}" data-claim-idx="{{ c.claim_idx }}" data-anchor="{{ c.anchor }}"
+  ><span class="rg-claim__text">{{ c.text }}</span
+  >{%- if c.citations -%}<span class="rg-cite-group"
+    >{%- for ref in c.citations -%}
+      {%- if ref.n and ref.n > 0 -%}{{ ui.cite_marker(ref) }}
+      {%- else -%}{{ ui.status_chip("error", "Citation record missing") }}{%- endif -%}
+    {%- endfor -%}</span
+  >{%- elif c.uncited -%}<span class="rg-claim__noncite" title="No citation supports this statement"
+    >{{- ui.icon("warn", "rg-icon--warn rg-icon--sm") }}<span class="rg-vh">no citation supports this statement</span></span
+  >{%- endif -%}</span
+  >
+{%- endmacro -%}
+
+{#- Reuse ui.cite_marker for a deterministic data block by rebuilding a
+    CitationRef-shaped mapping from the matching CitationView. -#}
+{%- macro _table_marker(citation_views, n) -%}
+  {%- set _hits = citation_views | selectattr("n", "equalto", n) | list -%}
+  {%- if _hits -%}
+    {%- set c = _hits[0] -%}
+    {{- ui.cite_marker({
+          "n": c.n,
+          "citation_id": c.citation_id,
+          "source_type": c.source_type,
+          "aria_label": "Citation " ~ c.n ~ ", " ~ c.source_word ~ ", " ~ c.title,
+          "approx": false}) -}}
+  {%- endif -%}
+{%- endmacro -%}
+
+
+{#- ========================================================================
+    THE DRAFT BODY — used by the default view AND by the failed-run partial
+    draft. Everything it needs is an argument; it reads no globals.
+    ===================================================================== -#}
+{%- macro _draft_body(d, run, record, request) -%}
+{%- set _STATE_ICON = {"ok": "check", "warn": "warn", "error": "alert",
+                       "running": "clock", "neutral": "dot"} -%}
+{%- set _BAND_STATE = {"failed": "error", "no_data": "warn", "none": "neutral"} -%}
+{%- set _sources_href = (request.url_for("run_detail", run_id=run.run_id) | string) ~ "?tab=sources" -%}
+
+<div class="rg-review" id="rg-app"
+     data-run-id="{{ run.run_id }}"
+     data-instance-id="{{ run.instance_id or "" }}"
+     data-cite-display="markers"
+     data-filter="all"
+     data-js="off">
+
+  {# ---- non-dismissible draft notice (§8.6) -------------------------- #}
+  <aside class="rg-notice" role="note" aria-label="Draft notice">
+    {{ ui.icon("warn", "rg-icon--warn") }}
+    <span>{{ d.notice }}</span>
+  </aside>
+
+  {% if "stub" in (record.model_version | lower) %}
+    <p>{{ ui.status_chip("warn",
+        "Stub LLM — the narrative is placeholder text. Citations and data are real; the prose is not.") }}</p>
+  {% endif %}
+
+  {# ---- trust bar, or the hollow-run alarm --------------------------- #}
+  {% if d.hollow %}
+    <div class="rg-banner rg-banner--error" role="alert">
+      <span class="rg-banner__icon">{{ ui.icon("alert", "rg-icon--error") }}</span>
+      <div class="rg-banner__body">
+        <p class="rg-banner__title">Nothing in this draft is cited</p>
+        <p>
+          This run captured no citations at all. Every sentence below is narrative
+          with no source behind it — treat the whole document as unverified.
+        </p>
+        {% if run.status != "failed" %}
+          <p><a class="rg-link" href="{{ _sources_href }}">See which sources failed to resolve</a></p>
+        {% endif %}
+      </div>
+    </div>
+  {% else %}
+    <div class="rg-reviewbar">
+      <p class="rg-row">{{ ui.status_chip(d.trust.state, d.trust.headline) }}</p>
+
+      <ul class="rg-row">
+        <li class="rg-reviewbar__stat rg-count">
+          <span class="rg-count__n">{{ d.trust.n_claims_cited }}/{{ d.trust.n_claims }}</span>
+          <span class="rg-count__label">claims cited</span>
+        </li>
+        <li class="rg-reviewbar__stat rg-count">
+          <span class="rg-count__n">{{ d.trust.n_citations }}</span>
+          <span class="rg-count__label">citations</span>
+        </li>
+        <li class="rg-reviewbar__stat rg-count">
+          <span class="rg-count__n">{{ d.trust.n_uncited_numbers }}</span>
+          <span class="rg-count__label">uncited numbers</span>
+        </li>
+        <li class="rg-reviewbar__stat rg-count">
+          <span class="rg-count__n">{{ d.trust.n_sections_no_data }}</span>
+          <span class="rg-count__label">sections with no data</span>
+        </li>
+        <li class="rg-reviewbar__stat rg-count">
+          <span class="rg-count__n">{{ d.trust.n_sections_failed }}</span>
+          <span class="rg-count__label">sections failing checks</span>
+        </li>
+      </ul>
+
+      <div class="rg-reviewbar__controls">
+        <div class="rg-filters" role="group" aria-label="How citations are shown" data-js-only>
+          <span class="rg-caption rg-subtle" id="rg-display-label">Citations</span>
+          <button type="button" class="rg-pill" data-set-display="markers"
+                  aria-pressed="true" aria-describedby="rg-display-label">Numbered</button>
+          <button type="button" class="rg-pill" data-set-display="quiet"
+                  aria-pressed="false" aria-describedby="rg-display-label">Quiet</button>
+          <button type="button" class="rg-pill" data-set-display="audit"
+                  aria-pressed="false" aria-describedby="rg-display-label">Audit</button>
+        </div>
+
+        <div class="rg-filters" role="group" aria-label="What is shown" data-js-only>
+          <span class="rg-caption rg-subtle" id="rg-filter-label">Show</span>
+          <button type="button" class="rg-pill" data-set-filter="all"
+                  aria-pressed="true" aria-describedby="rg-filter-label">Everything</button>
+          <button type="button" class="rg-pill" data-set-filter="flagged"
+                  aria-pressed="false" aria-describedby="rg-filter-label">Flagged only</button>
+        </div>
+
+        {#- Visible equivalents for the `c`, `f` and `r` shortcuts. These are
+            plain anchors on purpose: app.js binds only the hooks in the
+            contract's hook table, so a <button data-action="next-flag"> would
+            be a dead control with nothing behind it. Anchors need no
+            JavaScript at all and give direct access rather than next/previous
+            stepping. -#}
+        <a class="rg-link" href="#rg-refs">Skip to the source list ({{ d.citations | length }})</a>
+
+        {%- set _flagged = [] -%}
+        {%- for s in d.sections -%}
+          {%- if s.band != "none" or s.n_uncited_numbers -%}
+            {%- set _ = _flagged.append(s) -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {% if _flagged %}
+          <details class="rg-details">
+            <summary>
+              {{ ui.icon("warn", "rg-icon--warn") }}
+              Jump to a flagged passage ({{ _flagged | length }})
+            </summary>
+            <ul>
+              {% for s in _flagged %}
+                <li class="rg-body-sm">
+                  <a class="rg-link" href="#s-{{ s.section_id }}">{{ s.title }}</a>
+                  <span class="rg-subtle">
+                    {%- if s.band == "failed" %} — checks failed
+                    {%- elif s.band == "no_data" %} — no source data{% endif -%}
+                    {%- if s.n_uncited_numbers %} — {{ s.n_uncited_numbers }} uncited
+                      number{{ "s" if s.n_uncited_numbers != 1 }}{% endif -%}
+                  </span>
+                </li>
+              {% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+
+        <label class="rg-switch" for="rg-shortcuts-toggle" data-js-only>
+          <input type="checkbox" id="rg-shortcuts-toggle" checked>
+          <span class="rg-switch__track" aria-hidden="true"></span>
+          <span class="rg-switch__label">Single-key shortcuts</span>
+        </label>
+
+        <details class="rg-details" data-js-only>
+          <summary>Keyboard shortcuts</summary>
+          <dl class="rg-kv">
+            <dt><kbd>c</kbd> / <kbd>Shift</kbd>+<kbd>c</kbd></dt>
+            <dd>Next / previous citation marker — or use the source list, which
+                links to every one</dd>
+            <dt><kbd>f</kbd> / <kbd>Shift</kbd>+<kbd>f</kbd></dt>
+            <dd>Next / previous flagged passage — or use &ldquo;Jump to a flagged
+                passage&rdquo; above</dd>
+            <dt><kbd>i</kbd></dt>
+            <dd>Open the source panel for the focused marker — or click the marker</dd>
+            <dt><kbd>Esc</kbd></dt>
+            <dd>Close the source panel — or use its close button</dd>
+            <dt><kbd>r</kbd></dt>
+            <dd>Jump to the source list — or use the link above</dd>
+          </dl>
+          <p class="rg-caption rg-subtle">
+            Every shortcut has a visible equivalent, so nothing here is the only
+            way to do anything. Turn the single-key shortcuts off with the switch
+            if they interfere with your assistive technology.
+          </p>
+        </details>
+      </div>
+    </div>
+
+    {% if d.trust.n_integrity_errors %}
+      {{ ui.banner("error", "Broken citation links",
+          "Some sentences point at a citation record that is not in this run's source list. Those markers appear as errors instead of numbers. Do not treat the affected sentences as sourced.",
+          role="alert") }}
+    {% endif %}
+  {% endif %}
+
+  {# ---- document + outline rail --------------------------------------- #}
+  <div class="rg-cols">
+    <div class="rg-cols__main">
+
+      <article class="rg-doc" aria-labelledby="rg-doc-title">
+        <p class="rg-doc__title rg-h2" id="rg-doc-title">{{ run.title }}</p>
+
+        {% for s in d.sections %}
+          {%- set htag = s.heading_tag if s.heading_tag in ["h2", "h3", "h4"] else "h2" -%}
+          <section id="s-{{ s.section_id }}"
+                   class="rg-section{{ " rg-section--failed" if s.band == "failed" }}{{ " rg-section--nodata" if s.band == "no_data" }}">
+            <{{ htag }} class="rg-section__title">{{ s.title }}</{{ htag }}>
+
+            {% if s.band != "none" %}
+              {{ ui.banner(_BAND_STATE.get(s.band, "warn"), s.band_title, s.band_body,
+                           role=("alert" if s.band == "failed" else "note")) }}
+            {% endif %}
+
+            {% if s.notes_short %}
+              <details class="rg-details">
+                <summary>
+                  {{ ui.icon("warn", "rg-icon--warn") }}
+                  Checker notes ({{ s.notes_short | length }})
+                </summary>
+                <ul>
+                  {% for note in s.notes_short %}<li class="rg-body-sm">{{ note }}</li>{% endfor %}
+                </ul>
+                <p class="rg-caption rg-subtle">
+                  The checker flags any number it cannot tie to a citation. It also
+                  flags digits inside compound codes, so some notes are false
+                  alarms — read them, do not obey them.
+                </p>
+              </details>
+            {% endif %}
+
+            {# ---- model-written narrative ---------------------------- #}
+            {% for p in s.paragraphs %}
+              <div class="rg-block rg-block--narrative">
+                <div class="rg-block__body">
+                  <p class="rg-para" data-para-idx="{{ p.para_idx }}">
+                    {%- for seg in p.segments -%}
+                      {%- if seg.kind == "claim" and seg.claim -%}{{ _claim(seg.claim) }}
+                      {%- else -%}{{ _prose(seg.marks, seg.text) }}{%- endif -%}
+                    {%- endfor -%}
+                  </p>
+
+                  {% if p.n_uncited_numbers %}
+                    <p class="rg-para__flags">
+                      {{ ui.icon("warn", "rg-icon--warn") }}
+                      <span>
+                        {{ p.n_uncited_numbers }}
+                        {{- " numbers in this paragraph are" if p.n_uncited_numbers != 1 else " number in this paragraph is" }}
+                        not covered by a citation. Each one is highlighted above.
+                        Verify it against the sources before using this text.
+                      </span>
+                    </p>
+                  {% endif %}
+
+                  {% if p.orphan_claims %}
+                    <aside class="rg-rail"
+                           aria-label="Cited claims that could not be placed in the paragraph above">
+                      <p class="rg-caption">
+                        {{ ui.icon("warn", "rg-icon--warn") }}
+                        These cited claims could not be matched to any sentence
+                        above. Their sources still apply to this paragraph, but the
+                        exact wording they support is unclear.
+                      </p>
+                      <ul>
+                        {% for c in p.orphan_claims %}
+                          <li class="rg-rail__item">{{ _claim(c) }}</li>
+                        {% endfor %}
+                      </ul>
+                    </aside>
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+
+            {# ---- deterministic data, visibly not narrative ----------- #}
+            {% for t in s.tables %}
+              <div class="rg-block rg-block--data">
+                <div class="rg-block__head">
+                  <p class="rg-h3">{{ t.caption }}</p>
+                  <p class="rg-caption rg-subtle">
+                    {{ t.source_label }}
+                    {%- if t.retrieved_human %} · captured {{ t.retrieved_human }}{% endif -%}
+                    {%- if t.row_count is not none %} · {{ t.row_count }} row{{ "s" if t.row_count != 1 }}{% endif -%}
+                  </p>
+                  <p class="rg-row">
+                    {%- if t.status == "cited" -%}{{ ui.status_chip("ok", "Cited in the narrative") }}
+                    {%- elif t.status == "uncited" -%}{{ ui.status_chip("warn", "Pulled but not cited by any sentence") }}
+                    {%- else -%}{{ ui.status_chip("error", "Not available to this run") }}{%- endif -%}
+                    {%- if t.citation_n %}{{ _table_marker(d.citations, t.citation_n) }}{% endif -%}
+                  </p>
+                </div>
+                <div class="rg-block__body">
+                  {% if t.status == "unavailable" or not t.rows %}
+                    <div class="rg-banner rg-banner--error" role="note">
+                      <span class="rg-banner__icon">{{ ui.icon("alert", "rg-icon--error") }}</span>
+                      <div class="rg-banner__body">
+                        <p class="rg-banner__title">No data behind this block</p>
+                        <p>{{ t.deferred_note or "This binding resolved to zero rows." }}</p>
+                        <p class="rg-body-sm">
+                          Any statement about these values in the narrative above is
+                          unsupported.
+                        </p>
+                      </div>
+                    </div>
+                  {% else %}
+                    {#- The block head above already shows t.caption, so the
+                        <caption> element carries only the screen-reader parity
+                        sentence — no visible duplicate, no lost semantics.
+                        ui.data_table emits its own .rg-table__wrap (with the
+                        role="region" tabindex="0" that makes a horizontally
+                        scrolling table keyboard-operable); wrapping it again
+                        drew a second border and a second scroll container. -#}
+                    {{ ui.data_table(t.columns, t.rows[:25], caption="", vh_note=t.vh_note) }}
+                    {% if t.rows | length > 25 %}
+                      <p class="rg-caption rg-subtle">
+                        Showing the first 25 of {{ t.rows | length }} rows.
+                        <a class="rg-link" href="{{ _sources_href }}">See them all in the source ledger</a>.
+                      </p>
+                    {% endif %}
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+
+            {% if not s.paragraphs and not s.tables %}
+              <p class="rg-body-sm rg-subtle">
+                {{ ui.icon("warn", "rg-icon--warn") }}
+                Nothing was generated for this section.
+              </p>
+            {% endif %}
+          </section>
+        {% else %}
+          <div class="rg-empty">
+            <p class="rg-empty__title">No sections were written</p>
+          </div>
+        {% endfor %}
+      </article>
+
+      {# ---- references appendix — the inspector's source of truth ------ #}
+      <section class="rg-refs" id="rg-refs" aria-labelledby="rg-refs-title">
+        <h2 class="rg-refs__title" id="rg-refs-title">Sources for every cited statement</h2>
+        <p class="rg-body-sm rg-subtle">
+          One entry per citation, numbered by where it first appears in the draft.
+          The snippet is the text exactly as captured at retrieval time; it is not
+          re-fetched when you open this page.
+        </p>
+
+        {% for c in d.citations %}
+          <article class="rg-ref" id="ref-{{ c.n }}"
+                   data-citation-id="{{ c.citation_id }}"
+                   data-source-type="{{ c.source_type }}"
+                   aria-label="Reference {{ c.n }}, {{ c.source_word }}, {{ c.title }}">
+            <div class="rg-ref__head">
+              <span class="rg-ref__n" aria-hidden="true">{{ c.n }}</span>
+              <h3 class="rg-ref__title">{{ c.title }}</h3>
+              {{ ui.source_badge(c.source_type, c.source_word) }}
+            </div>
+
+            <p class="rg-ref__uri rg-mono">{{ c.uri_display }}</p>
+
+            {#- §7.7 already puts the version row ("Content hash" / "Rows
+                returned") and "Retrieved" inside locator_rows for most source
+                types, so only add them when the presenter left them out. -#}
+            {%- set _loc_terms = c.locator_rows | map("first") | list -%}
+            <dl class="rg-loc">
+              {% for term, value in c.locator_rows %}
+                <dt>{{ term }}</dt>
+                {% if term == "Cell range" %}
+                  <dd><span class="rg-mono" aria-hidden="true">{{ value }}</span><span class="rg-vh">{{ value | replace(":", " to ") }}</span></dd>
+                {% elif term == "Content hash" %}
+                  <dd><span class="rg-mono" aria-hidden="true">{{ value }}</span><span class="rg-vh">content hash {{ value }}</span></dd>
+                {% elif term == "Retrieved" %}
+                  <dd>{{ value }}<span class="rg-vh"> ({{ c.retrieved_iso }})</span></dd>
+                {% elif term in ["Query", "Parameters", "Row filter", "Endpoint", "Operation", "Connector"] %}
+                  <dd class="rg-mono">{{ value }}</dd>
+                {% else %}
+                  <dd>{{ value }}</dd>
+                {% endif %}
+              {% endfor %}
+              {% if c.version_label and c.version_label not in _loc_terms %}
+                <dt>{{ c.version_label }}</dt>
+                <dd class="rg-mono">{{ c.version_value }}</dd>
+              {% endif %}
+              {% if "Retrieved" not in _loc_terms %}
+                <dt>Retrieved</dt>
+                <dd>{{ c.retrieved_human }}<span class="rg-vh"> ({{ c.retrieved_iso }})</span></dd>
+              {% endif %}
+            </dl>
+
+            <div class="rg-verify">
+              <p class="rg-overline">Captured snippet</p>
+              <blockquote class="rg-verify__snippet">{{ c.snippet }}</blockquote>
+
+              {% if c.snippet_grid %}
+                {#- .rg-table__wrap scrolls horizontally, so it needs to be a
+                    focusable region or the overflow is mouse-only (WCAG 2.1.1). -#}
+                <div class="rg-table__wrap" role="region" tabindex="0"
+                     aria-label="Captured cells for reference {{ c.n }}">
+                  <table class="rg-table rg-table--compact rg-verify__grid">
+                    <caption class="rg-table__caption">
+                      The captured cells
+                      <span class="rg-vh">
+                        The same snippet laid out as the spreadsheet cells it came
+                        from. Values are unchanged from the workbook.
+                      </span>
+                    </caption>
+                    <tbody>
+                      {% for grow in c.snippet_grid %}
+                        <tr>{% for cell in grow %}<td class="rg-mono">{{ cell }}</td>{% endfor %}</tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              {% endif %}
+
+              {% if c.number_chips %}
+                <p class="rg-overline">Numbers in the cited claim, checked against that snippet</p>
+                <ul class="rg-verify__numbers">
+                  {% for chip in c.number_chips %}
+                    <li class="rg-numchip {{ "rg-numchip--ok" if chip.found else "rg-numchip--warn" }}">
+                      {%- if chip.found %}{{ ui.icon("check", "rg-icon--ok") }}
+                      {%- else %}{{ ui.icon("warn", "rg-icon--warn") }}{% endif %}
+                      <span>{{ chip.label }}</span>
+                    </li>
+                  {% endfor %}
+                </ul>
+                <p class="rg-caption rg-subtle">
+                  A number that is not in the snippet is not proof of an error — the
+                  snippet is a short capture, not the whole source. Open the source
+                  to settle it.
+                </p>
+              {% endif %}
+            </div>
+
+            <dl class="rg-kv">
+              <dt>Supports</dt>
+              <dd>{{ c.claim_text }}</dd>
+              <dt>In section</dt>
+              <dd><a class="rg-link" href="#s-{{ c.section_id }}">{{ c.section_title }}</a></dd>
+              <dt>Document</dt>
+              <dd class="rg-mono">{{ c.doc_id }}</dd>
+              {% if c.chunk_id %}
+                <dt>Passage</dt>
+                <dd class="rg-mono">{{ c.chunk_id }}</dd>
+              {% endif %}
+            </dl>
+
+            {% if c.caption %}
+              <p class="rg-caption rg-subtle">{{ ui.icon("dot") }} {{ c.caption }}</p>
+            {% endif %}
+
+            <div class="rg-ref__actions">
+              {% if c.open_url %}
+                <a class="rg-btn rg-btn--secondary" href="{{ c.open_url }}">
+                  {{ ui.icon("external", "rg-btn__icon") }}
+                  <span>Open the source file</span>
+                </a>
+              {% endif %}
+              <button type="button" class="rg-btn rg-btn--ghost rg-copy"
+                      data-copy="{{ c.uri_copy }}" data-js-only>
+                {{ ui.icon("copy", "rg-btn__icon") }}
+                <span>Copy the file path</span>
+              </button>
+              <a class="rg-link rg-link--quiet" href="#s-{{ c.section_id }}">Back to the section</a>
+              {#- Required by the contract's hook table so the clone of this
+                  article carries an unpin control into the inspector. It is
+                  data-js-only, so with scripting off (where there is no panel)
+                  it is not rendered at all. -#}
+              <button type="button" class="rg-btn rg-btn--ghost" data-action="unpin" data-js-only>
+                {{ ui.icon("close", "rg-btn__icon") }}
+                <span>Close the source panel</span>
+              </button>
+            </div>
+          </article>
+        {% else %}
+          <div class="rg-empty">
+            <p class="rg-empty__title">There are no citations in this draft</p>
+          </div>
+        {% endfor %}
+      </section>
+    </div>
+
+    <aside class="rg-cols__rail" aria-label="Section outline">
+      <div class="rg-rail-sticky">
+        <p class="rg-overline">Sections</p>
+        <ol class="rg-outline">
+          {% for item in d.outline %}
+            <li class="rg-outline__item">
+              <a class="rg-link" href="#s-{{ item.section_id }}">{{ item.title }}</a>
+              <span class="rg-outline__status">
+                {{ ui.icon(_STATE_ICON.get(item.state, "dot"), "rg-icon--" ~ item.state) }}
+                <span class="rg-caption">{{ item.label }}</span>
+              </span>
+            </li>
+          {% endfor %}
+        </ol>
+        <hr class="rg-hr">
+        <p class="rg-caption">
+          <a class="rg-link" href="#rg-refs">Sources ({{ d.citations | length }})</a>
+        </p>
+        {% if run.status != "failed" %}
+          <p class="rg-caption">
+            <a class="rg-link" href="{{ _sources_href }}">Everything this run pulled</a>
+          </p>
+        {% endif %}
+      </div>
+    </aside>
+  </div>
+
+  {# ---- inspector shell — app.js clones an <article id="ref-N"> in here -
+     ENG-1: .rg-inspector MUST include `.rg-inspector[hidden]{display:none}`
+     (or an `[hidden]{display:none!important}` reset). The id and the class
+     have to sit on the same element here — the contract puts the role and
+     the docking on .rg-inspector and the hidden toggle on #rg-inspector — so
+     any `display` declared on .rg-inspector will beat the UA [hidden] rule
+     and leave the panel permanently open. #}
+  <aside class="rg-inspector" id="rg-inspector" role="complementary"
+         aria-labelledby="rg-inspector-title" hidden>
+    <div class="rg-inspector__head">
+      <h2 class="rg-inspector__title" id="rg-inspector-title" tabindex="-1">Source detail</h2>
+      <button type="button" class="rg-inspector__close" id="rg-inspector-close"
+              aria-label="Close the source detail panel">{{ ui.icon("close") }}</button>
+    </div>
+    <div class="rg-inspector__body" id="rg-inspector-body">
+      <p class="rg-inspector__empty">
+        Choose a citation marker in the draft to see its source, the exact locator
+        and the snippet that was captured.
+      </p>
+    </div>
+  </aside>
+
+</div>
+{%- endmacro -%}
+
+
+{% block page_title %}{{ run.title }} — Report Generator Agent{% endblock %}
+
+{% block breadcrumb %}
+<nav class="rg-crumb" aria-label="Breadcrumb">
+  <a class="rg-crumb__item rg-link" href="{{ request.url_for('gallery') }}">Report types</a>
+  <a class="rg-crumb__item rg-link" href="{{ request.url_for('run_list') }}">Runs</a>
+  <span class="rg-crumb__item" aria-current="page">{{ run.title }}</span>
+</nav>
+{% endblock %}
+
+
+{% block content %}
+{#- The data-js-only <noscript> rule now lives in base.html's <head> so it
+    covers every page (the run-history shortcut toggle needs it too). -#}
+{%- set _KIND_ICON = {"named_query": "database", "sql_query": "database",
+                      "api_call": "plug", "file_set": "doc", "file_ref": "doc",
+                      "computed_metric": "dot"} -%}
+{%- set _KIND_WORD = {"named_query": "Named query", "sql_query": "Inline SQL",
+                      "api_call": "API call", "file_set": "Document set",
+                      "file_ref": "Document", "computed_metric": "Computed value"} -%}
+{%- set _LEDGER_STATE = {"cited": "ok", "resolved_uncited": "warn",
+                         "unavailable": "error"} -%}
+{%- set _EVENT_ICON = {"request": "play", "plan": "grid", "section": "doc",
+                       "citation": "external", "llm": "dot", "complete": "check"} -%}
+
+<div class="rg-stack-24">
+
+  {# ==================================================================
+     RUN HEADER — identical in every state
+     ================================================================== #}
+  <header class="rg-stack-8">
+    <div class="rg-row rg-row--between">
+      <h1 class="rg-h1">{{ run.title }}</h1>
+      {{ ui.status_chip(run.status_state, run.status_label) }}
+    </div>
+    {{ ui.meta_line([
+        ("Report type", run.template_title),
+        ("Template version", run.template_version),
+        ("Started", run.created_human),
+        ("Duration", run.duration_human),
+        ("Model", record.model_version),
+        ("Run", run.run_id),
+    ]) }}
+    {% if run.inputs %}
+      <p class="rg-body-sm rg-subtle">
+        <span class="rg-vh">Inputs: </span>
+        {%- for k, v in run.inputs.items() %}<span class="rg-mono">{{ k }}</span> = <span class="rg-mono">{{ v }}</span>{{ " · " if not loop.last }}{% endfor -%}
+      </p>
+    {% endif %}
+  </header>
+
+  {# ==================================================================
+     TOOLBAR — only the actions this state actually supports
+     ================================================================== #}
+  <div class="rg-toolbar rg-row rg-row--between">
+    <div class="rg-btns">
+      {% if not run.terminal %}
+        <form method="post" action="{{ request.url_for('cancel_run', run_id=run.run_id) }}">
+          {{ ui.btn("Cancel run", kind="danger", type="submit", icon_name="close") }}
+        </form>
+      {% else %}
+        {% if draft %}
+          {{ ui.btn("Download Markdown",
+                    href=request.url_for('export_md', run_id=run.run_id),
+                    kind=("primary" if (run.status == "completed" and tab == "draft") else "secondary"),
+                    icon_name="doc") }}
+          {{ ui.btn("Download citations (CSV)",
+                    href=request.url_for('export_citations_csv', run_id=run.run_id),
+                    kind="secondary", icon_name="grid") }}
+        {% endif %}
+        {#- A rehydrated-but-unreadable record carries no template_key, and
+            url_for() refuses an empty path parameter. There is nothing to run
+            again in that case, so offer nothing rather than a dead control. -#}
+        {% if run.template_key %}
+          {{ ui.btn("Run again with these inputs",
+                    href=(request.url_for('new_run', template_key=run.template_key) | string) ~ "?from=" ~ run.run_id,
+                    kind="secondary", icon_name="play") }}
+        {% endif %}
+      {% endif %}
+    </div>
+    <div class="rg-btns">
+      <a class="rg-link rg-link--quiet" href="{{ request.url_for('run_list') }}">All runs</a>
+    </div>
+  </div>
+
+  {% if run.terminal and draft %}
+    <p class="rg-caption rg-subtle">
+      To save a PDF, use your browser&rsquo;s Print command — the print layout drops
+      the navigation and starts the source list on a new page.
+    </p>
+  {% endif %}
+
+  {# ==================================================================
+     TAB STRIP — terminal, non-failed runs only. A failed run renders the
+     failure card whatever the tab, so it gets no tab strip (§3.3).
+     ================================================================== #}
+  {% if run.terminal and run.status != "failed" and _tab_items %}
+    {{ ui.tabs(_tab_items, tab) }}
+  {% endif %}
+
+
+{# ======================================================================
+   A.  PROGRESS VIEW — not run.terminal
+   ====================================================================== #}
+{% if not run.terminal %}
+
+  {%- set _done_states = ["passed", "failed", "skipped", "cancelled"] -%}
+  {%- set _ns = namespace(done=0, failed=0) -%}
+  {%- for s in record.sections -%}
+    {%- if s.status in _done_states %}{% set _ns.done = _ns.done + 1 %}{% endif -%}
+    {%- if s.status == "failed" %}{% set _ns.failed = _ns.failed + 1 %}{% endif -%}
+  {%- endfor -%}
+  {%- set _total = record.sections | length -%}
+  {%- set _pct = ((_ns.done * 100) // _total) if _total else 0 -%}
+
+  <noscript><meta http-equiv="refresh" content="4"></noscript>
+
+  <div id="rg-progress"
+       data-poll-url="{{ poll_url }}"
+       data-run-id="{{ run.run_id }}"
+       data-terminal="false"
+       class="rg-stack-24">
+
+    {#- The `hidden` attribute lives on a bare wrapper, NOT on .rg-banner.
+        `[hidden]{display:none}` is a UA rule and loses to any class selector
+        that sets `display`, so `.rg-banner{display:flex}` in gsk.css would
+        make this alarm permanently visible. A classless wrapper cannot be
+        overridden that way. app.js still toggles #rg-poll-error exactly as
+        the contract specifies. -#}
+    <div id="rg-poll-error" hidden>
+      <div class="rg-banner rg-banner--error" role="alert">
+        <span class="rg-banner__icon">{{ ui.icon("alert", "rg-icon--error") }}</span>
+        <div class="rg-banner__body">
+          <p class="rg-banner__title">Live updates stopped</p>
+          <p>
+            This page could not reach the server five times in a row. The run
+            itself may still be going. Reload the page to pick the status back up.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    {% call ui.card("Progress", "This page updates itself while the run works.") %}
+      <div class="rg-stack-16">
+
+        <ol class="rg-phase" id="rg-phase" aria-label="Generation phases">
+          {%- set _phase_defs = [("ingest", "Reading sources"),
+                                 ("plan", "Planning sections"),
+                                 ("draft", "Drafting"),
+                                 ("done", "Complete")] -%}
+          {%- set _phase_map = {"queued": 0, "preflight": 0, "ingesting": 0,
+                                "planning": 1, "generating": 2, "completed": 3,
+                                "failed": 3, "cancelled": 3, "interrupted": 3} -%}
+          {%- set _cur = _phase_map.get(run.status, 0) -%}
+          {% for key, label in _phase_defs %}
+            <li class="rg-phase__step{{ " rg-phase__step--done" if loop.index0 < _cur }}{{ " rg-phase__step--current" if loop.index0 == _cur }}"
+                data-phase="{{ key }}"{% if loop.index0 == _cur %} aria-current="step"{% endif %}>
+              {%- if loop.index0 < _cur %}{{ ui.icon("check", "rg-icon--ok") }}
+              {%- elif loop.index0 == _cur %}{{ ui.icon("clock") }}
+              {%- else %}{{ ui.icon("dot") }}{% endif %}
+              <span>{{ label }}</span>
+              {%- if loop.index0 < _cur %}<span class="rg-vh"> — done</span>
+              {%- elif loop.index0 == _cur %}<span class="rg-vh"> — in progress</span>
+              {%- else %}<span class="rg-vh"> — not started</span>{% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+
+        <div class="rg-stack-8">
+          <p class="rg-body-sm" id="rg-progress-count">{{ _ns.done }} of {{ _total }} sections</p>
+          <div class="rg-bar" id="rg-progress-bar" role="progressbar"
+               aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ _pct }}"
+               aria-labelledby="rg-progress-count">
+            <span class="rg-bar__fill" style="width: {{ _pct }}%"></span>
+          </div>
+          <p class="rg-caption rg-subtle">
+            Elapsed
+            <span class="rg-elapsed rg-mono" id="rg-elapsed"
+                  data-started-at="{{ record.started_at or record.created_at }}">{{ run.duration_human }}</span>
+          </p>
+        </div>
+
+        <ul class="rg-counters">
+          <li class="rg-counter rg-count">
+            <span class="rg-count__n" id="rg-counter-citations">{{ run.n_citations }}</span>
+            <span class="rg-count__label">citations captured</span>
+          </li>
+          <li class="rg-counter rg-count">
+            <span class="rg-count__n" id="rg-counter-failed">{{ _ns.failed }}</span>
+            <span class="rg-count__label">sections failing checks</span>
+          </li>
+          <li class="rg-counter rg-count">
+            <span class="rg-count__n">{{ record.n_documents }}</span>
+            <span class="rg-count__label">source documents</span>
+          </li>
+          <li class="rg-counter rg-count">
+            <span class="rg-count__n">{{ record.n_chunks }}</span>
+            <span class="rg-count__label">indexed passages</span>
+          </li>
+        </ul>
+
+      </div>
+    {% endcall %}
+
+    {% if record.preflight %}
+      {{ ui.banner("warn",
+          "Some sources could not be resolved before this run started",
+          "Sections that depend on them are drafted without that data. Nothing is blocked — the gaps are marked in the draft itself.",
+          record.preflight | map(attribute="message") | list) }}
+      <details class="rg-details">
+        <summary>How to close these gaps</summary>
+        <dl class="rg-kv">
+          {% for issue in record.preflight %}
+            <dt>{{ issue.code }} <span class="rg-mono">{{ issue.binding_id }}</span></dt>
+            <dd>{{ issue.fix_hint or "No automatic hint is available for this one." }}</dd>
+          {% endfor %}
+        </dl>
+      </details>
+    {% endif %}
+
+    {% call ui.card("Sections", "Each section is drafted, then checked. A section that fails its checks is still shown — flagged, never hidden.") %}
+      {% if record.sections %}
+        <ol class="rg-proglist">
+          {% for s in record.sections %}{{ ui.progress_row(s) }}{% endfor %}
+        </ol>
+      {% else %}
+        <div class="rg-empty">
+          <p class="rg-empty__title">Waiting for the section plan</p>
+          <p class="rg-body-sm rg-subtle">The template is still being read.</p>
+        </div>
+      {% endif %}
+    {% endcall %}
+
+    {%- set _noted = record.sections | selectattr("notes") | list -%}
+    {% if _noted %}
+      <details class="rg-details">
+        <summary>Section messages ({{ _noted | length }})</summary>
+        <ol class="rg-logtail">
+          {% for s in _noted %}
+            {% for note in s.notes %}
+              <li><span class="rg-mono">{{ s.section_id }}</span> {{ s.title }} — {{ note }}</li>
+            {% endfor %}
+          {% endfor %}
+        </ol>
+      </details>
+    {% endif %}
+
+  </div>
+
+
+{# ======================================================================
+   B.  FAILURE VIEW — terminal and failed
+   ====================================================================== #}
+{% elif run.status == "failed" %}
+
+  <div class="rg-banner rg-banner--error" role="alert">
+    <span class="rg-banner__icon">{{ ui.icon("alert", "rg-icon--error") }}</span>
+    <div class="rg-banner__body">
+      <p class="rg-banner__title">This run stopped before it finished</p>
+      {% if record.error %}
+        <p>{{ record.error.message }}</p>
+        <p class="rg-caption rg-subtle"><span class="rg-mono">{{ record.error.kind }}</span></p>
+      {% else %}
+        <p>The run ended without recording a reason.</p>
+      {% endif %}
+      <p class="rg-body-sm">
+        Nothing below is a complete report. Whatever was drafted before the failure
+        is kept, because a failed run is evidence too.
+      </p>
+    </div>
+  </div>
+
+  {% if record.error and record.error.detail %}
+    <details class="rg-details">
+      <summary>Technical detail</summary>
+      <pre class="rg-mono rg-body-sm">{{ record.error.detail }}</pre>
+    </details>
+  {% endif %}
+
+  {% if draft %}
+    {{ ui.banner("warn", "Partial draft — do not distribute",
+        "These sections were drafted before the run stopped. The report is incomplete and its checks did not all run.") }}
+    {{ _draft_body(draft, run, record, request) }}
+  {% else %}
+    <div class="rg-empty">
+      <p class="rg-empty__title">No draft was produced</p>
+      <p class="rg-body-sm rg-subtle">
+        The run stopped before any section was written. The inputs are preserved —
+        start a new run with them from the toolbar above.
+      </p>
+    </div>
+  {% endif %}
+
+
+{# ======================================================================
+   C.  SOURCES LEDGER — tab == "sources"
+   ====================================================================== #}
+{% elif tab == "sources" %}
+
+  {% if not draft %}
+    <div class="rg-empty">
+      <p class="rg-empty__title">No source ledger was recorded for this run</p>
+    </div>
+  {% else %}
+    <div class="rg-stack-24">
+
+      <div class="rg-banner rg-banner--neutral" role="note">
+        <span class="rg-banner__icon">{{ ui.icon("database") }}</span>
+        <div class="rg-banner__body">
+          <p class="rg-banner__title">Everything this run pulled</p>
+          <p>{{ draft.ledger_summary }}</p>
+          <p class="rg-body-sm">
+            This is the full list of data the run resolved — including data that was
+            pulled and then <strong>not</strong> used by any sentence in the draft.
+            Rows are inserted unchanged from the source; the model never rewrites
+            them.
+          </p>
+        </div>
+      </div>
+
+      {% if record.preflight %}
+        {{ ui.banner("warn", "Sources flagged before this run started", "",
+                     record.preflight | map(attribute="message") | list) }}
+      {% endif %}
+
+      {% for row in draft.ledger %}
+        {% call ui.card(row.label, row.detail) %}
+          <div class="rg-stack-16">
+
+            <div class="rg-row rg-row--between">
+              <span class="rg-pill">
+                {{ ui.icon(_KIND_ICON.get(row.kind, "dot")) }}
+                {{ _KIND_WORD.get(row.kind, row.kind) }}
+              </span>
+              {{ ui.status_chip(_LEDGER_STATE.get(row.status, "neutral"), row.status_text) }}
+            </div>
+
+            {#- A document set is counted in documents, not rows, and never
+                produces a table — saying "returned no rows" about one would
+                read as a failure when nothing failed. -#}
+            {%- set _is_docset = row.kind in ["file_set", "file_ref"] -%}
+            {{ ui.kv([
+                ("Binding", row.binding_id),
+                ("Documents matched" if _is_docset else "Rows returned",
+                 (row.row_count if row.row_count is not none else "not resolved") | string),
+                ("Declared by sections", (row.section_ids | join(", ")) or "none"),
+            ]) }}
+
+            {% if row.citation_ns %}
+              <p class="rg-body-sm">
+                Cited in the draft as
+                {% for n in row.citation_ns -%}
+                  <a class="rg-link" href="{{ (request.url_for('run_detail', run_id=run.run_id) | string) ~ '?tab=draft#ref-' ~ n }}">reference&nbsp;{{ n }}</a>{{ ", " if not loop.last }}
+                {%- endfor -%}.
+              </p>
+            {% elif row.status == "resolved_uncited" %}
+              <p class="rg-body-sm">
+                {{ ui.icon("warn", "rg-icon--warn") }}
+                Resolved, but never cited — no sentence in the draft rests on this
+                data.
+              </p>
+            {% endif %}
+
+            {% if row.deferred_note %}
+              {{ ui.banner("error", "Not available to this run", row.deferred_note) }}
+            {% endif %}
+            {% if row.fix_hint %}
+              <p class="rg-body-sm rg-subtle">
+                {{ ui.icon("warn", "rg-icon--warn") }} {{ row.fix_hint }}
+              </p>
+            {% endif %}
+
+            {% if row.rows %}
+              {#- The card heading already shows row.label. ui.data_table
+                  brings its own keyboard-scrollable .rg-table__wrap. -#}
+              {{ ui.data_table(row.columns, row.rows, caption="",
+                   vh_note="Deterministic data table. Values inserted unchanged from " ~ row.binding_id ~ "; not written by the model.") }}
+            {% elif _is_docset %}
+              <p class="rg-body-sm rg-subtle">
+                Document sets are retrieved as passages, not as a table. The
+                passages that were actually cited appear in the draft&rsquo;s source
+                list.
+              </p>
+            {% elif not row.deferred_note %}
+              <p class="rg-table__empty">
+                {{ ui.icon("warn", "rg-icon--warn") }} Resolved, but returned no rows.
+              </p>
+            {% endif %}
+
+            {% if row.sql %}
+              <details class="rg-disclose">
+                <summary>View the registered SQL</summary>
+                <pre class="rg-mono rg-body-sm">{{ row.sql }}</pre>
+              </details>
+            {% endif %}
+
+          </div>
+        {% endcall %}
+      {% else %}
+        <div class="rg-empty">
+          <p class="rg-empty__title">This run resolved no data sources at all</p>
+          <p class="rg-body-sm rg-subtle">
+            Every sentence in the draft is narrative with nothing behind it.
+          </p>
+        </div>
+      {% endfor %}
+
+      {% if draft.coverage_columns and draft.coverage_rows %}
+        {% call ui.card("Which section used which source", "A zero means the section declared that source but no sentence in it cited the source.") %}
+          <div class="rg-table__wrap" role="region" tabindex="0"
+               aria-label="Citations per section, per source">
+            <table class="rg-table rg-table--compact rg-matrix">
+              <caption class="rg-table__caption">
+                Citations per section, per source
+                <span class="rg-vh">
+                  Rows are report sections, columns are data bindings. Each cell is
+                  the number of citations in that section that came from that
+                  binding.
+                </span>
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Section</th>
+                  {% for col in draft.coverage_columns %}
+                    <th scope="col" class="rg-mono">{{ col }}</th>
+                  {% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for title, counts in draft.coverage_rows %}
+                  <tr>
+                    <th scope="row">{{ title }}</th>
+                    {% for n in counts %}
+                      <td class="rg-matrix__cell rg-table__num{{ " rg-matrix__zero" if not n }}">
+                        {{- n }}<span class="rg-vh">{{ " citation" if n == 1 else " citations" }}</span>
+                      </td>
+                    {% endfor %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endcall %}
+      {% endif %}
+
+    </div>
+  {% endif %}
+
+
+{# ======================================================================
+   D.  RUN LOG — tab == "log"
+   ====================================================================== #}
+{% elif tab == "log" %}
+
+  {% if not draft %}
+    <div class="rg-empty">
+      <p class="rg-empty__title">No event stream was recorded for this run</p>
+    </div>
+  {% else %}
+    <div class="rg-stack-24">
+
+      {% call ui.card("Run record", "What the engine was asked to do, and what it did.") %}
+        {{ ui.kv([
+            ("Report instance", run.instance_id or "not recorded"),
+            ("Template", run.template_key ~ " @ " ~ run.template_version),
+            ("Model", record.model_version),
+            ("Prompt version", record.prompt_version or "not recorded"),
+            ("Mode", "R&D / discovery" if record.compliance_mode == "rd" else "Not R&D — check the run record"),
+            ("Evidence folder", record.evidence_folder),
+            ("Documents read", record.n_documents | string),
+            ("Passages indexed", record.n_chunks | string),
+            ("Citations captured", record.n_citations | string),
+            ("Audit events", record.n_audit_events | string),
+        ]) }}
+        {% if record.plan_summary %}
+          <h3 class="rg-h3">Plan summary</h3>
+          <p class="rg-body">{{ record.plan_summary }}</p>
+        {% endif %}
+      {% endcall %}
+
+      {% call ui.card("Event stream", (draft.events | length | string) ~ " events, oldest first.") %}
+        {% if draft.events %}
+          <div class="rg-table__wrap" role="region" tabindex="0"
+               aria-label="Audit events for this run">
+            <table class="rg-table rg-table--compact">
+              <caption class="rg-table__caption">
+                Audit events for this run
+                <span class="rg-vh">
+                  Four columns: time, event, target and detail. Written by the engine
+                  as the run proceeded.
+                </span>
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Time</th>
+                  <th scope="col">Event</th>
+                  <th scope="col">Target</th>
+                  <th scope="col">Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for e in draft.events %}
+                  <tr>
+                    <td class="rg-mono">{{ e.ts_human }}</td>
+                    <td>
+                      <span class="rg-pill">
+                        {{ ui.icon(_EVENT_ICON.get(e.group, "dot")) }} {{ e.action_label }}
+                      </span>
+                      <span class="rg-vh">({{ e.action }})</span>
+                    </td>
+                    <td>{{ e.target }}</td>
+                    <td>
+                      {% for note in e.notes %}<p class="rg-body-sm">{{ note }}</p>{% endfor %}
+                      {% if e.extra_pairs %}
+                        <dl class="rg-kv">
+                          {% for k, v in e.extra_pairs %}
+                            <dt>{{ k }}</dt><dd class="rg-mono">{{ v }}</dd>
+                          {% endfor %}
+                        </dl>
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="rg-empty">
+            <p class="rg-empty__title">No events were recorded</p>
+            <p class="rg-body-sm rg-subtle">
+              Deterministic and manual sections do not emit events, so a template
+              made entirely of them produces an empty stream.
+            </p>
+          </div>
+        {% endif %}
+      {% endcall %}
+
+    </div>
+  {% endif %}
+
+
+{# ======================================================================
+   E.  DRAFT VIEW — default
+   ====================================================================== #}
+{% else %}
+
+  {% if not draft %}
+    <div class="rg-empty">
+      <p class="rg-empty__title">This run finished without producing a draft</p>
+      <p class="rg-body-sm rg-subtle">
+        Check the sources tab to see what was and was not resolved.
+      </p>
+    </div>
+  {% else %}
+    {% if partial %}
+      {{ ui.banner("warn", "Partial draft — do not distribute",
+          "This run did not complete. Sections after the point where it stopped are missing entirely.") }}
+    {% endif %}
+    {{ _draft_body(draft, run, record, request) }}
+  {% endif %}
+
+{% endif %}
+
+</div>
+{% endblock %}

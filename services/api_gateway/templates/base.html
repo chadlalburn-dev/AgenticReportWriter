@@ -1,0 +1,410 @@
+{#-
+  base.html — shared macro library + app shell.  OWNER: ENG-3.
+
+  Contract notes for the other engineers:
+    * Children do BOTH:
+          {% import "base.html" as ui without context %}   <- first line
+          {% extends "base.html" %}
+    * Every macro below is CONTEXT-FREE: it never touches `request`,
+      `nav_active`, or any other global. Everything arrives as an argument.
+      That is also why the shell uses literal hrefs instead of
+      `request.url_for(...)` — url_for would raise UndefinedError when this
+      file is imported `without context`, and the error page renders through
+      this same file, so it must never be able to fail.
+    * Autoescape is ON and the "safe" filter is banned repo-wide (the
+      integration check greps for it). LLM prose stays escaped everywhere.
+    * No off-origin <link> or <script>. Icons are the inline SVG sprite
+      below, referenced as <use href="#i-{name}"/>.
+    * Macros are defined FIRST so that the default `content` block (which
+      renders the error page) can call them. Jinja resolves top-level macros
+      in execution order; a macro defined after a block is not visible to it.
+-#}
+
+{#- =================================================================== -#}
+{#- MACROS (contract section 4.2). Exact signatures — do not change.    -#}
+{#- =================================================================== -#}
+
+{#- ------------------------------------------------------------- icons -#}
+{%- macro icon(name, extra_class="") -%}
+<svg class="rg-icon{% if extra_class %} {{ extra_class }}{% endif %}" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-{{ name }}"/></svg>
+{%- endmacro -%}
+
+{#- ------------------------------------------------------------ status -#}
+{%- macro status_chip(state, label) -%}
+{%- set sym = {'ok': 'check', 'warn': 'warn', 'error': 'alert', 'running': 'clock', 'neutral': 'dot'}.get(state, 'dot') -%}
+<span class="rg-chip rg-chip--{{ state }}">{{ icon(sym, 'rg-icon--sm') }}<span class="rg-chip__label">{{ label }}</span></span>
+{%- endmacro -%}
+
+{%- macro readiness(state, label) -%}
+{%- set sym = {'ok': 'check', 'warn': 'warn', 'error': 'alert', 'running': 'clock', 'neutral': 'dot'}.get(state, 'dot') -%}
+{%- set tint = {'ok': 'rg-icon--ok', 'warn': 'rg-icon--warn', 'error': 'rg-icon--error'}.get(state, '') -%}
+<span class="rg-tcard__ready rg-row">{{ icon(sym, tint) }}<span class="rg-body-sm">{{ label }}</span></span>
+{%- endmacro -%}
+
+{#- ----------------------------------------------------------- banners -#}
+{%- macro banner(state, title, body="", items=[], role="note") -%}
+{%- set sym = {'ok': 'check', 'warn': 'warn', 'error': 'alert', 'neutral': 'dot'}.get(state, 'dot') -%}
+<div class="rg-banner rg-banner--{{ state }}" role="{{ role }}">
+  {{ icon(sym, 'rg-banner__icon') }}
+  <div class="rg-banner__body">
+    {%- if title %}<p class="rg-banner__title">{{ title }}</p>{% endif -%}
+    {%- if body %}<p class="rg-body-sm">{{ body }}</p>{% endif -%}
+    {%- if items %}
+    <ul class="rg-banner__list">
+      {%- for entry in items %}<li>{{ entry }}</li>{% endfor -%}
+    </ul>
+    {%- endif -%}
+  </div>
+</div>
+{%- endmacro -%}
+
+{#- -------------------------------------------------------- containers -#}
+{%- macro card(title="", subtitle="") -%}
+<section class="rg-card">
+  {%- if title or subtitle %}
+  <header class="rg-card__head">
+    {%- if title %}<h2 class="rg-card__title">{{ title }}</h2>{% endif -%}
+    {%- if subtitle %}<p class="rg-card__sub">{{ subtitle }}</p>{% endif -%}
+  </header>
+  {%- endif %}
+  <div class="rg-card__body">{% if caller %}{{ caller() }}{% endif %}</div>
+</section>
+{%- endmacro -%}
+
+{%- macro tabs(items, active) -%}
+<nav class="rg-tabs" aria-label="Run views">
+  {%- for tab_label, tab_href, tab_key in items %}
+  <a class="rg-tabs__item{% if tab_key == active %} is-current{% endif %}" href="{{ tab_href }}"{% if tab_key == active %} aria-current="page"{% endif %}>{{ tab_label }}</a>
+  {%- endfor %}
+</nav>
+{%- endmacro -%}
+
+{#- ------------------------------------------------------------- forms -#}
+{%- macro field(name, label, value="", required=False, hint="", error="",
+                type="text", placeholder="") -%}
+{%- set described = [] -%}
+{%- if hint %}{% set _ = described.append('h-' ~ name) %}{% endif -%}
+{%- if error %}{% set _ = described.append('e-' ~ name) %}{% endif -%}
+<div class="rg-field">
+  <label class="rg-field__label" for="f-{{ name }}">{{ label }}{% if required %}<span class="rg-field__req">Required</span>{% endif %}</label>
+  <input class="rg-input{% if error %} rg-input--error{% endif %}"
+         id="f-{{ name }}"
+         name="{{ name }}"
+         type="{{ type }}"
+         value="{{ '' if value is none else value }}"
+         {%- if placeholder %} placeholder="{{ placeholder }}"{% endif %}
+         {%- if required %} required{% endif %}
+         {%- if described %} aria-describedby="{{ described|join(' ') }}"{% endif %}
+         {%- if error %} aria-invalid="true"{% endif %}>
+  {%- if hint %}
+  <p class="rg-field__hint" id="h-{{ name }}">{{ hint }}</p>
+  {%- endif %}
+  {%- if error %}
+  <p class="rg-field__error" id="e-{{ name }}">{{ icon('alert', 'rg-icon--error rg-icon--sm') }}<span>{{ error }}</span></p>
+  {%- endif %}
+</div>
+{%- endmacro -%}
+
+{%- macro btn(label, href=none, kind="secondary", type="button", name=none,
+              value=none, icon_name=none, disabled=False, aria_label=none) -%}
+{%- set reason = disabled if (disabled is string and disabled) else 'Not available yet' -%}
+{%- if href and not disabled -%}
+<a class="rg-btn rg-btn--{{ kind }}" href="{{ href }}"{% if aria_label %} aria-label="{{ aria_label }}"{% endif %}>
+  {%- if icon_name %}{{ icon(icon_name, 'rg-btn__icon') }}{% endif -%}
+  <span>{{ label }}</span>
+</a>
+{%- else -%}
+<button class="rg-btn rg-btn--{{ kind }}" type="{{ 'button' if disabled else type }}"
+        {%- if name is not none %} name="{{ name }}"{% endif %}
+        {%- if value is not none %} value="{{ value }}"{% endif %}
+        {%- if aria_label %} aria-label="{{ aria_label }}"{% endif %}
+        {%- if disabled %} aria-disabled="true" data-reason="{{ reason }}" title="{{ reason }}"{% endif %}>
+  {%- if icon_name %}{{ icon(icon_name, 'rg-btn__icon') }}{% endif -%}
+  <span>{{ label }}</span>
+</button>
+{%- endif -%}
+{%- endmacro -%}
+
+{#- -------------------------------------------------------------- data -#}
+{%- macro kv(rows) -%}
+<dl class="rg-kv">
+  {%- for term, value in rows %}
+  <dt>{{ term }}</dt><dd>{{ value }}</dd>
+  {%- endfor %}
+</dl>
+{%- endmacro -%}
+
+{%- macro meta_line(pairs) -%}
+<p class="rg-meta rg-body-sm rg-subtle">
+  {%- for pair_label, pair_value in pairs -%}
+  {%- if not loop.first %}<span aria-hidden="true"> &middot; </span>{% endif -%}
+  <span>{% if pair_label %}{{ pair_label }}: {% endif %}{{ pair_value }}</span>
+  {%- endfor -%}
+</p>
+{%- endmacro -%}
+
+{%- macro data_table(columns, rows, caption="", vh_note="") -%}
+<div class="rg-table__wrap" role="region" tabindex="0" aria-label="{{ caption if caption else 'Data table' }}">
+  <table class="rg-table rg-table--compact">
+    {%- if caption or vh_note %}
+    <caption class="rg-table__caption">{{ caption }}{% if vh_note %}<span class="rg-vh"> {{ vh_note }}</span>{% endif %}</caption>
+    {%- endif %}
+    <thead>
+      <tr>
+        {%- for column in columns %}<th scope="col">{{ column }}</th>{% endfor -%}
+      </tr>
+    </thead>
+    <tbody>
+      {%- if rows %}
+      {%- for row in rows %}
+      <tr>
+        {%- for cell in row -%}
+        {%- set cell_text = '' if cell is none else cell|string -%}
+        {%- set probe = cell_text|trim|replace(',', '')|replace('%', '')|replace('+', '')|replace('-', '')|replace('.', '') -%}
+        <td{% if probe and probe.isdigit() %} class="rg-table__num"{% endif %}>{{ cell_text }}</td>
+        {%- endfor -%}
+      </tr>
+      {%- endfor %}
+      {%- else %}
+      <tr><td class="rg-table__empty" colspan="{{ columns|length if columns else 1 }}">No rows returned.</td></tr>
+      {%- endif %}
+    </tbody>
+  </table>
+</div>
+{%- endmacro -%}
+
+{#- --------------------------------------------------------- citations -#}
+{#- WHITESPACE RULE (contract 8.4): a citation marker must never be
+    separated from its claim text by whitespace, or the superscript
+    detaches on line wrap. cite_marker emits no leading/trailing space.
+    Integrity failure (ref.n == 0, contract 7.7) renders as a NON-link
+    span so app.js never binds a marker whose #ref-N target is missing. -#}
+{%- macro cite_marker(ref) -%}
+{%- set sym = {'pdf': 'doc', 'docx': 'doc', 'xlsx': 'grid', 'sql': 'database',
+               'api': 'plug', 'computed': 'dot'}.get(ref.source_type, 'doc') -%}
+{%- if ref.n -%}
+<a class="rg-cite{% if ref.approx %} rg-cite--approx{% endif %}" href="#ref-{{ ref.n }}" data-citation-id="{{ ref.citation_id }}" data-cite-n="{{ ref.n }}" data-source-type="{{ ref.source_type }}" aria-label="{{ ref.aria_label }}"><svg class="rg-cite__icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-{{ sym }}"/></svg><span class="rg-cite__n" aria-hidden="true">{{ ref.n }}</span></a>
+{%- else -%}
+<span class="rg-cite" data-citation-id="{{ ref.citation_id }}" data-cite-n="0" data-source-type="{{ ref.source_type }}" aria-label="{{ ref.aria_label }}" title="{{ ref.aria_label }}"><svg class="rg-cite__icon rg-icon--error" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-alert"/></svg><span class="rg-cite__n" aria-hidden="true">!</span></span>
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro source_badge(source_type, label) -%}
+{%- set sym = {'pdf': 'doc', 'docx': 'doc', 'xlsx': 'grid', 'sql': 'database',
+               'api': 'plug', 'computed': 'dot'}.get(source_type, 'doc') -%}
+<span class="rg-badge rg-badge--{{ source_type }}">{{ icon(sym, 'rg-icon--sm') }}<span>{{ label }}</span></span>
+{%- endmacro -%}
+
+{#- ---------------------------------------------------------- progress -#}
+{#- app.js patches [data-role="status"|"citations"|"attempts"] inside a row.
+    The status element carries the chip state class AND the icon, so colour,
+    icon and words are always emitted together server-side. app.js should
+    write into .rg-chip__label rather than the chip's textContent so the
+    icon survives the patch (see handover note). -#}
+{%- macro progress_row(section) -%}
+{%- set state = {'pending': 'neutral', 'running': 'running', 'retrying': 'warn',
+                 'passed': 'ok', 'failed': 'error', 'skipped': 'neutral',
+                 'cancelled': 'neutral'}.get(section.status, 'neutral') -%}
+{%- set sym = {'ok': 'check', 'warn': 'warn', 'error': 'alert', 'running': 'clock', 'neutral': 'dot'}.get(state, 'dot') -%}
+<li class="rg-proglist__row" data-section-row="{{ section.section_id }}">
+  <span class="rg-proglist__title">{{ section.title }}</span>
+  <span class="rg-proglist__status">
+    <span class="rg-chip rg-chip--{{ state }}" data-role="status">{{ icon(sym, 'rg-icon--sm') }}<span class="rg-chip__label">{{ section.status_label }}</span></span>
+  </span>
+  <span class="rg-proglist__meta">
+    <span data-role="citations">{{ section.n_citations }} citations</span>
+    <span data-role="attempts">{% if section.attempts and section.attempts > 1 %}attempt {{ section.attempts }} of 2{% endif %}</span>
+  </span>
+</li>
+{%- endmacro -%}
+
+{#- ------------------------------------------------------- empty state -#}
+{#- Not in contract 4.2, but the ENG-3 brief names it and 5.11 reserves
+    .rg-empty / .rg-empty__title for it. Purely additive. -#}
+{%- macro empty_state(title, body="", action_label=none, action_href=none,
+                      action_kind="secondary", icon_name="doc") -%}
+<div class="rg-empty">
+  {{ icon(icon_name) }}
+  <p class="rg-empty__title rg-h3">{{ title }}</p>
+  {%- if body %}<p class="rg-body-sm rg-subtle">{{ body }}</p>{% endif %}
+  {%- if action_label and action_href %}
+  <div class="rg-btns">{{ btn(action_label, href=action_href, kind=action_kind) }}</div>
+  {%- endif %}
+</div>
+{%- endmacro -%}
+
+{#- =================================================================== -#}
+{#- DOCUMENT                                                            -#}
+{#- =================================================================== -#}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>{% block page_title %}Report Generator Agent{% endblock %}</title>
+<link rel="stylesheet" href="/static/gsk.css">
+<link rel="icon" href="data:,">
+{#- Controls that only do something once app.js has booted carry data-js-only
+    and vanish when scripting is off, so no page ever presents a dead control.
+    This lives in <head> so it covers every page, not just the run page. -#}
+<noscript><style>[data-js-only]{display:none !important}</style></noscript>
+</head>
+<body>
+<a class="rg-skip" href="#rg-main">Skip to content</a>
+
+{#- ------------------------------------------------------------------ -#}
+{#- Inline SVG sprite. 16x16, stroke-based. No off-origin assets and no -#}
+{#- icon font of any kind — see contract 8.1 for the documented         -#}
+{#- deviation and why the icon semantics are preserved regardless.      -#}
+{#- Stroke presentation attributes sit on each <symbol> so icons still  -#}
+{#- render correctly even if the stylesheet fails to load.              -#}
+{#- ------------------------------------------------------------------ -#}
+<svg class="rg-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" hidden>
+  <symbol id="i-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2.8 8.6 6.4 12.2 13.2 3.9"/>
+  </symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 2.1 14.7 13.5H1.3Z"/>
+    <path d="M8 6.2v3.3"/>
+    <path d="M8 11.6h.01"/>
+  </symbol>
+  <symbol id="i-alert" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="8" cy="8" r="6.1"/>
+    <path d="M8 4.6v4"/>
+    <path d="M8 11.2h.01"/>
+  </symbol>
+  <symbol id="i-clock" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="8" cy="8" r="6.1"/>
+    <path d="M8 4.3V8l2.6 1.6"/>
+  </symbol>
+  <symbol id="i-doc" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9.4 1.7H4.3a1.1 1.1 0 0 0-1.1 1.1v10.4a1.1 1.1 0 0 0 1.1 1.1h7.4a1.1 1.1 0 0 0 1.1-1.1V5.1Z"/>
+    <path d="M9.4 1.7v3.4h3.4"/>
+    <path d="M5.6 8.6h4.8M5.6 11.1h3.2"/>
+  </symbol>
+  <symbol id="i-grid" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2.2" y="2.7" width="11.6" height="10.6" rx="1.1"/>
+    <path d="M2.2 6.3h11.6M2.2 9.8h11.6M6.1 6.3v7M10 6.3v7"/>
+  </symbol>
+  <symbol id="i-database" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <ellipse cx="8" cy="3.9" rx="5" ry="2.1"/>
+    <path d="M3 3.9v8.2c0 1.2 2.2 2.1 5 2.1s5-.9 5-2.1V3.9"/>
+    <path d="M3 8c0 1.2 2.2 2.1 5 2.1s5-.9 5-2.1"/>
+  </symbol>
+  <symbol id="i-plug" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5.9 1.6v3.5M10.1 1.6v3.5"/>
+    <path d="M4.1 5.1h7.8v2.5A3.9 3.9 0 0 1 8 11.5a3.9 3.9 0 0 1-3.9-3.9Z"/>
+    <path d="M8 11.5v2.9"/>
+  </symbol>
+  <symbol id="i-external" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12.9 9v3.9a1.4 1.4 0 0 1-1.4 1.4H3.9a1.4 1.4 0 0 1-1.4-1.4V5.3a1.4 1.4 0 0 1 1.4-1.4h3.9"/>
+    <path d="M10.3 1.9h3.8v3.8"/>
+    <path d="M7 9 14.1 1.9"/>
+  </symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5.6" y="5.6" width="8.3" height="8.3" rx="1.2"/>
+    <path d="M10.5 5.6V3.3a1.2 1.2 0 0 0-1.2-1.2H3.3a1.2 1.2 0 0 0-1.2 1.2v6a1.2 1.2 0 0 0 1.2 1.2h2.3"/>
+  </symbol>
+  <symbol id="i-close" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.6 3.6 12.4 12.4M12.4 3.6 3.6 12.4"/>
+  </symbol>
+  <symbol id="i-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5.9 2.9 11 8l-5.1 5.1"/>
+  </symbol>
+  <symbol id="i-search" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="7" cy="7" r="4.6"/>
+    <path d="M10.4 10.4 14.1 14.1"/>
+  </symbol>
+  <symbol id="i-play" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.6 2.9 12.6 8l-8 5.1Z"/>
+  </symbol>
+  <symbol id="i-trash" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2.4 4.2h11.2"/>
+    <path d="M6.2 4.2V3a.9.9 0 0 1 .9-.9h1.8a.9.9 0 0 1 .9.9v1.2"/>
+    <path d="M4 4.2 4.6 13a1 1 0 0 0 1 .9h4.8a1 1 0 0 0 1-.9l.6-8.8"/>
+    <path d="M6.7 6.9v4.4M9.3 6.9v4.4"/>
+  </symbol>
+  <symbol id="i-dot" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="8" cy="8" r="3.1" fill="currentColor"/>
+  </symbol>
+  {#- Extras beyond the contract's sixteen: additive, and they keep the
+      export / info / busy affordances from falling back to a blank box. -#}
+  <symbol id="i-download" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 2.2v7.6"/>
+    <path d="M4.8 6.7 8 9.9l3.2-3.2"/>
+    <path d="M2.6 13.4h10.8"/>
+  </symbol>
+  <symbol id="i-info" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="8" cy="8" r="6.1"/>
+    <path d="M8 7.4v3.9"/>
+    <path d="M8 4.8h.01"/>
+  </symbol>
+  <symbol id="i-spinner" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 1.9a6.1 6.1 0 1 1-6.06 6.9"/>
+  </symbol>
+</svg>
+
+<div class="rg-shell">
+
+  <header class="rg-topbar">
+    <div class="rg-container rg-row rg-row--between">
+      <a class="rg-topbar__brand" href="/">Report Generator Agent</a>
+      <nav class="rg-topbar__nav" aria-label="Primary">
+        <a class="rg-topbar__link" href="/"{% if nav_active|default('') == 'gallery' %} aria-current="page"{% endif %}>Report types</a>
+        <a class="rg-topbar__link" href="/runs"{% if nav_active|default('') == 'runs' %} aria-current="page"{% endif %}>Runs</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="rg-main" id="rg-main" tabindex="-1">
+    <div class="rg-container">
+      {% block breadcrumb %}{% endblock %}
+      {% block content %}
+        {%- if error is defined and error %}
+        <div class="rg-error-page rg-stack-16">
+          <p class="rg-overline rg-subtle">Error {{ error.code }}</p>
+          <h1 class="rg-h1">{{ error.title }}</h1>
+          {% if error.message %}{{ banner('error', error.message) }}{% endif %}
+          {%- if error.detail %}
+          <details class="rg-details">
+            <summary>Technical detail</summary>
+            <pre class="rg-mono rg-body-sm">{{ error.detail }}</pre>
+          </details>
+          {%- endif %}
+          <div class="rg-btns">
+            {%- for link_label, link_href in (error.links or [('Back to report types', '/'), ('Run history', '/runs')]) %}
+            {{ btn(link_label, href=link_href, kind='secondary') }}
+            {%- endfor %}
+          </div>
+        </div>
+        {%- else %}
+        <p class="rg-body"></p>
+        {%- endif %}
+      {% endblock %}
+    </div>
+  </main>
+
+  <footer class="rg-footer">
+    <div class="rg-container">
+      <p class="rg-body-sm rg-subtle">
+        Report Generator Agent
+        <span aria-hidden="true"> &middot; </span>v{{ app_version|default('0.2.0') }}
+        <span aria-hidden="true"> &middot; </span>R&amp;D / discovery
+        <span aria-hidden="true"> &middot; </span>Runs locally against a stub model &mdash; every draft is for human review.
+      </p>
+      <p class="rg-caption rg-subtle">
+        <a class="rg-link rg-link--quiet" href="/docs">Service API reference</a>
+      </p>
+    </div>
+  </footer>
+
+</div>
+
+<div class="rg-live" id="rg-live" role="status" aria-live="polite" aria-atomic="true"></div>
+
+<script src="/static/app.js" defer></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
