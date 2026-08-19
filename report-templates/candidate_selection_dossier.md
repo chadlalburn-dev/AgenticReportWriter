@@ -8,6 +8,12 @@ description: >
   developability into a benefit/risk recommendation.
 owner: preclinical-project-team
 
+tags:
+  domain: pre_clinical
+  compliance: non_gxp
+  document_class: internal_decision
+  modality: [small_molecule]
+
 inputs:
   - id: compound_id
     prompt: Compound / programme identifier (e.g. GVR-12345)

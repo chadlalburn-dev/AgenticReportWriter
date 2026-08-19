@@ -31,6 +31,7 @@ from fastapi.responses import (
     Response,
 )
 from fastapi.templating import Jinja2Templates
+from jinja2 import TemplateNotFound
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from services.api_gateway import runs as runs_module
@@ -119,6 +120,11 @@ def _haystack(summary: Any) -> str:
 
 
 def _gallery_context(**overrides: Any) -> dict[str, Any]:
+    """Every key `gallery.html` can name, always present.
+
+    `/runs` renders the same file, so the classification keys need real
+    defaults or the run-history view raises `UndefinedError` (contract §5.2).
+    """
     ctx: dict[str, Any] = {
         "view": "gallery",
         "cards": [],
@@ -128,9 +134,103 @@ def _gallery_context(**overrides: Any) -> dict[str, Any]:
         "runs": [],
         "filter_q": "",
         "group_by_compound": False,
+        # --- classification / grouping (contract §5.2)
+        "q": "",
+        "group": runs_module.GROUP_NONE,
+        "sort": "name",
+        "facets": [],
+        "groups": [],
+        "n_shown": 0,
+        "n_total": 0,
+        "n_active": 0,
+        "active_summary": [],
+        "clear_url": "/",
+        "sort_options": [],
+        "group_options": [],
+        "filtering": False,
+        "flash": None,
+        "new_template_url": "/templates/new",
+        "taxonomy_ok": True,
     }
     ctx.update(overrides)
     return ctx
+
+
+_FLASH_PARAMS: tuple[tuple[str, str], ...] = (
+    ("saved", "ok"),
+    ("restored", "ok"),
+    ("deleted", "neutral"),
+)
+
+
+def _flash_for(store: Any, params: Any) -> dict[str, str] | None:
+    """Turn `?saved=` / `?deleted=` / `?restored=` into one banner.
+
+    The value is a template key, so it is checked against the key charset
+    before it goes anywhere near the page.
+    """
+    for name, state in _FLASH_PARAMS:
+        raw = str(params.get(name) or "").strip()
+        if not raw or not runs_module.TEMPLATE_KEY_RE.match(raw):
+            continue
+        title = raw
+        try:
+            title = store.get_template(raw).title or raw
+        except Exception:  # noqa: BLE001 - a deleted key has no card any more
+            pass
+        if name == "saved":
+            return {
+                "state": state,
+                "title": f"Saved “{title}”",
+                "body": "The report template file was written. It is in the list below.",
+                "href": f"/new/{quote(raw)}",
+                "href_label": "Set up a run",
+            }
+        if name == "restored":
+            return {
+                "state": state,
+                "title": f"Put “{title}” back",
+                "body": "The file was restored from the trash folder.",
+                "href": f"/new/{quote(raw)}",
+                "href_label": "Set up a run",
+            }
+        return {
+            "state": state,
+            "title": f"Deleted “{raw}”",
+            "body": (
+                "The file was moved to the trash folder, not erased. "
+                f"It is at {store.trash_dir}."
+            ),
+            "href": "",
+            "href_label": "",
+        }
+    return None
+
+
+def _key_or_404(template_key: str) -> str:
+    if not runs_module.TEMPLATE_KEY_RE.match(str(template_key or "")):
+        raise StarletteHTTPException(
+            status_code=404, detail=f"No report template named {template_key!r}."
+        )
+    return template_key
+
+
+def _render_editor(
+    request: Request, context: Mapping[str, Any], *, status_code: int = 200
+) -> HTMLResponse:
+    try:
+        return _render(
+            request,
+            "template_editor.html",
+            context,
+            nav_active="gallery",
+            status_code=status_code,
+        )
+    except TemplateNotFound as exc:  # pragma: no cover - build-integrity guard
+        raise StarletteHTTPException(
+            status_code=503,
+            detail="The template editor screen is not part of this build.",
+        ) from exc
 
 
 def _new_run_context(
@@ -200,18 +300,438 @@ def _blocker_field_errors(preflight: Any) -> dict[str, str]:
 
 @router.get("/", response_class=HTMLResponse, name="gallery", include_in_schema=False)
 def gallery(request: Request) -> HTMLResponse:
+    """The report-type gallery, grouped / sorted / filtered SERVER-SIDE.
+
+    Query params (contract §4.1): `group`, `sort`, repeatable `tag`, `q`, and
+    the three redirect flags. Every one of them is canonicalised in
+    `RunStore.gallery_view` — an unknown facet, value, group or sort widens
+    the result set instead of erroring, so a stale bookmark still works.
+    """
     store = get_store()
-    runnable, unavailable = store.list_templates()
+    params = request.query_params
+    view = store.gallery_view(
+        group=params.get("group"),
+        sort=params.get("sort"),
+        tags=params.getlist("tag"),
+        q=params.get("q") or "",
+    )
     return _render(
         request,
         "gallery.html",
         _gallery_context(
             view="gallery",
-            cards=runnable,
-            unavailable=unavailable,
+            cards=view.cards,
+            unavailable=view.unavailable,
             recent=store.recent(3),
+            q=view.q,
+            group=view.group,
+            sort=view.sort,
+            facets=view.facets,
+            groups=view.groups,
+            n_shown=view.n_shown,
+            n_total=view.n_total,
+            n_active=view.n_active,
+            active_summary=view.active_summary,
+            clear_url=view.clear_url,
+            sort_options=view.sort_options,
+            group_options=view.group_options,
+            filtering=view.filtering,
+            flash=_flash_for(store, params),
+            taxonomy_ok=view.taxonomy_ok,
         ),
         nav_active="gallery",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Template authoring (contract §4.2)
+#
+# `POST /templates` and `POST /templates/{key}` are the ONLY two routes in the
+# application that write into `report-templates/`. Every other op re-renders
+# the submitted draft at 200 without touching the disk, so the undo for any
+# mistake before Save is "do not press Save".
+#
+# `/templates/new` is registered before `/templates/{key}/...` deliberately.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/templates/new",
+    response_class=HTMLResponse,
+    name="template_new",
+    include_in_schema=False,
+)
+def template_new(request: Request) -> HTMLResponse:
+    store = get_store()
+    taxonomy = runs_module.load_taxonomy()
+    from_key = str(request.query_params.get("from") or "").strip()
+
+    draft = None
+    banner: dict[str, str] | None = None
+    if from_key:
+        try:
+            source = store.draft_for(from_key)
+        except (KeyError, ValueError, OSError):
+            banner = {
+                "state": "neutral",
+                "title": "That report type could not be copied",
+                "body": (
+                    f"There is no report template named “{from_key}” that can "
+                    "be copied. This is a blank one instead."
+                ),
+            }
+        else:
+            draft = runs_module.clone_draft(
+                source, report_type=store.suggest_template_key(from_key)
+            )
+            banner = {
+                "state": "neutral",
+                "title": f"Copied from “{source.title or from_key}”",
+                "body": (
+                    "The key and the version were reset. Everything else, "
+                    "including the tags, came across unchanged."
+                ),
+            }
+    if draft is None:
+        draft = runs_module.blank_draft(tags=taxonomy.defaults_for_new())
+
+    return _render_editor(
+        request,
+        runs_module.editor_context(draft, mode="new", banner=banner, taxonomy=taxonomy),
+    )
+
+
+@router.get(
+    "/templates/{template_key}/edit",
+    response_class=HTMLResponse,
+    name="template_edit",
+    include_in_schema=False,
+)
+def template_edit(request: Request, template_key: str) -> HTMLResponse:
+    store = get_store()
+    key = _key_or_404(template_key)
+    taxonomy = runs_module.load_taxonomy()
+
+    try:
+        draft = store.draft_for(key)
+    except KeyError:
+        raise StarletteHTTPException(
+            status_code=404, detail=f"No report template named {key!r}."
+        )
+    except (ValueError, OSError) as exc:
+        raise StarletteHTTPException(
+            status_code=422,
+            detail=f"{key} could not be opened in the editor. {exc}",
+        )
+
+    path = store.template_path(key)
+    banner: dict[str, str] | None = None
+    generated = runs_module.preview_text(draft, taxonomy=taxonomy)
+    try:
+        on_disk = path.read_text(encoding="utf-8")
+    except OSError:
+        on_disk = generated
+    if generated and generated != on_disk:
+        banner = {
+            "state": "neutral",
+            "title": "Saving rewrites this file",
+            "body": (
+                "This file was written by hand. Saving rewrites the front "
+                "matter in the app's own layout, so any comments in it are "
+                "lost. Press Check to see exactly what would be written — and "
+                "a copy of the current file is kept in the backups folder "
+                "every time you save."
+            ),
+        }
+
+    return _render_editor(
+        request,
+        runs_module.editor_context(
+            draft,
+            mode="edit",
+            key=key,
+            base_sha=runs_module.read_sha256(path),
+            banner=banner,
+            taxonomy=taxonomy,
+        ),
+    )
+
+
+async def _post_template(request: Request, key: str | None) -> Response:
+    """The `op` dispatch shared by both POST routes (contract §4.3, §8.3)."""
+    store = get_store()
+    taxonomy = runs_module.load_taxonomy()
+    create = key is None
+    mode = "new" if create else "edit"
+
+    if not create and not store.template_exists(key or ""):
+        raise StarletteHTTPException(
+            status_code=404, detail=f"No report template named {key!r}."
+        )
+
+    form = await request.form()
+    op = str(form.get("op") or "check").strip() or "check"
+    base_sha = str(form.get("base_sha") or "")
+    force = str(form.get("force") or "").strip().lower() in ("1", "true", "yes", "on")
+
+    try:
+        draft = runs_module.draft_from_form(form, taxonomy=taxonomy)
+    except Exception as exc:  # noqa: BLE001 - a malformed body is a 422, never a 500
+        raise StarletteHTTPException(
+            status_code=422, detail=f"That form could not be read. {exc}"
+        )
+    if not create:
+        draft.report_type = key or ""  # the key is locked while editing
+
+    if runs_module.is_structural_op(op):
+        notes = runs_module.apply_structural_op(
+            draft, op, add_source_kind=str(form.get("add_source_kind") or "bigquery")
+        )
+        return _render_editor(
+            request,
+            runs_module.editor_context(
+                draft,
+                mode=mode,
+                key=key or "",
+                base_sha=base_sha,
+                cascade_notes=notes,
+                taxonomy=taxonomy,
+            ),
+            status_code=200,
+        )
+
+    base_draft = None
+    if not create:
+        try:
+            base_draft = store.draft_for(key or "")
+        except (KeyError, ValueError, OSError):
+            base_draft = None
+
+    issues = runs_module.validate_template_draft(
+        draft,
+        existing_keys=store.template_keys(),
+        is_new=create,
+        taxonomy=taxonomy,
+        base_draft=base_draft,
+    )
+    preview = runs_module.preview_text(draft, taxonomy=taxonomy)
+
+    if op != "save" or runs_module.draft_has_errors(issues):
+        blocked = op == "save"
+        return _render_editor(
+            request,
+            runs_module.editor_context(
+                draft,
+                mode=mode,
+                key=key or "",
+                base_sha=base_sha,
+                issues=issues,
+                preview=preview,
+                checked=not blocked,
+                banner=(
+                    {
+                        "state": "error",
+                        "title": "This template was not saved",
+                        "body": (
+                            "Nothing has been written. Fix the problems listed "
+                            "below and press Save again."
+                        ),
+                    }
+                    if blocked
+                    else None
+                ),
+                taxonomy=taxonomy,
+            ),
+            status_code=422 if blocked else 200,
+        )
+
+    try:
+        store.save_draft(
+            draft,
+            create=create,
+            expected_sha256=(None if (create or force) else (base_sha or None)),
+        )
+    except runs_module.TemplateConflict:
+        return _render_editor(
+            request,
+            runs_module.editor_context(
+                draft,
+                mode=mode,
+                key=key or "",
+                base_sha=base_sha,
+                issues=issues,
+                preview=preview,
+                conflict=True,
+                banner={
+                    "state": "warn",
+                    "title": "This file changed on disk after you opened it",
+                    "body": (
+                        "Something else edited this file — an editor, or a "
+                        "pull. Nothing has been written. Choose which version "
+                        "to keep."
+                    ),
+                },
+                taxonomy=taxonomy,
+            ),
+            status_code=409,
+        )
+    except (runs_module.TemplateWriteError, ValueError, KeyError) as exc:
+        # KeyError is unreachable while `key_charset` validation runs first —
+        # it is here so a future validation gap can never become a 500.
+        return _render_editor(
+            request,
+            runs_module.editor_context(
+                draft,
+                mode=mode,
+                key=key or "",
+                base_sha=base_sha,
+                issues=issues,
+                preview=preview,
+                banner={
+                    "state": "error",
+                    "title": "This template could not be saved",
+                    "body": str(exc),
+                },
+                taxonomy=taxonomy,
+            ),
+            status_code=422,
+        )
+    except OSError as exc:
+        return _render_editor(
+            request,
+            runs_module.editor_context(
+                draft,
+                mode=mode,
+                key=key or "",
+                base_sha=base_sha,
+                issues=issues,
+                preview=preview,
+                banner={
+                    "state": "error",
+                    "title": "This template could not be written",
+                    "body": (
+                        f"{draft.report_type}.md could not be written to "
+                        f"{store.templates_dir}: {exc.strerror or exc}. Check "
+                        "the folder is not read-only and that the file is not "
+                        "open in something else."
+                    ),
+                },
+                taxonomy=taxonomy,
+            ),
+            status_code=422,
+        )
+
+    return _see_other(f"/?saved={quote(draft.report_type, safe='')}")
+
+
+@router.post("/templates", name="template_create", include_in_schema=False)
+async def template_create(request: Request) -> Response:
+    return await _post_template(request, None)
+
+
+@router.post("/templates/{template_key}", name="template_save", include_in_schema=False)
+async def template_save(request: Request, template_key: str) -> Response:
+    return await _post_template(request, _key_or_404(template_key))
+
+
+@router.get(
+    "/templates/{template_key}/delete",
+    response_class=HTMLResponse,
+    name="template_delete_confirm",
+    include_in_schema=False,
+)
+def template_delete_confirm(request: Request, template_key: str) -> HTMLResponse:
+    store = get_store()
+    key = _key_or_404(template_key)
+    if not store.template_exists(key):
+        raise StarletteHTTPException(
+            status_code=404, detail=f"No report template named {key!r}."
+        )
+    try:
+        draft = store.draft_for(key)
+    except (KeyError, ValueError, OSError):
+        # A file that will not parse is still a file someone may want gone.
+        draft = runs_module.blank_draft()
+        draft.report_type = key
+        draft.title = key
+
+    return _render_editor(
+        request,
+        runs_module.editor_context(
+            draft,
+            mode="delete",
+            key=key,
+            delete_info={
+                "title": draft.title or key,
+                "key": key,
+                "path": str(store.template_path(key)),
+                "n_runs": store.runs_using_template(key),
+                "trash_dir": str(store.trash_dir),
+            },
+        ),
+    )
+
+
+@router.post(
+    "/templates/{template_key}/delete", name="template_delete", include_in_schema=False
+)
+def template_delete(request: Request, template_key: str) -> Response:
+    store = get_store()
+    key = _key_or_404(template_key)
+    try:
+        store.delete_template(key)
+    except KeyError:
+        raise StarletteHTTPException(
+            status_code=404, detail=f"No report template named {key!r}."
+        )
+    except (ValueError, OSError) as exc:
+        raise StarletteHTTPException(
+            status_code=422,
+            detail=(
+                f"{key} could not be moved to the trash folder: {exc}. "
+                "Nothing was deleted."
+            ),
+        )
+    return _see_other(f"/?deleted={quote(key, safe='')}")
+
+
+@router.post(
+    "/templates/{template_key}/undelete",
+    name="template_undelete",
+    include_in_schema=False,
+)
+def template_undelete(request: Request, template_key: str) -> Response:
+    store = get_store()
+    key = _key_or_404(template_key)
+    try:
+        store.undelete_template(key)
+    except KeyError:
+        raise StarletteHTTPException(
+            status_code=404,
+            detail=f"There is nothing in the trash folder for {key!r}.",
+        )
+    except (ValueError, OSError) as exc:
+        raise StarletteHTTPException(
+            status_code=409,
+            detail=f"{key} could not be put back: {exc}",
+        )
+    return _see_other(f"/?restored={quote(key, safe='')}")
+
+
+@router.get("/templates/{template_key}/raw", name="template_raw", include_in_schema=False)
+def template_raw(request: Request, template_key: str) -> Response:
+    store = get_store()
+    key = _key_or_404(template_key)
+    try:
+        text = store.raw_template_text(key)
+    except (KeyError, OSError):
+        raise StarletteHTTPException(
+            status_code=404, detail=f"No report template named {key!r}."
+        )
+    return PlainTextResponse(
+        text,
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -648,9 +1168,10 @@ def legacy_ib_demo() -> RedirectResponse:
 _ERROR_TITLES = {
     404: "That page is not here",
     405: "That action is not allowed here",
-    409: "This run has not finished yet",
+    409: "That could not be done right now",
     422: "That request could not be used",
     500: "Something went wrong on this machine",
+    503: "That screen is not part of this build",
 }
 
 

@@ -1,0 +1,118 @@
+# Report-template tag taxonomy.
+#
+# This file is the single source of truth for HOW report templates are
+# classified. It is version-controlled and edited by hand — the app never
+# writes to it.
+#
+# Each facet is one independent axis of classification. A template carries a
+# map of facet id -> value id(s) in its front matter:
+#
+#   tags:
+#     domain: dmpk
+#     compliance: non_gxp
+#     modality: [small_molecule]
+#
+# Add a facet by appending to `facets:`; add a value by appending to that
+# facet's `values:`. Nothing in the application code names a facet or a value,
+# so both are safe to change here alone.
+#
+# Override the path to this file with the RG_TAG_TAXONOMY environment variable.
+
+taxonomy_version: 1
+updated: 2026-08-19
+
+defaults:
+  group_by: domain
+  sort: name
+
+facets:
+
+  - id: domain
+    label: Domain area
+    description: The scientific or functional area this report belongs to.
+    cardinality: single
+    required: true
+    mode: closed
+    groupable: true
+    card_chip: always
+    untagged_label: No domain set
+    values:
+      - {id: discovery,          label: Discovery}
+      - {id: target_sciences,    label: Target Sciences}
+      - {id: pre_clinical,       label: Pre-Clinical,
+         description: "Preclinical / nonclinical research reports."}
+      - {id: pharmacology,       label: Pharmacology}
+      - {id: dmpk,               label: DMPK / ADME}
+      - {id: nonclinical_safety, label: Nonclinical Safety}
+      - {id: cmc,                label: CMC / Pharmaceutical Development}
+      - {id: clinical,           label: Clinical}
+      - {id: regulatory_writing, label: Regulatory Writing}
+      - {id: data_science,       label: Data Science}
+
+  - id: compliance
+    label: Compliance
+    description: >
+      How this report template is labelled. This is a label only; it does not
+      change how the application behaves.
+    cardinality: single
+    required: true
+    mode: closed
+    default: non_gxp
+    groupable: true
+    card_chip: notable
+    notable: [gxp]
+    untagged_label: No compliance label
+    values:
+      - {id: non_gxp, label: Non-GxP, description: "Research and discovery work outside GxP scope."}
+      - {id: gxp,     label: GxP,     description: "Work a team runs under GxP."}
+
+  - id: document_class
+    label: Document class
+    description: What kind of document this is and who reads it.
+    cardinality: single
+    required: false
+    mode: closed
+    groupable: true
+    card_chip: never
+    untagged_label: No document class set
+    values:
+      - {id: internal_decision,    label: Internal decision document}
+      - {id: technical_summary,    label: Technical summary}
+      - {id: regulatory_component, label: Regulatory submission component}
+      - {id: share_out,            label: Share-out / one-pager}
+      - {id: exploratory,          label: Exploratory analysis}
+
+  - id: therapeutic_area
+    label: Therapeutic area
+    description: Therapeutic area(s) this template is written for.
+    cardinality: multi
+    required: false
+    mode: open
+    groupable: true
+    card_chip: always
+    untagged_label: No therapeutic area set
+    values:
+      - {id: respiratory,             label: Respiratory}
+      - {id: immunology_inflammation, label: Immunology & Inflammation}
+      - {id: oncology,                label: Oncology}
+      - {id: infectious_diseases,     label: Infectious Diseases}
+      - {id: vaccines,                label: Vaccines}
+      - {id: hepatology,              label: Hepatology}
+      - {id: neurology,               label: Neurology}
+      - {id: cross_ta,                label: Cross-TA / platform}
+
+  - id: modality
+    label: Modality
+    description: Molecule type(s) this template's content assumes.
+    cardinality: multi
+    required: false
+    mode: open
+    groupable: true
+    card_chip: never
+    untagged_label: No modality set
+    values:
+      - {id: small_molecule,    label: Small molecule}
+      - {id: oligonucleotide,   label: Oligonucleotide}
+      - {id: biologic,          label: Biologic / mAb}
+      - {id: vaccine,           label: Vaccine}
+      - {id: cell_gene_therapy, label: Cell & gene therapy}

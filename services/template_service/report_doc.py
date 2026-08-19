@@ -14,6 +14,8 @@ schema. The mapping:
   "> Sources: a, b"     -> which source bindings that section carries
   "> Table: x"          -> hint (the filler already renders query/api results
                             as tables verbatim, so this is advisory)
+  front-matter tags     -> ReportTemplate.tags (classification only — the
+                            engine never reads it; see report-templates/taxonomy.yaml)
 
 So an authored .md runs through the *same* ReportGenerator, citation
 enforcement, safety gate, and audit trail as everything else.
@@ -99,6 +101,8 @@ def load_report_doc(path: str | Path) -> ReportTemplate:
         status=TemplateStatus.DRAFT,
         report_type=fm["report_type"],
         title=fm["title"],
+        # Same whitespace collapse the gallery applies, so the two never disagree.
+        description=" ".join(str(fm.get("description", "") or "").split()),
         metadata=TemplateMetadata(
             authored_by=fm.get("owner", "report-doc"),
             authored_at=datetime.now(timezone.utc),
@@ -106,6 +110,9 @@ def load_report_doc(path: str | Path) -> ReportTemplate:
         ),
         global_style=GlobalStyle(),
         sections=sections,
+        # Handed over raw: shape normalisation is the schema's job, and taxonomy
+        # conformance is decided at render time, not at load time.
+        tags=fm.get("tags"),
     )
 
 

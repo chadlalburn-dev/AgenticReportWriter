@@ -8,6 +8,12 @@ description: >
   and toxicology summaries. Bridges the preclinical data into the IB shell.
 owner: nonclinical / medical-writing
 
+tags:
+  domain: regulatory_writing
+  compliance: non_gxp
+  document_class: regulatory_component
+  modality: [small_molecule]
+
 inputs:
   - id: compound_id
     prompt: Compound / programme identifier

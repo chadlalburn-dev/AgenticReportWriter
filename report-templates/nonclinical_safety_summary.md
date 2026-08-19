@@ -8,6 +8,12 @@ description: >
   projected efficacious exposure.
 owner: nonclinical-safety
 
+tags:
+  domain: nonclinical_safety
+  compliance: non_gxp
+  document_class: technical_summary
+  modality: [small_molecule]
+
 inputs:
   - id: compound_id
     prompt: Compound / programme identifier

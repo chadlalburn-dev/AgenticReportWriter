@@ -8,6 +8,11 @@ description: >
   support a target-validation or go/no-go decision.
 owner: target-sciences
 
+tags:
+  domain: target_sciences
+  compliance: non_gxp
+  document_class: internal_decision
+
 inputs:
   - id: target_name
     prompt: Molecular target (e.g. Kinase Z)

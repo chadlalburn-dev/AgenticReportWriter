@@ -1,0 +1,1006 @@
+{% import "base.html" as ui without context %}
+{% extends "base.html" %}
+
+{#- INTEGRATION NOTE (load-bearing, do not remove):
+    base.html defines a macro named `banner`. Once the parent's root render
+    runs, that macro shadows the `banner` context variable this page is given
+    (contract §5.3). The alias below is evaluated in the child's top-level
+    scope, which executes BEFORE the parent's macros are defined, so
+    `ed_banner` keeps the context dict. Everything downstream uses
+    `ed_banner`; `ui.banner(...)` remains the macro.
+    (Same trick new_run.html uses for `card` -> `tpl`.) -#}
+{% set ed_banner = banner if banner is defined else none %}
+
+{#
+  template_editor.html — ENG-5
+  ONE file, THREE modes (contract R4 / §4.2):
+     mode == "new"     GET  /templates/new[?from=key]   POST /templates
+     mode == "edit"    GET  /templates/{key}/edit       POST /templates/{key}
+     mode == "delete"  GET  /templates/{key}/delete     POST /templates/{key}/delete
+
+  base.html already wraps {% block content %} in .rg-container — do not add another.
+
+  Accent budget (§6.4): exactly ONE orange element on this view — "Save template"
+  in the rail. The second .rg-editor__actions cluster at the foot of the form
+  deliberately carries no second primary. The delete screen spends no accent.
+
+  base.html is FROZEN (R1/R2), so every macro this page needs is declared
+  locally, below, at the top level of this file.
+
+  GxP (§9): nothing on this page branches on any tag value. Facets, values,
+  labels and defaults all arrive from the taxonomy through `tag_facets`.
+#}
+
+{#- =================================================================== -#}
+{#- LOCAL MACROS (R2 — base.html is frozen, so these live here)         -#}
+{#- =================================================================== -#}
+
+{%- macro ed_hint(name, hint) -%}
+{%- if hint %}<p class="rg-field__hint" id="h-{{ name }}">{{ hint }}</p>{% endif -%}
+{%- endmacro -%}
+
+{%- macro ed_error(name, error) -%}
+{%- if error %}<p class="rg-field__error" id="e-{{ name }}">{{ ui.icon('alert', 'rg-icon--error rg-icon--sm') }}<span>{{ error }}</span></p>{% endif -%}
+{%- endmacro -%}
+
+{#- A text input. No HTML `required` attribute anywhere in this form: every
+    rule lives server-side in validate_draft(), and a native bubble would stop
+    "Check" from ever reaching the server, where the whole list is computed. -#}
+{%- macro ed_text(name, label, value="", hint="", error="", required=False,
+                  readonly=False, placeholder="", extra_class="") -%}
+{%- set described = [] -%}
+{%- if hint %}{% set _ = described.append('h-' ~ name) %}{% endif -%}
+{%- if error %}{% set _ = described.append('e-' ~ name) %}{% endif -%}
+<div class="rg-field">
+  <label class="rg-field__label" for="f-{{ name }}">{{ label }}{% if required %}<span class="rg-field__req">Required</span>{% endif %}</label>
+  <input class="rg-input{% if extra_class %} {{ extra_class }}{% endif %}{% if error %} rg-input--error{% endif %}"
+         id="f-{{ name }}"
+         name="{{ name }}"
+         type="text"
+         value="{{ '' if value is none else value }}"
+         {%- if placeholder %} placeholder="{{ placeholder }}"{% endif %}
+         {%- if readonly %} readonly{% endif %}
+         {%- if required %} aria-required="true"{% endif %}
+         {%- if described %} aria-describedby="{{ described|join(' ') }}"{% endif %}
+         {%- if error %} aria-invalid="true"{% endif %}>
+  {{- ed_hint(name, hint) -}}
+  {{- ed_error(name, error) -}}
+</div>
+{%- endmacro -%}
+
+{%- macro ed_area(name, label, value="", hint="", error="", required=False,
+                  rows=3, mono=False, readonly=False) -%}
+{%- set described = [] -%}
+{%- if hint %}{% set _ = described.append('h-' ~ name) %}{% endif -%}
+{%- if error %}{% set _ = described.append('e-' ~ name) %}{% endif -%}
+<div class="rg-field">
+  <label class="rg-field__label" for="f-{{ name }}">{{ label }}{% if required %}<span class="rg-field__req">Required</span>{% endif %}</label>
+  <textarea class="rg-textarea{% if mono %} rg-textarea--mono{% endif %}{% if error %} rg-input--error{% endif %}"
+            id="f-{{ name }}"
+            name="{{ name }}"
+            rows="{{ rows }}"
+            {%- if readonly %} readonly{% endif %}
+            {%- if required %} aria-required="true"{% endif %}
+            {%- if described %} aria-describedby="{{ described|join(' ') }}"{% endif %}
+            {%- if error %} aria-invalid="true"{% endif %}>{{ '' if value is none else value }}</textarea>
+  {{- ed_hint(name, hint) -}}
+  {{- ed_error(name, error) -}}
+</div>
+{%- endmacro -%}
+
+{#- `options` is a list of (value, label) pairs. Selects that need data-
+    attributes (source kind, section table) are written out inline instead:
+    passing raw attribute markup through a macro would need the escaping
+    filter that is banned repo-wide, so the markup stays literal. -#}
+{%- macro ed_select(name, label, options, value="", hint="", error="",
+                    required=False, blank_label="") -%}
+{%- set described = [] -%}
+{%- if hint %}{% set _ = described.append('h-' ~ name) %}{% endif -%}
+{%- if error %}{% set _ = described.append('e-' ~ name) %}{% endif -%}
+<div class="rg-field">
+  <label class="rg-field__label" for="f-{{ name }}">{{ label }}{% if required %}<span class="rg-field__req">Required</span>{% endif %}</label>
+  <select class="rg-select" id="f-{{ name }}" name="{{ name }}"
+          {%- if required %} aria-required="true"{% endif %}
+          {%- if described %} aria-describedby="{{ described|join(' ') }}"{% endif %}
+          {%- if error %} aria-invalid="true"{% endif %}>
+    {%- if blank_label %}
+    <option value=""{% if not value %} selected{% endif %}>{{ blank_label }}</option>
+    {%- endif %}
+    {%- for opt_value, opt_label in options %}
+    <option value="{{ opt_value }}"{% if opt_value == value %} selected{% endif %}>{{ opt_label }}</option>
+    {%- endfor %}
+  </select>
+  {{- ed_hint(name, hint) -}}
+  {{- ed_error(name, error) -}}
+</div>
+{%- endmacro -%}
+
+{%- macro ed_check(name, label, is_on=False, value="1", hint="") -%}
+<div class="rg-field">
+  <div class="rg-checkgroup">
+    <label class="rg-checkgroup__item" for="f-{{ name }}">
+      <input type="checkbox" id="f-{{ name }}" name="{{ name }}" value="{{ value }}"{% if is_on %} checked{% endif %}
+             {%- if hint %} aria-describedby="h-{{ name }}"{% endif %}>
+      <span>{{ label }}</span>
+    </label>
+  </div>
+  {{- ed_hint(name, hint) -}}
+</div>
+{%- endmacro -%}
+
+{#- Structural submit buttons. Every one is a REAL submit carrying
+    formnovalidate (§7.2): delete editor.js and every flow still works.
+
+    Row position is carried in a VISUALLY HIDDEN SPAN, not in aria-label, so
+    the button's accessible name reads "Move up, source 3" and editor.js can
+    keep it truthful after a reorder by writing a TEXT NODE — which is inside
+    the §7.2 permission list. Rewriting an aria-label attribute would not be. -#}
+{%- macro ed_op_btn(op_value, label, kind="secondary", icon_name=none,
+                    icon_class="", data_add="", data_act="", vh_suffix="",
+                    nojs_only=False) -%}
+<button class="rg-btn rg-btn--{{ kind }}" type="submit" name="op" value="{{ op_value }}" formnovalidate
+        {%- if data_add %} data-add="{{ data_add }}"{% endif %}
+        {%- if data_act %} data-act="{{ data_act }}"{% endif %}
+        {%- if nojs_only %} data-nojs-only{% endif %}>
+  {%- if icon_name %}{{ ui.icon(icon_name, ('rg-btn__icon ' ~ icon_class)|trim) }}{% endif -%}
+  <span>{{ label }}</span>
+  {%- if vh_suffix %}<span class="rg-vh" data-act-position>, {{ vh_suffix }}</span>{% endif -%}
+</button>
+{%- endmacro -%}
+
+{#- The three row-level controls, identical for every group. -#}
+{%- macro ed_row_acts(group, row_key, noun, position) -%}
+<p class="rg-erow__acts">
+  {{ ed_op_btn('move:' ~ group ~ ':' ~ row_key ~ ':up', 'Move up', 'ghost', 'chevron',
+               'rg-icon--rot-up', data_act='up', vh_suffix=noun ~ ' ' ~ position) }}
+  {{ ed_op_btn('move:' ~ group ~ ':' ~ row_key ~ ':down', 'Move down', 'ghost', 'chevron',
+               'rg-icon--rot-down', data_act='down', vh_suffix=noun ~ ' ' ~ position) }}
+  {{ ed_op_btn('remove:' ~ group ~ ':' ~ row_key, 'Remove', 'ghost', 'trash', '',
+               data_act='remove', vh_suffix=noun ~ ' ' ~ position) }}
+</p>
+{%- endmacro -%}
+
+{%- macro ed_row_legend(noun, number, id_text, has_errors) -%}
+<legend class="rg-erow__legend">
+  {%- if has_errors %}{{ ui.icon('alert', 'rg-icon--error rg-icon--sm') }}{% endif -%}
+  <span>{{ noun }} <span data-legend-number>{{ number }}</span></span>
+  <span class="rg-subtle" data-legend-id>{{ id_text }}</span>
+</legend>
+{%- endmacro -%}
+
+{#- =================================================================== -#}
+{#- PAGE                                                                -#}
+{#- =================================================================== -#}
+
+{% block page_title %}{{ page_title }} · Report Generator{% endblock %}
+
+{% block breadcrumb %}
+<nav class="rg-crumb" aria-label="Breadcrumb">
+  <a class="rg-crumb__item rg-link" href="{{ url_for('gallery') }}">Report types</a>
+  <span class="rg-crumb__item" aria-current="page">{{ page_title }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+
+{#- kind id -> human word, built from the context so the server and editor.js
+    can never disagree about the wording. -#}
+{% set KIND_WORD = {} %}
+{%- for kind_id, kind_label in source_kinds %}{{ KIND_WORD.update({kind_id: kind_label}) or '' }}{% endfor -%}
+
+{% if mode == "delete" %}
+{# ==================================================================== #}
+{# ==  DELETE CONFIRM  —  GET /templates/{key}/delete                == #}
+{# ==================================================================== #}
+<div class="rg-stack-24">
+
+  <div class="rg-stack-8">
+    <h1 class="rg-title">{{ page_title }}</h1>
+    <p class="rg-body">
+      This moves the template file out of the template folder. It stops appearing in the
+      gallery and no new runs can be set up from it.
+    </p>
+  </div>
+
+  {% if ed_banner %}
+  {{ ui.banner(ed_banner.state, ed_banner.title, ed_banner.body) }}
+  {% endif %}
+
+  {% call ui.card('What happens', 'Read this before you confirm.') %}
+    <div class="rg-stack-16">
+
+      {{ ui.kv([
+           ('Template', delete_info.title),
+           ('Key', delete_info.key),
+           ('File', delete_info.path),
+           ('Runs already produced', delete_info.n_runs)
+         ]) }}
+
+      <ul class="rg-issues">
+        <li class="rg-issues__row">
+          {{ ui.icon('check', 'rg-icon--ok rg-icon--sm') }}
+          <span class="rg-body-sm">
+            The file is moved to a trash folder on this machine, not erased. The gallery
+            offers an Undo link immediately afterwards.
+          </span>
+        </li>
+        <li class="rg-issues__row">
+          {{ ui.icon('check', 'rg-icon--ok rg-icon--sm') }}
+          <span class="rg-body-sm">
+            The {{ delete_info.n_runs }} run{{ '' if delete_info.n_runs == 1 else 's' }} already
+            produced from this template stay in the run history, with their drafts and citations
+            intact.
+          </span>
+        </li>
+        <li class="rg-issues__row">
+          {{ ui.icon('warn', 'rg-icon--warn rg-icon--sm') }}
+          <span class="rg-body-sm">
+            Anyone with a bookmarked link to this report type will get a "not found" page.
+          </span>
+        </li>
+      </ul>
+
+      <p class="rg-caption rg-subtle rg-mono">{{ delete_info.trash_dir }}</p>
+
+      <form method="post" action="/templates/{{ delete_info.key }}/delete">
+        <div class="rg-editor__actions">
+          {{ ui.btn('Delete template', kind='danger', type='submit', icon_name='trash') }}
+          {{ ui.btn('Keep it', href=cancel_url, kind='ghost') }}
+        </div>
+      </form>
+
+    </div>
+  {% endcall %}
+
+</div>
+
+{% else %}
+{# ==================================================================== #}
+{# ==  AUTHORING FORM  —  mode == "new" | "edit"                     == #}
+{# ==================================================================== #}
+<div class="rg-stack-24">
+
+  <div class="rg-stack-8">
+    <h1 class="rg-title">{{ page_title }}</h1>
+    <p class="rg-body-sm rg-subtle">
+      A report template is one Markdown file: what the report is called, what you are asked for
+      when you run it, where its data comes from, and one instruction per section. Nothing is
+      written to disk until you press Save template.
+    </p>
+  </div>
+
+  {% if ed_banner %}
+  {{ ui.banner(ed_banner.state, ed_banner.title, ed_banner.body) }}
+  {% endif %}
+
+  {% if conflict %}
+  {{ ui.banner('error', 'This file changed on disk while you were editing it',
+               'Someone — or something, such as a text editor or a folder sync — wrote to this template after you opened it. Choose which version wins.',
+               role='alert') }}
+  {% endif %}
+
+  {% if cascade_notes %}
+  {{ ui.banner('neutral', 'Some references were cleared', '', items=cascade_notes) }}
+  {% endif %}
+
+  {% if n_errors %}
+    {%- set err_items = [] -%}
+    {%- for i in issues if i.severity == 'error' -%}
+      {{- err_items.append(i.message) or '' -}}
+    {%- endfor -%}
+    {{ ui.banner('error',
+                 'Nothing was saved — ' ~ n_errors ~ (' thing' if n_errors == 1 else ' things') ~ ' to fix',
+                 'The template file was not touched. Each item below is also marked on the field it belongs to.',
+                 items=err_items, role='alert') }}
+  {% endif %}
+
+  <form class="rg-editor" id="rg-editor" data-template-editor method="post" action="{{ form_action }}">
+    <input type="hidden" name="base_sha" value="{{ base_sha }}">
+    {%- if conflict %}
+    {#- Present only on a 409 re-render, so the "Overwrite" button below is the
+        only save path on this screen. Sent both as a body field and (via
+        formaction) as a query parameter — see the ENG-5 hand-off note. -#}
+    <input type="hidden" name="force" value="1">
+    {%- endif %}
+
+    <div class="rg-cols">
+
+      {# =========================== MAIN =========================== #}
+      <div class="rg-cols__main rg-stack-24">
+
+        {# -------------------------------------------------- issues -#}
+        {%- if issues %}
+        {% call ui.card('What needs attention', 'Everything the check found, in one place. Each item is also marked on the field it belongs to.') %}
+          <ul class="rg-issues">
+            {%- for i in issues %}
+            <li class="rg-issues__row">
+              {%- if i.severity == 'error' -%}
+              {{ ui.icon('alert', 'rg-icon--error rg-icon--sm') }}
+              {%- else -%}
+              {{ ui.icon('warn', 'rg-icon--warn rg-icon--sm') }}
+              {%- endif -%}
+              <span class="rg-stack-8">
+                <span class="rg-body-sm">{{ i.message }}</span>
+                {%- if i.fix_hint %}<span class="rg-caption rg-subtle">{{ i.fix_hint }}</span>{% endif -%}
+                {%- if i.field %}<span class="rg-caption rg-subtle rg-mono">{{ i.field }}</span>{% endif -%}
+              </span>
+            </li>
+            {%- endfor %}
+          </ul>
+        {% endcall %}
+        {%- endif %}
+
+        {# ------------------------------------------------ identity -#}
+        {% call ui.card('What this report is', 'The header of the file, and what the gallery shows.') %}
+          <div class="rg-stack-16">
+
+            {%- set key_hint -%}
+              {%- if key_locked -%}
+                Fixed once the file exists. To rename, clone this template under a new key and
+                delete the old one.
+              {%- else -%}
+                Lowercase letters, digits and underscores; at least three characters. This becomes
+                the file name and the run URL, and cannot be changed later.
+              {%- endif -%}
+            {%- endset %}
+            {{ ed_text('report_type', 'Key', identity.report_type,
+                       hint=key_hint, error=field_errors.get('report_type', ''),
+                       required=True, readonly=key_locked,
+                       placeholder='dmpk_adme_summary') }}
+
+            {{ ed_text('title', 'Title', identity.title,
+                       hint='What a scientist sees in the gallery. Up to 120 characters.',
+                       error=field_errors.get('title', ''), required=True,
+                       placeholder='DMPK / ADME Summary') }}
+
+            {{ ed_area('description', 'Description', identity.description,
+                       hint='One or two sentences, shown on the gallery card and searched when someone filters. Up to 300 characters.',
+                       error=field_errors.get('description', ''), rows=3) }}
+
+            <div class="rg-erow__grid">
+              {{ ed_text('version', 'Version', identity.version,
+                         hint='Three numbers, e.g. 0.1.0. Raise it whenever you change sections or sources.',
+                         error=field_errors.get('version', ''), required=True,
+                         placeholder='0.1.0') }}
+              {{ ed_text('owner', 'Owning team', identity.owner,
+                         hint='Who maintains this template and answers questions about it.',
+                         error=field_errors.get('owner', ''), required=True,
+                         placeholder='dmpk') }}
+            </div>
+
+            {{ ed_text('doc_heading', 'Document heading', identity.doc_heading,
+                       hint='The title line inside the generated document. Leave it blank to start straight at section 1.',
+                       error=field_errors.get('doc_heading', '')) }}
+
+          </div>
+        {% endcall %}
+
+        {# ---------------------------------------------------- tags -#}
+        {% call ui.card('Tags', 'How this template is filed. Tags decide where it sits in the gallery and which filters find it.') %}
+          <div class="rg-stack-16">
+
+            {%- for facet in tag_facets %}
+            {#- The hint AND the error are both described-by targets. ed_text /
+                ed_area / ed_select build this list for themselves; the three
+                controls below are written out by hand, so they have to build it
+                too or a facet's error is rendered on screen and invisible to a
+                screen reader (it is announced for every other field). -#}
+            {%- set fdesc = [] -%}
+            {%- if facet.description %}{% set _ = fdesc.append('h-' ~ facet.field_name) %}{% endif -%}
+            {%- if facet.error %}{% set _ = fdesc.append('e-' ~ facet.field_name) %}{% endif -%}
+            {%- if facet.multi %}
+            {#- A <fieldset> is only correct where there is a real group of
+                controls to name; the single-value branch below is one labelled
+                <select>, and wrapping that in a legend-less fieldset would put
+                an unnamed role=group in the accessibility tree. -#}
+            <fieldset class="rg-facet">
+              <legend class="rg-field__label">
+                {{ facet.label }}{% if facet.required %}<span class="rg-field__req">Required</span>{% endif %}
+              </legend>
+              {%- if facet.description %}
+              <p class="rg-field__hint" id="h-{{ facet.field_name }}">{{ facet.description }}</p>
+              {%- endif %}
+              <div class="rg-checkgroup">
+                {#- facet['values'], not facet.values: the subscript form resolves
+                    a mapping key first and only then an attribute, so this works
+                    whether EditorFacet arrives as a dataclass or as a plain dict.
+                    `facet.values` would bind dict.values on a dict. -#}
+                {%- for v in facet['values'] if v.selected or not v.deprecated %}
+                <label class="rg-checkgroup__item">
+                  <input type="checkbox" name="{{ facet.field_name }}" value="{{ v.id }}"{% if v.selected %} checked{% endif %}
+                         {%- if fdesc %} aria-describedby="{{ fdesc|join(' ') }}"{% endif %}>
+                  <span>{{ v.label }}</span>
+                  {%- if v.unknown %}<span class="rg-caption rg-subtle">not in the current list</span>{% endif -%}
+                  {%- if v.deprecated %}<span class="rg-caption rg-subtle">no longer offered</span>{% endif -%}
+                </label>
+                {%- endfor %}
+              </div>
+              {{- ed_error(facet.field_name, facet.error) -}}
+
+              {%- if facet.open_mode and facet.new_field_name %}
+              {{ ed_text(facet.new_field_name, 'Add to ' ~ facet.label|lower, facet.new_value_text,
+                         hint='Not in the list? Type one or more, separated by commas. They are saved on this template.') }}
+              {%- endif %}
+            </fieldset>
+            {%- else %}
+            {%- set single_value = facet.selected[0] if facet.selected else '' -%}
+            <div class="rg-facet">
+              <div class="rg-field">
+                <label class="rg-field__label" for="f-{{ facet.field_name }}">
+                  {{ facet.label }}{% if facet.required %}<span class="rg-field__req">Required</span>{% endif %}
+                </label>
+                <select class="rg-select" id="f-{{ facet.field_name }}" name="{{ facet.field_name }}"
+                        {%- if facet.required %} aria-required="true"{% endif %}
+                        {%- if fdesc %} aria-describedby="{{ fdesc|join(' ') }}"{% endif %}
+                        {%- if facet.error %} aria-invalid="true"{% endif %}>
+                  <option value=""{% if not single_value %} selected{% endif %}>Not set</option>
+                  {%- for v in facet['values'] if v.selected or not v.deprecated %}
+                  <option value="{{ v.id }}"{% if v.selected %} selected{% endif %}>
+                    {{- v.label -}}
+                    {%- if v.unknown %} — not in the current list{% endif -%}
+                    {%- if v.deprecated %} — no longer offered{% endif -%}
+                  </option>
+                  {%- endfor %}
+                </select>
+                {%- if facet.description %}
+                <p class="rg-field__hint" id="h-{{ facet.field_name }}">{{ facet.description }}</p>
+                {%- endif %}
+                {{- ed_error(facet.field_name, facet.error) -}}
+              </div>
+
+              {%- if facet.open_mode and facet.new_field_name %}
+              {{ ed_text(facet.new_field_name, 'Add to ' ~ facet.label|lower, facet.new_value_text,
+                         hint='Not in the list? Type one or more, separated by commas. They are saved on this template.') }}
+              {%- endif %}
+            </div>
+            {%- endif %}
+            {%- else %}
+            <p class="rg-body-sm rg-subtle">
+              {{- ui.icon('dot', 'rg-icon--sm') }}No tag facets are configured, so this template will
+              be saved without tags.
+            </p>
+            {%- endfor %}
+
+          </div>
+        {% endcall %}
+
+        {# -------------------------------------------------- inputs -#}
+        {% call ui.card('What you are asked for', 'One field per input on the run form. Use {{inputs.the_id}} to drop the answer into a query, a search or a lookup below.') %}
+          <div class="rg-stack-16">
+
+            <div id="rg-rows-input">
+              {#- Always in the DOM so editor.js can bring it back when the last
+                  row is removed; `hidden` is on the permitted-writes list. -#}
+              <p class="rg-body-sm rg-subtle" data-empty-note{% if input_rows %} hidden{% endif %}>
+                {{- ui.icon('dot', 'rg-icon--sm') }}No inputs yet. A template with no inputs is fine —
+                every section is then drawn straight from its sources.
+              </p>
+              {%- for row in input_rows %}
+              <fieldset class="rg-erow{% if row.errors %} rg-erow--invalid{% endif %}"
+                        data-row data-group="input" data-key="{{ row.key }}">
+                {{ ed_row_legend('Input', loop.index, row.id or 'not named yet', row.errors) }}
+                <input type="hidden" name="input.k" value="{{ row.key }}">
+                <div class="rg-erow__grid">
+                  {{ ed_text('input.' ~ row.key ~ '.id', 'Id', row.id,
+                             hint='Lowercase letters, digits and underscores. This is the name you use in {{inputs.your_id}}.',
+                             error=row.errors.get('id', ''), required=True,
+                             placeholder='compound_id') }}
+                  {{ ed_text('input.' ~ row.key ~ '.prompt', 'Question', row.prompt,
+                             hint='The label on the run form. Write it as a question or an instruction.',
+                             error=row.errors.get('prompt', ''), required=True,
+                             placeholder='Which compound?') }}
+                </div>
+                {{ ed_check('input.' ~ row.key ~ '.required', 'A run cannot start without this', row.required) }}
+                {{ ed_row_acts('input', row.key, 'input', loop.index) }}
+              </fieldset>
+              {%- endfor %}
+            </div>
+
+            <div class="rg-row">
+              {{ ed_op_btn('add:input', 'Add an input', 'secondary', data_add='input') }}
+            </div>
+
+          </div>
+        {% endcall %}
+
+        {# ------------------------------------------------- sources -#}
+        {% call ui.card('Where the data comes from', 'Each source is one place to read from. Sections below pick from this list — so a section can never point at something that is not here.') %}
+          <div class="rg-stack-16">
+
+            <div id="rg-rows-source">
+              <p class="rg-body-sm rg-subtle" data-empty-note{% if source_rows %} hidden{% endif %}>
+                {{- ui.icon('dot', 'rg-icon--sm') }}No sources yet. Sections will be narrative only
+                until you add one.
+              </p>
+              {%- for row in source_rows %}
+              <fieldset class="rg-erow{% if row.errors %} rg-erow--invalid{% endif %}"
+                        data-row data-group="source" data-key="{{ row.key }}">
+                {{ ed_row_legend('Source', loop.index, row.id or 'not named yet', row.errors) }}
+                <input type="hidden" name="source.k" value="{{ row.key }}">
+
+                <div class="rg-erow__grid">
+                  <div class="rg-field">
+                    <label class="rg-field__label" for="f-source.{{ row.key }}.id">Id<span class="rg-field__req">Required</span></label>
+                    <input class="rg-input{% if row.errors.get('id') %} rg-input--error{% endif %}"
+                           id="f-source.{{ row.key }}.id"
+                           name="source.{{ row.key }}.id"
+                           type="text"
+                           value="{{ row.id }}"
+                           placeholder="potency"
+                           aria-required="true"
+                           data-source-id
+                           aria-describedby="h-source.{{ row.key }}.id{% if row.errors.get('id') %} e-source.{{ row.key }}.id{% endif %}"
+                           {%- if row.errors.get('id') %} aria-invalid="true"{% endif %}>
+                    <p class="rg-field__hint" id="h-source.{{ row.key }}.id">
+                      Lowercase letters, digits and underscores. Sections refer to this name.
+                    </p>
+                    {{- ed_error('source.' ~ row.key ~ '.id', row.errors.get('id', '')) -}}
+                  </div>
+
+                  <div class="rg-field">
+                    <label class="rg-field__label" for="f-source.{{ row.key }}.kind">Type</label>
+                    <select class="rg-select" id="f-source.{{ row.key }}.kind"
+                            name="source.{{ row.key }}.kind"
+                            data-source-kind
+                            aria-describedby="h-source.{{ row.key }}.kind">
+                      {%- for kind_id, kind_label in source_kinds %}
+                      <option value="{{ kind_id }}"{% if kind_id == row.kind %} selected{% endif %}>{{ kind_label }}</option>
+                      {%- endfor %}
+                    </select>
+                    <p class="rg-field__hint" id="h-source.{{ row.key }}.kind">
+                      Changing the type swaps the fields below. Nothing you already typed is thrown away.
+                    </p>
+                  </div>
+                </div>
+
+                <p class="rg-erow__acts">
+                  {{ ed_op_btn('retype:' ~ row.key, 'Apply type', 'secondary', nojs_only=True,
+                               vh_suffix='source ' ~ loop.index) }}
+                </p>
+
+                {#- All four kinds' fields are always in the DOM. `hidden` only
+                    affects rendering, not submission, so switching type back
+                    and forth never loses what you typed (§5.3). No HTML
+                    `required` in here — an invisible validation bubble is
+                    unfocusable (§7.3). -#}
+                <fieldset class="rg-erow__vary" data-kind="bigquery"{% if row.kind != 'bigquery' %} hidden{% endif %}>
+                  <legend class="rg-vh">BigQuery settings</legend>
+                  <div class="rg-erow__grid">
+                    {{ ed_text('source.' ~ row.key ~ '.dataset', 'Dataset', row.fields.get('dataset', ''),
+                               hint='Shown next to every figure this source produces.',
+                               error=row.errors.get('dataset', ''), placeholder='dmpk_curated') }}
+                    {{ ed_text('source.' ~ row.key ~ '.query_id', 'Named query', row.fields.get('query_id', ''),
+                               hint='A query the gateway already knows. Preferred — it needs no per-run approval.',
+                               error=row.errors.get('query_id', ''), placeholder='dmpk_species_summary') }}
+                  </div>
+                  {{ ed_area('source.' ~ row.key ~ '.sql', 'Or inline SQL', row.fields.get('sql', ''),
+                             hint='Only used when there is no named query. Inline SQL needs per-run approval.',
+                             error=row.errors.get('sql', ''), rows=4, mono=True) }}
+                </fieldset>
+
+                <fieldset class="rg-erow__vary" data-kind="confluence"{% if row.kind != 'confluence' %} hidden{% endif %}>
+                  <legend class="rg-vh">Confluence settings</legend>
+                  <div class="rg-erow__grid">
+                    {{ ed_text('source.' ~ row.key ~ '.space', 'Space', row.fields.get('space', ''),
+                               hint='The space key to search in.',
+                               error=row.errors.get('space', ''), placeholder='DMPK') }}
+                    {{ ed_text('source.' ~ row.key ~ '.page_id', 'Page id', row.fields.get('page_id', ''),
+                               hint='One exact page. If this is set, the search below is ignored.',
+                               error=row.errors.get('page_id', '')) }}
+                  </div>
+                  {{ ed_text('source.' ~ row.key ~ '.cql', 'Search', row.fields.get('cql', ''),
+                             hint='A Confluence search expression.',
+                             error=row.errors.get('cql', '')) }}
+                </fieldset>
+
+                <fieldset class="rg-erow__vary" data-kind="file"{% if row.kind != 'file' %} hidden{% endif %}>
+                  <legend class="rg-vh">Local document settings</legend>
+                  {{ ed_text('source.' ~ row.key ~ '.filter_tags', 'Document tags', row.fields.get('filter_tags', ''),
+                             hint='Comma separated. Only documents carrying these tags are read. These are document tags — nothing to do with the template tags above.',
+                             error=row.errors.get('filter_tags', ''), placeholder='tox, 28day') }}
+                </fieldset>
+
+                <fieldset class="rg-erow__vary" data-kind="api"{% if row.kind != 'api' %} hidden{% endif %}>
+                  <legend class="rg-vh">API connector settings</legend>
+                  <div class="rg-erow__grid">
+                    {{ ed_text('source.' ~ row.key ~ '.connector', 'Connector', row.fields.get('connector', ''),
+                               hint='Which configured connector to call.',
+                               error=row.errors.get('connector', '')) }}
+                    {{ ed_text('source.' ~ row.key ~ '.endpoint', 'Endpoint', row.fields.get('endpoint', ''),
+                               hint='The path on that connector.',
+                               error=row.errors.get('endpoint', '')) }}
+                  </div>
+                </fieldset>
+
+                {{ ed_area('source.' ~ row.key ~ '.params', 'Parameters', row.fields.get('params', ''),
+                           hint='One name = value per line. Used by BigQuery and API sources; ignored by the others. A value may be a placeholder such as {{inputs.compound_id}}.',
+                           error=row.errors.get('params', ''), rows=3, mono=True) }}
+
+                {{ ed_check('source.' ~ row.key ~ '.required', 'A run cannot start without this source', row.required) }}
+                {{ ed_row_acts('source', row.key, 'source', loop.index) }}
+              </fieldset>
+              {%- endfor %}
+            </div>
+
+            <div class="rg-row">
+              <div class="rg-field">
+                <label class="rg-field__label" for="f-add_source_kind">New source type</label>
+                <select class="rg-select" id="f-add_source_kind" name="add_source_kind">
+                  {%- for kind_id, kind_label in source_kinds %}
+                  <option value="{{ kind_id }}">{{ kind_label }}</option>
+                  {%- endfor %}
+                </select>
+              </div>
+              {{ ed_op_btn('add:source', 'Add a source', 'secondary', data_add='source') }}
+            </div>
+
+            {%- if placeholders %}
+            <p class="rg-caption rg-subtle">
+              Placeholders you can use in any source field:
+              {%- for p in placeholders %} <span class="rg-mono">{{ p }}</span>{% if not loop.last %} ·{% endif %}{% endfor -%}
+            </p>
+            {%- endif %}
+
+          </div>
+        {% endcall %}
+
+        {# ------------------------------------------------ sections -#}
+        {% call ui.card('The sections', 'In order. Each one is written from its instruction and whatever its sources return.') %}
+          <div class="rg-stack-16">
+
+            <div id="rg-rows-section">
+              <p class="rg-body-sm rg-subtle" data-empty-note{% if section_rows %} hidden{% endif %}>
+                {{- ui.icon('warn', 'rg-icon--warn rg-icon--sm') }}A template needs at least one
+                section before it can be saved.
+              </p>
+              {%- for row in section_rows %}
+              <fieldset class="rg-erow{% if row.errors %} rg-erow--invalid{% endif %}"
+                        data-row data-group="section" data-key="{{ row.key }}">
+                {{ ed_row_legend('Section', row.number, row.heading or 'not titled yet', row.errors) }}
+                <input type="hidden" name="section.k" value="{{ row.key }}">
+
+                {{ ed_text('section.' ~ row.key ~ '.heading', 'Heading', row.heading,
+                           hint='Title text only — the numbering is added for you.',
+                           error=row.errors.get('heading', ''), required=True,
+                           placeholder='Absorption') }}
+
+                {{ ed_area('section.' ~ row.key ~ '.instruction', 'Instruction', row.instruction,
+                           hint='Sent to the model unchanged. Say what to cover, in what order, and what to leave out. Do not start a line with "Sources:" or "Table:".',
+                           error=row.errors.get('instruction', ''), required=True, rows=4) }}
+
+                {#- Same rule as the tag facets: the error <p> below is only
+                    reachable by a screen reader if the controls point at it. -#}
+                {%- set src_err_id = ('e-section.' ~ row.key ~ '.sources') if row.errors.get('sources') else '' -%}
+                <fieldset class="rg-facet">
+                  <legend class="rg-field__label">Sources this section may use</legend>
+                  {%- if source_choices %}
+                  <div class="rg-checkgroup" data-sources-picker data-section="{{ row.key }}">
+                    {%- for c in source_choices %}
+                    <label class="rg-checkgroup__item">
+                      <input type="checkbox" name="section.{{ row.key }}.sources" value="{{ c.key }}"
+                             data-source-ref="{{ c.key }}"{% if c.key in row.source_keys %} checked{% endif %}
+                             {%- if src_err_id %} aria-describedby="{{ src_err_id }}"{% endif %}>
+                      <span data-source-label="{{ c.key }}">{{ c.id or 'unnamed' }}</span>
+                      <span class="rg-caption rg-subtle" data-source-kindword="{{ c.key }}">{{ KIND_WORD.get(c.kind, c.kind) }}</span>
+                    </label>
+                    {%- endfor %}
+                  </div>
+                  {%- else %}
+                  <div class="rg-checkgroup" data-sources-picker data-section="{{ row.key }}"></div>
+                  <p class="rg-field__hint">
+                    Nothing to pick yet — add a source above and it appears here.
+                  </p>
+                  {%- endif %}
+                  {{- ed_error('section.' ~ row.key ~ '.sources', row.errors.get('sources', '')) -}}
+                </fieldset>
+
+                <div class="rg-field">
+                  <label class="rg-field__label" for="f-section.{{ row.key }}.table">Table</label>
+                  <select class="rg-select" id="f-section.{{ row.key }}.table"
+                          name="section.{{ row.key }}.table"
+                          data-table-select data-section="{{ row.key }}"
+                          aria-describedby="h-section.{{ row.key }}.table{% if row.errors.get('table') %} e-section.{{ row.key }}.table{% endif %}"
+                          {%- if row.errors.get('table') %} aria-invalid="true"{% endif %}>
+                    <option value=""{% if not row.table_key %} selected{% endif %}>No table</option>
+                    {%- for c in source_choices %}
+                    <option value="{{ c.key }}"{% if c.key == row.table_key %} selected{% endif %}
+                            {%- if not c.is_bigquery and c.key != row.table_key %} disabled{% endif %}>
+                      {{- c.id or 'unnamed' }} — {{ KIND_WORD.get(c.kind, c.kind) -}}
+                    </option>
+                    {%- endfor %}
+                  </select>
+                  <p class="rg-field__hint" id="h-section.{{ row.key }}.table">
+                    Renders one of the ticked sources as a table under the prose. Data queries only.
+                  </p>
+                  {{- ed_error('section.' ~ row.key ~ '.table', row.errors.get('table', '')) -}}
+                </div>
+
+                {{ ed_row_acts('section', row.key, 'section', row.number) }}
+              </fieldset>
+              {%- endfor %}
+            </div>
+
+            <div class="rg-row">
+              {{ ed_op_btn('add:section', 'Add a section', 'secondary', data_add='section') }}
+            </div>
+
+          </div>
+        {% endcall %}
+
+        {# ------------------------------------------------ citation -#}
+        {% call ui.card('Citations', 'How closely the draft has to point back at its evidence.') %}
+          <div class="rg-stack-16">
+            {{ ed_check('citation_required', 'Every claim must carry a citation', citation.required,
+                        hint='Leave this on unless the template is a scratch draft. It is what makes a value traceable to the study it came from.') }}
+            <div class="rg-erow__grid">
+              {{ ed_select('citation_granularity', 'Cite at the level of', granularity_options,
+                           citation.granularity,
+                           hint='Per claim is strictest and is the default.') }}
+              {{ ed_text('citation_min', 'Minimum citations per paragraph', citation.min_per_paragraph,
+                         hint='A whole number. 0 turns the check off.') }}
+            </div>
+          </div>
+        {% endcall %}
+
+        {# --------------------------------------------- passthrough -#}
+        {%- if passthrough_yaml %}
+        <details class="rg-details">
+          <summary>
+            <span class="rg-h3">Other settings in this file</span>
+            <span class="rg-caption rg-subtle">Kept exactly as they are</span>
+          </summary>
+          <div class="rg-stack-8">
+            <p class="rg-body-sm">
+              This file carries settings this form does not edit. They are written back
+              unchanged when you save.
+            </p>
+            <div class="rg-field">
+              <label class="rg-field__label" for="f-passthrough_yaml">Kept as-is</label>
+              <textarea class="rg-textarea rg-textarea--mono" id="f-passthrough_yaml"
+                        name="passthrough_yaml" rows="6" readonly>{{ passthrough_yaml }}</textarea>
+            </div>
+          </div>
+        </details>
+        {%- endif %}
+
+        {# ------------------------------------------------- preview -#}
+        {%- if preview %}
+        {% call ui.card('What will be written', 'The exact file, generated from the form above. Nothing is on disk yet.') %}
+          <div class="rg-stack-8">
+            <pre class="rg-preview" tabindex="0" role="region" aria-label="Generated template file">{{ preview }}</pre>
+            <p class="rg-caption rg-subtle">
+              Saving rewrites the file header in this canonical shape. Comments and hand-made
+              formatting in the original are not kept — a copy of the previous file is put aside
+              automatically each time you save.
+            </p>
+          </div>
+        {% endcall %}
+        {%- elif checked %}
+        {{ ui.banner('ok', 'Checked — nothing to fix', 'This template is ready to save.') }}
+        {%- endif %}
+
+        {# ------------------------------------------- foot actions -#}
+        <div class="rg-editor__actions">
+          {{ ed_op_btn('check', 'Check without saving', 'secondary', 'search') }}
+          {{ ui.btn('Cancel', href=cancel_url, kind='ghost') }}
+        </div>
+        <p class="rg-caption rg-subtle">
+          Save template is in the panel with the checks. Nothing is written to disk until you press it.
+        </p>
+
+      </div>
+
+      {# =========================== RAIL =========================== #}
+      <aside class="rg-cols__rail" aria-labelledby="h-editor-rail">
+        <div class="rg-rail-sticky">
+          {% call ui.card('Checks') %}
+            <div class="rg-editor__rail rg-stack-16">
+              <span class="rg-vh" id="h-editor-rail">Save this template</span>
+
+              {%- if n_errors %}
+              {{ ui.readiness('error', n_errors ~ (' thing' if n_errors == 1 else ' things') ~ ' to fix') }}
+              {%- elif n_warnings %}
+              {{ ui.readiness('warn', n_warnings ~ (' thing' if n_warnings == 1 else ' things') ~ ' worth a look') }}
+              {%- elif checked %}
+              {{ ui.readiness('ok', 'Ready to save') }}
+              {%- else %}
+              {{ ui.readiness('neutral', 'Not checked yet') }}
+              {%- endif %}
+
+              {%- if conflict %}
+              <div class="rg-editor__actions">
+                <button class="rg-btn rg-btn--danger" type="submit" name="op" value="save"
+                        formaction="{{ form_action }}?force=1">
+                  {{- ui.icon('warn', 'rg-btn__icon') }}<span>Overwrite with my version</span>
+                </button>
+                {{ ui.btn('Discard mine and reload', href='/templates/' ~ key ~ '/edit', kind='secondary') }}
+              </div>
+              {%- else %}
+              <div class="rg-editor__actions">
+                <button class="rg-btn rg-btn--primary" type="submit" name="op" value="save">
+                  {{- ui.icon('check', 'rg-btn__icon') }}<span>Save template</span>
+                </button>
+                {{ ed_op_btn('check', 'Check', 'secondary') }}
+              </div>
+              {%- endif %}
+
+              <hr class="rg-hr">
+
+              {{ ui.kv([
+                   ('Inputs', input_rows|length),
+                   ('Sources', source_rows|length),
+                   ('Sections', section_rows|length),
+                   ('Warnings', n_warnings)
+                 ]) }}
+
+              <p class="rg-caption rg-subtle">
+                {%- if mode == 'edit' -%}
+                Saving rewrites {{ key }}.md and puts the previous version aside first.
+                {%- else -%}
+                Saving creates one new Markdown file in the template folder.
+                {%- endif -%}
+              </p>
+            </div>
+          {% endcall %}
+        </div>
+      </aside>
+
+    </div>
+
+    {# ------------------------------------------------------------------
+       Inert row blueprints for editor.js. <template> content is not
+       submitted, not validated, and cannot collide on id — which is exactly
+       why it is the right element (§7.2). The literal token __KEY__ is the
+       row key; __SECTION__ is the owning section's row key.
+       ------------------------------------------------------------------ #}
+
+    <template id="rg-tpl-row-input">
+      <fieldset class="rg-erow" data-row data-group="input" data-key="__KEY__">
+        <legend class="rg-erow__legend">
+          <span>Input <span data-legend-number>0</span></span>
+          <span class="rg-subtle" data-legend-id>not named yet</span>
+        </legend>
+        <input type="hidden" name="input.k" value="__KEY__">
+        <div class="rg-erow__grid">
+          {{ ed_text('input.__KEY__.id', 'Id', '',
+                     hint='Lowercase letters, digits and underscores. This is the name you use in {{inputs.your_id}}.',
+                     required=True, placeholder='compound_id') }}
+          {{ ed_text('input.__KEY__.prompt', 'Question', '',
+                     hint='The label on the run form. Write it as a question or an instruction.',
+                     required=True, placeholder='Which compound?') }}
+        </div>
+        {{ ed_check('input.__KEY__.required', 'A run cannot start without this', True) }}
+        {{ ed_row_acts('input', '__KEY__', 'input', 0) }}
+      </fieldset>
+    </template>
+
+    <template id="rg-tpl-row-source">
+      <fieldset class="rg-erow" data-row data-group="source" data-key="__KEY__">
+        <legend class="rg-erow__legend">
+          <span>Source <span data-legend-number>0</span></span>
+          <span class="rg-subtle" data-legend-id>not named yet</span>
+        </legend>
+        <input type="hidden" name="source.k" value="__KEY__">
+        <div class="rg-erow__grid">
+          <div class="rg-field">
+            <label class="rg-field__label" for="f-source.__KEY__.id">Id<span class="rg-field__req">Required</span></label>
+            <input class="rg-input" id="f-source.__KEY__.id" name="source.__KEY__.id" type="text"
+                   value="" placeholder="potency" aria-required="true" data-source-id
+                   aria-describedby="h-source.__KEY__.id">
+            <p class="rg-field__hint" id="h-source.__KEY__.id">
+              Lowercase letters, digits and underscores. Sections refer to this name.
+            </p>
+          </div>
+          <div class="rg-field">
+            <label class="rg-field__label" for="f-source.__KEY__.kind">Type</label>
+            <select class="rg-select" id="f-source.__KEY__.kind" name="source.__KEY__.kind"
+                    data-source-kind aria-describedby="h-source.__KEY__.kind">
+              {%- for kind_id, kind_label in source_kinds %}
+              <option value="{{ kind_id }}">{{ kind_label }}</option>
+              {%- endfor %}
+            </select>
+            <p class="rg-field__hint" id="h-source.__KEY__.kind">
+              Changing the type swaps the fields below. Nothing you already typed is thrown away.
+            </p>
+          </div>
+        </div>
+        <p class="rg-erow__acts">
+          {{ ed_op_btn('retype:__KEY__', 'Apply type', 'secondary', nojs_only=True,
+                       vh_suffix='source 0') }}
+        </p>
+        <fieldset class="rg-erow__vary" data-kind="bigquery">
+          <legend class="rg-vh">BigQuery settings</legend>
+          <div class="rg-erow__grid">
+            {{ ed_text('source.__KEY__.dataset', 'Dataset', '',
+                       hint='Shown next to every figure this source produces.', placeholder='dmpk_curated') }}
+            {{ ed_text('source.__KEY__.query_id', 'Named query', '',
+                       hint='A query the gateway already knows. Preferred — it needs no per-run approval.',
+                       placeholder='dmpk_species_summary') }}
+          </div>
+          {{ ed_area('source.__KEY__.sql', 'Or inline SQL', '',
+                     hint='Only used when there is no named query. Inline SQL needs per-run approval.',
+                     rows=4, mono=True) }}
+        </fieldset>
+        <fieldset class="rg-erow__vary" data-kind="confluence" hidden>
+          <legend class="rg-vh">Confluence settings</legend>
+          <div class="rg-erow__grid">
+            {{ ed_text('source.__KEY__.space', 'Space', '', hint='The space key to search in.', placeholder='DMPK') }}
+            {{ ed_text('source.__KEY__.page_id', 'Page id', '',
+                       hint='One exact page. If this is set, the search below is ignored.') }}
+          </div>
+          {{ ed_text('source.__KEY__.cql', 'Search', '', hint='A Confluence search expression.') }}
+        </fieldset>
+        <fieldset class="rg-erow__vary" data-kind="file" hidden>
+          <legend class="rg-vh">Local document settings</legend>
+          {{ ed_text('source.__KEY__.filter_tags', 'Document tags', '',
+                     hint='Comma separated. Only documents carrying these tags are read. These are document tags — nothing to do with the template tags above.',
+                     placeholder='tox, 28day') }}
+        </fieldset>
+        <fieldset class="rg-erow__vary" data-kind="api" hidden>
+          <legend class="rg-vh">API connector settings</legend>
+          <div class="rg-erow__grid">
+            {{ ed_text('source.__KEY__.connector', 'Connector', '', hint='Which configured connector to call.') }}
+            {{ ed_text('source.__KEY__.endpoint', 'Endpoint', '', hint='The path on that connector.') }}
+          </div>
+        </fieldset>
+        {{ ed_area('source.__KEY__.params', 'Parameters', '',
+                   hint='One name = value per line. Used by BigQuery and API sources; ignored by the others. A value may be a placeholder such as {{inputs.compound_id}}.',
+                   rows=3, mono=True) }}
+        {{ ed_check('source.__KEY__.required', 'A run cannot start without this source', True) }}
+        {{ ed_row_acts('source', '__KEY__', 'source', 0) }}
+      </fieldset>
+    </template>
+
+    <template id="rg-tpl-row-section">
+      <fieldset class="rg-erow" data-row data-group="section" data-key="__KEY__">
+        <legend class="rg-erow__legend">
+          <span>Section <span data-legend-number>0</span></span>
+          <span class="rg-subtle" data-legend-id>not titled yet</span>
+        </legend>
+        <input type="hidden" name="section.k" value="__KEY__">
+        {{ ed_text('section.__KEY__.heading', 'Heading', '',
+                   hint='Title text only — the numbering is added for you.',
+                   required=True, placeholder='Absorption') }}
+        {{ ed_area('section.__KEY__.instruction', 'Instruction', '',
+                   hint='Sent to the model unchanged. Say what to cover, in what order, and what to leave out. Do not start a line with "Sources:" or "Table:".',
+                   required=True, rows=4) }}
+        <fieldset class="rg-facet">
+          <legend class="rg-field__label">Sources this section may use</legend>
+          <div class="rg-checkgroup" data-sources-picker data-section="__KEY__"></div>
+        </fieldset>
+        <div class="rg-field">
+          <label class="rg-field__label" for="f-section.__KEY__.table">Table</label>
+          <select class="rg-select" id="f-section.__KEY__.table" name="section.__KEY__.table"
+                  data-table-select data-section="__KEY__"
+                  aria-describedby="h-section.__KEY__.table">
+            <option value="" selected>No table</option>
+          </select>
+          <p class="rg-field__hint" id="h-section.__KEY__.table">
+            Renders one of the ticked sources as a table under the prose. Data queries only.
+          </p>
+        </div>
+        {{ ed_row_acts('section', '__KEY__', 'section', 0) }}
+      </fieldset>
+    </template>
+
+    {#- One picker entry. editor.js clones this to keep every section's source
+        list identical to the sources actually defined above, so a reference to
+        a source that does not exist is unreachable rather than merely
+        validated against. -#}
+    <template id="rg-tpl-source-ref">
+      <label class="rg-checkgroup__item">
+        <input type="checkbox" name="section.__SECTION__.sources" value="__KEY__" data-source-ref="__KEY__">
+        <span data-source-label="__KEY__">unnamed</span>
+        <span class="rg-caption rg-subtle" data-source-kindword="__KEY__"></span>
+      </label>
+    </template>
+
+  </form>
+
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{%- if mode != "delete" %}<script src="/static/editor.js" defer></script>{% endif %}
+{% endblock %}

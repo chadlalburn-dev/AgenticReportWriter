@@ -7,6 +7,12 @@ description: >
   safety, and current status — for fast internal sharing and reviews.
 owner: preclinical-project-team
 
+tags:
+  domain: pre_clinical
+  compliance: non_gxp
+  document_class: share_out
+  modality: [small_molecule]
+
 inputs:
   - id: compound_id
     prompt: Compound / programme identifier

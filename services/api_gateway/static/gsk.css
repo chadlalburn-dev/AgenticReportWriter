@@ -2473,3 +2473,573 @@ span.rg-pill:not([role="button"]):hover {
   }
   a[href^="#"]:not(.rg-cite)::after { content: ""; }
 }
+
+/* ==========================================================================
+   APPENDED — IMPLEMENTATION CONTRACT v2 §6 (CSS CLASS CONTRACT)
+   Owner: ENG-3.  Everything above this line is untouched.
+
+   Scope: in-app template authoring + the faceted tag taxonomy.
+     §21  gallery controls          (§6.1)
+     §22  gallery groups + card tags (§6.2)
+     §23  editor                    (§6.3)
+     §24  narrow viewports
+     §25  reduced motion
+     §26  forced colors
+     §27  print
+
+   Rules re-encoded here (§6.4 "Forbidden"):
+     - No new colour value of ANY kind. Every declaration below resolves to an
+       existing --rg-* custom property or to a system/keyword value.
+     - No per-facet and no per-value colour. .rg-badge--tag is identical for
+       `domain:dmpk`, `compliance:gxp` and every discovered open value. A facet
+       is distinguished by the WORDS the template prints in the chip and by the
+       grouping heading — never by hue, so the distinction survives greyscale,
+       colour blindness and forced-colors. (GxP policy G6.)
+     - No animation, no transition, no transform other than the two static icon
+       rotations required for the row-reorder buttons.
+     - Nothing drops an interactive target below 44x44px.
+     - --rg-accent stays surface + focus ring only.
+     - .rg-grid is applied to <ul>, so every new list-shaped layout below clears
+       list-style/margin/padding: a UA marker rendered against padding-left:0 is
+       drawn outside the box and clipped.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   21. GALLERY CONTROLS  (§6.1)
+   -------------------------------------------------------------------------- */
+
+/* <form method="get" role="search"> wrapping search + group + sort + facets.
+   Filtering is 100% server-side (R7): this is a real form with a real submit,
+   and the only script on the page auto-submits the two <select>s. */
+.rg-galctl {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rg-s-16);
+  min-width: 0;
+}
+
+.rg-galctl__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--rg-s-12);
+}
+.rg-galctl__row > * { min-width: 0; }
+.rg-galctl__row .rg-field { flex: 0 1 auto; }
+
+/* The sentence(s) describing what is currently filtered. Sits BETWEEN the form
+   and the results, so it is a sibling of .rg-galctl, not a child. Always in the
+   DOM even when empty, so the result list never jumps as filters are applied. */
+.rg-galctl__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--rg-s-8);
+  min-width: 0;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--rg-text-subtle);
+}
+
+/* the facet rail inside the <details> disclosure */
+.rg-facetgrid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rg-s-16);
+  min-width: 0;
+}
+
+/* one <fieldset> per facet. A fieldset's UA min-inline-size is min-content,
+   which blows a long value list out of its track; min-width:0 is the fix. */
+.rg-facet {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+/* UA gives <legend> its own inline padding — clear it so the facet label lines
+   up with the pills underneath. */
+.rg-facet > legend {
+  padding: 0;
+  margin-bottom: var(--rg-s-8);
+}
+/* list reset (see the header note) */
+.rg-facetgrid ul,
+.rg-facetgrid ol,
+.rg-facet ul,
+.rg-facet ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* A <label> wrapping a visually-hidden checkbox and a .rg-pill. The pill is the
+   affordance; the checkbox is the state, and it stays focusable. */
+.rg-tagchk {
+  position: relative;
+  display: inline-flex;
+  max-width: 100%;
+}
+/* Offset-hidden, NEVER display:none / visibility:hidden — either would remove
+   it from the tab order and the control would become mouse-only. */
+.rg-tagchk input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  pointer-events: none;
+}
+
+/* The pill inside a .rg-tagchk is a real 44x44 control again. The existing
+   `span.rg-pill:not([role="button"])` rule shrinks static label pills to 0;
+   these are interactive, so the target size is re-asserted one specificity step
+   higher rather than relying on source order. */
+.rg-tagchk span.rg-pill:not([role="button"]),
+.rg-tagchk .rg-pill {
+  min-height: 44px;
+  min-width: 44px;
+  padding: var(--rg-s-8) var(--rg-s-12);
+  cursor: pointer;
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
+.rg-tagchk:hover span.rg-pill:not([role="button"]),
+.rg-tagchk:hover .rg-pill {
+  background: var(--rg-surface-2);
+  color: var(--rg-text);
+}
+
+/* SELECTED STATE — three independent channels, none of them hue:
+     1. the native :checked bit (assistive tech + forced-colors)
+     2. the check icon becoming visible
+     3. the surface + stroke stepping up
+   Any one of them alone identifies the selection, so it survives greyscale,
+   colour blindness and Windows high-contrast. */
+.rg-tagchk input:checked + .rg-pill .rg-tagchk__tick { visibility: visible; }
+.rg-tagchk input:checked + .rg-pill {
+  background: var(--rg-surface-3);
+  border-color: var(--rg-stroke-strong);
+  color: var(--rg-text);
+}
+.rg-tagchk input:focus-visible + .rg-pill {
+  outline: 2px solid var(--rg-accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--rg-text);
+}
+
+/* Reserved with visibility (not display) so checking a value never re-flows the
+   pill row out from under the pointer. */
+.rg-tagchk__tick {
+  visibility: hidden;
+  flex: 0 0 auto;
+}
+
+.rg-pill__n {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--rg-text-subtle);
+}
+
+/* --------------------------------------------------------------------------
+   22. GALLERY GROUPS + CARD TAGS  (§6.2)
+   -------------------------------------------------------------------------- */
+
+.rg-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rg-s-12);
+  min-width: 0;
+  /* group headings are #g-{facet}-{value} deep-link targets */
+  scroll-margin-top: var(--rg-s-80);
+}
+.rg-group + .rg-group { margin-top: var(--rg-s-32); }
+
+/* The "nothing set for this facet" group. A neutral left rule only — untagged
+   is a fact, not a status, so it gets no status colour and no icon budget. */
+.rg-group--untagged {
+  border-left: 2px solid var(--rg-stroke);
+  padding-left: var(--rg-s-12);
+}
+
+.rg-group__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--rg-s-12);
+  min-width: 0;
+}
+
+/* the count is a sibling <p> of the <h3>, never inside it: a heading's
+   accessible name should be the group name, not "DMPK / ADME 4 templates" */
+.rg-group__n {
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--rg-text-subtle);
+  white-space: nowrap;
+}
+
+/* tag chips on a template card */
+.rg-tcard__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rg-s-4);
+  min-width: 0;
+}
+
+/* The ONE tag treatment. Identical for every facet and every value — including
+   `gxp`, which must never read as a warning badge (G6). A chip's meaning is
+   carried entirely by its text; the card link's accessible name carries the
+   full tag list, so the two-chip visual budget hides nothing from a screen
+   reader (G8). */
+.rg-badge--tag {
+  background: var(--rg-surface-2);
+  color: var(--rg-text);
+  border-color: var(--rg-stroke);
+  /* an open facet can hold an arbitrarily long discovered value; wrapping is
+     the only thing that keeps a 320px viewport free of horizontal scroll */
+  white-space: normal;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* "+3 tags". Deliberately NOT a badge: no border, no surface, so it reads as
+   the annotation it is and never inflates the chip count by eye. */
+.rg-tcard__more {
+  flex: 0 0 auto;
+  align-self: center;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--rg-text-subtle);
+  white-space: nowrap;
+}
+
+/* Edit / Clone / Delete. A sibling of the card INSIDE the <li>, so it sits
+   outside .rg-tcard's stretched title link and stays independently clickable. */
+.rg-tcard__acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rg-s-8);
+  margin-top: var(--rg-s-8);
+  min-width: 0;
+}
+
+/* .rg-tcard is height:100% so cards in a row match. Once a <li> also carries an
+   actions row, the card has to stop claiming the whole track or the two
+   overlap. Without :has() the failure mode is simply an unstretched card. */
+@supports selector(:has(*)) {
+  .rg-grid > li:has(> .rg-tcard__acts) {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .rg-grid > li:has(> .rg-tcard__acts) > .rg-tcard {
+    flex: 1 1 auto;
+    height: auto;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   23. EDITOR  (§6.3)
+   -------------------------------------------------------------------------- */
+
+.rg-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rg-s-24);
+  min-width: 0;
+}
+
+/* Save / Check / Cancel. Rendered twice — once in the sticky rail, once at the
+   foot of the form — so a long template never strands the primary action. */
+.rg-editor__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rg-s-8);
+  min-width: 0;
+}
+
+.rg-editor__rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rg-s-16);
+  min-width: 0;
+}
+.rg-editor__rail ul,
+.rg-editor__rail ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* one repeating row: an input, a source, or a section */
+.rg-erow {
+  border: 1px solid var(--rg-stroke);
+  border-radius: var(--rg-r-lg);
+  background: var(--rg-surface-1);
+  padding: var(--rg-s-16);
+  margin: 0;
+  min-width: 0;
+}
+.rg-erow + .rg-erow { margin-top: var(--rg-s-12); }
+
+/* Always paired with the alert icon the template emits in the legend, so the
+   invalid state is never carried by the rule alone. */
+.rg-erow--invalid { border-left: 3px solid var(--rg-err-stroke); }
+
+.rg-erow__legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rg-s-8);
+  width: 100%;
+  padding: 0;
+  margin-bottom: var(--rg-s-12);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--rg-text-subtle);
+}
+/* the row's live id, echoed by editor.js as it is typed. Sentence case: an id
+   is a literal, and uppercasing it would misrepresent what will be written. */
+.rg-erow__legend [data-legend-id] {
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--rg-text);
+  overflow-wrap: anywhere;
+}
+
+/* move up / move down / remove */
+.rg-erow__acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rg-s-4);
+  margin-left: auto;
+}
+.rg-erow__acts > .rg-btn {
+  min-height: 44px;
+  min-width: 44px;
+  padding: var(--rg-s-8);
+}
+
+.rg-erow__grid {
+  display: grid;
+  gap: var(--rg-s-12);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  min-width: 0;
+}
+/* A textarea or a checkbox cluster in a 240px track is unusable. Give them the
+   whole row automatically rather than minting a modifier ENG-5 has to remember;
+   without :has() they simply stay in one track. */
+@supports selector(:has(*)) {
+  .rg-erow__grid > .rg-field:has(> .rg-textarea),
+  .rg-erow__grid > .rg-field:has(> .rg-checkgroup),
+  .rg-erow__grid > .rg-checkgroup { grid-column: 1 / -1; }
+}
+
+/* the four kind-specific fieldsets; exactly one lacks [hidden] */
+.rg-erow__vary {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.rg-erow__vary > legend {
+  padding: 0;
+  margin-bottom: var(--rg-s-8);
+}
+
+/* Matches the .rg-input treatment exactly. Replicated rather than added to the
+   existing selector list because this file is append-only for ENG-3. */
+.rg-textarea {
+  display: block;
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  padding: var(--rg-s-8) var(--rg-s-12);
+  background: var(--rg-surface-1);
+  color: var(--rg-text);
+  border: 1px solid var(--rg-stroke);
+  border-radius: var(--rg-r-sm);
+  font-size: 16px;
+  line-height: 22px;
+}
+.rg-textarea::placeholder { color: var(--rg-text-disabled); opacity: 1; }
+.rg-textarea:hover { border-color: var(--rg-stroke-strong); }
+.rg-textarea[readonly] { background: var(--rg-surface-2); }
+.rg-textarea:disabled {
+  background: var(--rg-surface-2);
+  color: var(--rg-text-disabled);
+  cursor: not-allowed;
+}
+.rg-textarea--error,
+.rg-textarea[aria-invalid="true"] {
+  border-color: var(--rg-err-stroke);
+  background: var(--rg-err-surface);
+}
+.rg-textarea--mono {
+  font-family: var(--rg-font-mono);
+  font-size: 14px;
+  line-height: 20px;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.rg-checkgroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rg-s-8);
+  min-width: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.rg-checkgroup__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rg-s-8);
+  min-height: 44px;
+  min-width: 0;
+  max-width: 100%;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--rg-text);
+}
+.rg-checkgroup__item > span { min-width: 0; overflow-wrap: anywhere; }
+
+/* The generated Markdown, exactly as it will be written. tabindex="0" makes the
+   scroll region keyboard-reachable — an overflow box only a mouse can pan
+   fails WCAG 2.1.1. */
+.rg-preview {
+  margin: 0;
+  padding: var(--rg-s-12);
+  max-height: 480px;
+  overflow: auto;
+  background: var(--rg-surface-2);
+  border: 1px solid var(--rg-stroke);
+  border-radius: var(--rg-r-md);
+  color: var(--rg-text);
+  font-family: var(--rg-font-mono);
+  font-size: 12px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  /* `pre`, not `pre-wrap`: the serialiser wraps instructions at 76 columns and
+     the preview has to show the real line breaks, not the viewport's. */
+  white-space: pre;
+  tab-size: 2;
+}
+
+.rg-issues {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rg-s-8);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.rg-issues__row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--rg-s-8);
+  min-width: 0;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--rg-text);
+}
+.rg-issues__row > .rg-icon { flex: 0 0 auto; margin-top: var(--rg-s-4); }
+.rg-issues__row > span { min-width: 0; overflow-wrap: anywhere; }
+
+/* Row reorder. base.html's sprite is frozen at 19 symbols, so "move up" and
+   "move down" are the `chevron` symbol turned a quarter turn (R3). These are
+   the only transforms in the appended stylesheet, and they are static — there
+   is nothing here for prefers-reduced-motion to switch off. */
+.rg-icon--rot-up { transform: rotate(-90deg); }
+.rg-icon--rot-down { transform: rotate(90deg); }
+
+/* --------------------------------------------------------------------------
+   24. NARROW VIEWPORTS
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 767px) {
+  .rg-erow { padding: var(--rg-s-12); }
+  .rg-erow__grid { grid-template-columns: minmax(0, 1fr); }
+  .rg-galctl__row { align-items: stretch; }
+  .rg-galctl__row .rg-field { flex: 1 1 100%; }
+  .rg-preview { max-height: 320px; }
+  .rg-group--untagged { padding-left: var(--rg-s-8); }
+}
+
+/* --------------------------------------------------------------------------
+   25. REDUCED MOTION
+   -------------------------------------------------------------------------- */
+
+/* The global §18 block already neutralises every transition and animation with
+   !important and applies to everything appended here. Nothing above animates,
+   so this block only re-states the one rotation exemption: a static rotate() is
+   orientation, not motion, and dropping it would leave the reorder buttons
+   showing two identical right-pointing chevrons. */
+@media (prefers-reduced-motion: reduce) {
+  .rg-icon--rot-up { transform: rotate(-90deg); }
+  .rg-icon--rot-down { transform: rotate(90deg); }
+}
+
+/* --------------------------------------------------------------------------
+   26. FORCED COLORS (Windows high-contrast)
+   -------------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+  .rg-erow,
+  .rg-preview { border: 1px solid CanvasText; }
+  /* the selected facet value: the tick is visibility-driven and survives on its
+     own, but thickening the stroke keeps the pill legible as "pressed" once
+     every surface in the row collapses to the same system colour */
+  .rg-tagchk input:checked + .rg-pill { border-width: 2px; }
+  .rg-group--untagged { border-left: 2px solid CanvasText; }
+  .rg-erow--invalid { border-left: 3px solid CanvasText; }
+}
+
+/* --------------------------------------------------------------------------
+   27. PRINT
+   -------------------------------------------------------------------------- */
+
+@media print {
+  /* controls and row-editing affordances are not documents */
+  .rg-galctl,
+  .rg-editor__actions,
+  .rg-erow__acts,
+  .rg-tcard__acts { display: none !important; }
+
+  .rg-group { break-inside: auto; }
+  .rg-group--untagged { border-left: 2px solid #B3B3B2; }
+  .rg-group__head { break-after: avoid; page-break-after: avoid; }
+
+  .rg-erow,
+  .rg-preview {
+    box-shadow: none;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .rg-erow--invalid { border-left: 3px solid #000000; }
+
+  /* on paper there is no scroll region, so the whole draft has to fit the page */
+  .rg-preview {
+    max-height: none;
+    overflow: visible;
+    white-space: pre-wrap;
+    border: 1px solid #B3B3B2;
+  }
+}

@@ -12,11 +12,12 @@ a section in isolation from its parent.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class TemplateStatus(StrEnum):
@@ -224,6 +225,62 @@ class GlobalStyle(BaseModel):
     heading_levels: int = Field(default=4, ge=1, le=6)
 
 
+# --- Classification tags ----------------------------------------------------
+#
+# `ReportTemplate.tags` is a FACET map: facet id -> ordered value ids, e.g.
+#   {"domain": ["dmpk"], "compliance": ["non_gxp"], "modality": ["small_molecule"]}
+#
+# The *semantics* of a facet (its label, cardinality, whether it is required,
+# which values exist) live in report-templates/taxonomy.yaml, never here. This
+# module performs SHAPE normalisation only, so a schema that knows nothing
+# about any particular taxonomy can still round-trip a tagged template.
+#
+# NOTE: this is unrelated to `FileSetBinding.filter_tags`, which selects source
+# *documents* at generation time.
+
+_FACET_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_VALUE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+
+
+def _coerce_tag_map(value: object) -> dict[str, list[str]]:
+    """Shape normalisation ONLY. Knows nothing about any taxonomy."""
+    if value is None or value == "" or value == []:
+        return {}
+    raw: dict[str, object]
+    if isinstance(value, (list, tuple)):
+        raw = {}
+        for element in value:
+            token = str(element).strip()
+            facet, sep, val = token.partition(":")
+            if not sep:
+                continue  # a stray string is not worth a load failure
+            raw.setdefault(facet.strip(), []).append(val.strip())  # type: ignore[union-attr]
+    elif isinstance(value, dict):
+        raw = value
+    else:
+        raise ValueError("tags must be a mapping of facet id -> value id(s)")
+
+    out: dict[str, list[str]] = {}
+    for facet_key, facet_values in raw.items():
+        facet = str(facet_key).strip().lower()
+        if not _FACET_ID_RE.match(facet):
+            raise ValueError(f"tags: invalid facet id {facet_key!r}")
+        items = facet_values if isinstance(facet_values, (list, tuple)) else [facet_values]
+        seen: list[str] = []
+        for item in items:
+            if item is None:
+                continue
+            val = str(item).strip().lower()
+            if not val:
+                continue
+            if not _VALUE_ID_RE.match(val):
+                raise ValueError(f"tags.{facet}: invalid value id {item!r}")
+            if val not in seen:
+                seen.append(val)
+        out[facet] = seen  # [] is legal and meaningful
+    return out
+
+
 class ReportTemplate(BaseModel):
     """A versioned, approvable report template.
 
@@ -238,9 +295,30 @@ class ReportTemplate(BaseModel):
     status: TemplateStatus = TemplateStatus.DRAFT
     report_type: str = Field(description="Stable identifier, e.g. 'ICH_E6_IB'")
     title: str
+    description: str = ""
     metadata: TemplateMetadata
     global_style: GlobalStyle = Field(default_factory=GlobalStyle)
     sections: list[TemplateSection]
+    tags: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Facet id -> ordered value ids. Facet and value semantics live in "
+            "report-templates/taxonomy.yaml, never in this schema."
+        ),
+    )
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _validate_tags(cls, value: object) -> dict[str, list[str]]:
+        return _coerce_tag_map(value)
+
+    def tag_values(self, facet_id: str) -> list[str]:
+        """The values set for one facet; `[]` when the facet is unset."""
+        return list(self.tags.get(facet_id, ()))
+
+    def tag_tokens(self) -> list[str]:
+        """Derived `facet:value` tokens. Never persisted — URLs and markup only."""
+        return [f"{f}:{v}" for f, vs in self.tags.items() for v in vs]
 
     def all_sections(self) -> list[TemplateSection]:
         """Flatten the section tree depth-first."""

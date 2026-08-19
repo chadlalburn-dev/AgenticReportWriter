@@ -7,6 +7,12 @@ description: >
   excretion, in vitro ADME, PK parameters, and the human PK / dose projection.
 owner: dmpk
 
+tags:
+  domain: dmpk
+  compliance: non_gxp
+  document_class: technical_summary
+  modality: [small_molecule]
+
 inputs:
   - id: compound_id
     prompt: Compound / programme identifier

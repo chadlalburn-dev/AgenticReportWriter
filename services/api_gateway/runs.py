@@ -39,9 +39,10 @@ import traceback
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterable, Literal, Mapping, Sequence
+from urllib.parse import urlencode
 
 from services.api_integration import (
     ApiCallGate,
@@ -121,6 +122,108 @@ STUB_LLM_WARNING: str = (
 _PRIMARY_INPUT_ORDER = ("compound_id", "product_name", "target_name", "indication_keyword")
 
 _PARSEABLE_SUFFIXES = frozenset({".pdf", ".docx", ".xlsx"})
+
+#: Where `write_template` keeps its silent safety net, and where a deleted
+#: template goes. Both live under the already-gitignored `var/`.
+TEMPLATE_BACKUPS_DIR: Path = REPO_ROOT / "var" / "template-backups"
+TEMPLATE_TRASH_DIR: Path = REPO_ROOT / "var" / "template-trash"
+
+#: A `report-templates/*.md` stem that is safe to put in a URL and to join
+#: onto a directory. Deliberately WIDER than the writer's `report_type`
+#: charset: existing files (README, SKILL.template) must stay addressable.
+TEMPLATE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+#: Opaque editor row key. The browser mints `[A-Za-z0-9_-]{1,16}`; the server
+#: mints `i1`/`s1`/`t1`. Neither side ever renumbers the other's keys.
+_ROW_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,31}$")
+
+GROUP_NONE: str = "none"
+#: Facet ids that are DERIVED from the card, never configured (contract R11).
+DERIVED_GROUPS: tuple[str, ...] = ("owner", "readiness")
+
+SORT_OPTIONS: list[tuple[str, str]] = [
+    ("name", "Name (A–Z)"),
+    ("updated", "Recently updated"),
+    ("sections", "Most sections"),
+    ("ready", "Source readiness (ready first)"),
+    ("owner", "Owning team (A–Z)"),
+]
+_SORT_IDS: frozenset[str] = frozenset(k for k, _ in SORT_OPTIONS)
+
+GRANULARITY_OPTIONS: list[tuple[str, str]] = [
+    ("claim", "Per claim"),
+    ("paragraph", "Per paragraph"),
+    ("section", "Per section"),
+]
+
+SOURCE_KIND_OPTIONS: list[tuple[str, str]] = [
+    ("bigquery", "BigQuery"),
+    ("confluence", "Confluence"),
+    ("file", "Local documents"),
+    ("api", "API connector"),
+]
+
+#: Every field name a source row can carry, for all four kinds at once, so
+#: switching kind back and forth in the editor never loses what was typed.
+SOURCE_FIELD_NAMES: tuple[str, ...] = (
+    "dataset",
+    "query_id",
+    "sql",
+    "space",
+    "cql",
+    "page_id",
+    "filter_tags",
+    "connector",
+    "endpoint",
+    "params",
+)
+
+_READINESS_ORDER: dict[str, int] = {"ready": 0, "gaps": 1, "blocked": 2, "broken": 3}
+_READINESS_GROUP_LABEL: dict[str, str] = {
+    "ready": "Every source ready",
+    "gaps": "Some sources not ready",
+    "blocked": "Sources blocked",
+    "broken": "Not runnable",
+}
+
+#: Hard cap on tag chips per gallery card (contract §5.4).
+MAX_CARD_CHIPS: int = 2
+
+
+# ---------------------------------------------------------------------------
+# Authoring bridge — tag taxonomy (ENG-1) and template writer (ENG-2)
+# ---------------------------------------------------------------------------
+#
+# `services/template_service/__init__.py` is frozen, so both modules are
+# imported by full path (contract §1). Nothing here imports the engine.
+
+from services.template_service.report_doc_writer import (  # noqa: E402
+    SOURCE_KINDS,
+    DraftInput,
+    DraftIssue,
+    DraftSection,
+    DraftSource,
+    TemplateConflict,
+    TemplateDraft,
+    TemplateWriteError,
+    backup_template,
+    blank_draft,
+    clone_draft,
+    draft_from_path,
+    find_trashed,
+    read_sha256,
+    restore_trashed,
+    serialize_draft,
+    trash_template,
+    validate_draft,
+    write_template,
+)
+from services.template_service.taxonomy import (  # noqa: E402
+    UNTAGGED,
+    load_taxonomy,
+    parse_token,
+    slugify_value,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +442,13 @@ class SectionOutline(_Dict):
 
 
 @dataclass
+class TagChip(_Dict):
+    facet_id: str
+    value_id: str
+    label: str
+
+
+@dataclass
 class TemplateCard(_Dict):
     key: str
     path: str
@@ -356,6 +466,131 @@ class TemplateCard(_Dict):
     sources_total: int
     readiness: Readiness
     readiness_text: str
+    # --- classification (contract §5.1). All defaulted: every construction
+    # --- site is keyword-only, and the JSON surface stays additive.
+    tags: dict[str, list[str]] = field(default_factory=dict)
+    tag_tokens: list[str] = field(default_factory=list)
+    chips: list[TagChip] = field(default_factory=list)
+    n_more_tags: int = 0
+    tag_aria: str = ""
+    updated: str = ""
+    updated_ts: float = 0.0
+    search: str = ""
+
+
+@dataclass
+class FacetValueView(_Dict):
+    id: str
+    label: str
+    token: str
+    count: int
+    selected: bool
+
+
+@dataclass
+class FacetView(_Dict):
+    id: str
+    label: str
+    description: str
+    multi: bool
+    groupable: bool
+    untagged_label: str
+    values: list[FacetValueView]
+    n_selected: int
+
+
+@dataclass
+class GroupView(_Dict):
+    key: str
+    facet_id: str
+    value_id: str
+    label: str
+    heading_id: str
+    untagged: bool
+    count: int
+    cards: list[TemplateCard]
+
+
+@dataclass
+class GalleryView(_Dict):
+    """Everything `GET /` needs that depends on group / sort / tag / q."""
+
+    group: str
+    sort: str
+    q: str
+    facets: list[FacetView]
+    groups: list[GroupView]
+    cards: list[TemplateCard]
+    unavailable: list[TemplateCard]
+    group_options: list[tuple[str, str]]
+    sort_options: list[tuple[str, str]]
+    n_shown: int
+    n_total: int
+    n_active: int
+    active_summary: list[str]
+    clear_url: str
+    filtering: bool
+    taxonomy_ok: bool
+
+
+# --- editor view models (contract §5.3) ------------------------------------
+
+
+@dataclass
+class EditorFacetValue(_Dict):
+    id: str
+    label: str
+    description: str
+    selected: bool
+    deprecated: bool
+    unknown: bool
+
+
+@dataclass
+class EditorFacet(_Dict):
+    id: str
+    label: str
+    description: str
+    multi: bool
+    required: bool
+    open_mode: bool
+    field_name: str
+    new_field_name: str
+    selected: list[str]
+    values: list[EditorFacetValue]
+    error: str
+    new_value_text: str
+
+
+@dataclass
+class EditorInputRow(_Dict):
+    key: str
+    id: str
+    prompt: str
+    required: bool
+    errors: dict[str, str]
+
+
+@dataclass
+class EditorSourceRow(_Dict):
+    key: str
+    id: str
+    kind: str
+    required: bool
+    legend: str
+    fields: dict[str, str]
+    errors: dict[str, str]
+
+
+@dataclass
+class EditorSectionRow(_Dict):
+    key: str
+    number: int
+    heading: str
+    instruction: str
+    source_keys: list[str]
+    table_key: str
+    errors: dict[str, str]
 
 
 @dataclass
@@ -1164,6 +1399,12 @@ class _ParsedTemplate:
     error: str | None
     description: str
     owner: str
+    #: Shape-normalised front-matter tags. Read from the front matter directly
+    #: (contract §5.1) so a file that fails to load still groups and sorts.
+    #: Taxonomy conformance is applied at render time, in `_card_for`.
+    tags: dict[str, list[str]] = field(default_factory=dict)
+    updated: str = ""
+    updated_ts: float = 0.0
 
 
 def _read_front_matter(path: Path) -> dict[str, Any]:
@@ -1190,6 +1431,124 @@ def _clean_error(message: str) -> str:
     return text
 
 
+# --- tags on a card --------------------------------------------------------
+
+
+_FACET_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_VALUE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+
+
+def _shape_tag_map(value: object) -> dict[str, list[str]]:
+    """Shape-only, never-raises coercion of a raw `tags:` value.
+
+    Deliberately more tolerant than `ReportTemplate`'s validator: a bad tag
+    block must never stop a gallery card from being built, and a card that
+    cannot be built is a card the scientist cannot see. Taxonomy conformance
+    (aliases, cardinality, defaults) happens later, in `Taxonomy.normalize`.
+    """
+    if value is None or value == "" or value == []:
+        return {}
+    raw: dict[str, object] = {}
+    if isinstance(value, (list, tuple)):
+        for element in value:
+            facet, sep, item = str(element).strip().partition(":")
+            if sep:
+                raw.setdefault(facet.strip(), []).append(item.strip())  # type: ignore[union-attr]
+    elif isinstance(value, dict):
+        raw = dict(value)
+    else:
+        return {}
+
+    out: dict[str, list[str]] = {}
+    for facet_key, facet_values in raw.items():
+        facet = str(facet_key).strip().lower()
+        if not _FACET_ID_RE.match(facet):
+            continue
+        items = facet_values if isinstance(facet_values, (list, tuple)) else [facet_values]
+        seen: list[str] = []
+        for item in items:
+            if item is None:
+                continue
+            text = str(item).strip().lower()
+            if text and _VALUE_ID_RE.match(text) and text not in seen:
+                seen.append(text)
+        out[facet] = seen
+    return out
+
+
+def _date_to_epoch(value: str) -> float:
+    """`2026-08-19` -> epoch seconds (UTC). 0.0 when it is not a date."""
+    text = str(value or "").strip()[:10]
+    try:
+        return (
+            datetime.strptime(text, "%Y-%m-%d")
+            .replace(tzinfo=timezone.utc)
+            .timestamp()
+        )
+    except ValueError:
+        return 0.0
+
+
+def _chips_for(
+    tags: dict[str, list[str]], taxonomy: Any, *, suppress_facet: str = ""
+) -> tuple[list[TagChip], int]:
+    """Contract §5.4 — at most `MAX_CARD_CHIPS` chips plus a `+N tags` count.
+
+    The chip budget is a DISPLAY rule only. `card_chip` and `notable` are
+    compared generically against configured strings; nothing here branches on
+    any particular value.
+    """
+    candidates: list[TagChip] = []
+    for facet in taxonomy.facets:
+        if facet.id == suppress_facet or facet.card_chip == "never":
+            continue
+        notable = tuple(facet.notable or ())
+        for value_id in tags.get(facet.id, ()) or ():
+            if facet.card_chip == "notable" and value_id not in notable:
+                continue
+            candidates.append(
+                TagChip(
+                    facet_id=facet.id,
+                    value_id=value_id,
+                    label=taxonomy.label_for(facet.id, value_id),
+                )
+            )
+    chips = candidates[:MAX_CARD_CHIPS]
+    total = sum(len(v or ()) for v in tags.values())
+    return chips, max(total - len(chips), 0)
+
+
+def _tag_aria(tags: dict[str, list[str]], taxonomy: Any) -> str:
+    """Every tag label, in facet order — never abridged by the chip budget."""
+    labels: list[str] = []
+    for facet in taxonomy.facets:
+        for value_id in tags.get(facet.id, ()) or ():
+            labels.append(taxonomy.label_for(facet.id, value_id))
+    for facet_id, values in tags.items():
+        if taxonomy.facet(facet_id) is None:
+            labels.extend(values or ())
+    return ", ".join(labels)
+
+
+def _search_haystack(
+    *,
+    card_bits: Iterable[str],
+    tags: dict[str, list[str]],
+    taxonomy: Any,
+    section_titles: Iterable[str] = (),
+    prompts: Iterable[str] = (),
+) -> str:
+    parts: list[str] = [str(b or "") for b in card_bits]
+    for facet_id, values in tags.items():
+        for value_id in values or ():
+            parts.append(value_id)
+            parts.append(taxonomy.label_for(facet_id, value_id))
+        parts.append(taxonomy.facet_label(facet_id))
+    parts.extend(str(t or "") for t in section_titles)
+    parts.extend(str(p or "") for p in prompts)
+    return " ".join(p for p in parts if p).casefold()
+
+
 # ---------------------------------------------------------------------------
 # RunStore
 # ---------------------------------------------------------------------------
@@ -1207,9 +1566,13 @@ class RunStore:
         self,
         root: Path = RUNS_ROOT,
         templates_dir: Path = TEMPLATES_DIR,
+        backups_dir: Path = TEMPLATE_BACKUPS_DIR,
+        trash_dir: Path = TEMPLATE_TRASH_DIR,
     ) -> None:
         self._root = Path(root)
         self._templates_dir = Path(templates_dir)
+        self._backups_dir = Path(backups_dir)
+        self._trash_dir = Path(trash_dir)
         self._lock = threading.RLock()
         self._records: dict[str, RunRecord] = {}
         self._metrics: dict[str, dict[str, int]] = {}
@@ -1243,16 +1606,36 @@ class RunStore:
 
         description = ""
         owner = ""
+        tags: dict[str, list[str]] = {}
+        updated = ""
         front = _read_front_matter(path)
         if front:
             description = " ".join(str(front.get("description", "") or "").split())
             owner = str(front.get("owner", "") or "")
+            tags = _shape_tag_map(front.get("tags"))
+            raw_updated = front.get("updated")
+            if isinstance(raw_updated, (date, datetime)):
+                updated = raw_updated.strftime("%Y-%m-%d")
+            else:
+                updated = str(raw_updated or "").strip()
+        updated_ts = _date_to_epoch(updated) or float(stamp[0] or 0.0)
+
         try:
             template = load_report_doc(path)
-            parsed = _ParsedTemplate(key, path, template, None, description, owner)
+            parsed = _ParsedTemplate(
+                key, path, template, None, description, owner, tags, updated, updated_ts
+            )
         except Exception as exc:  # noqa: BLE001 - ReportDocError + pydantic errors
             parsed = _ParsedTemplate(
-                key, path, None, _clean_error(exc), description, owner
+                key,
+                path,
+                None,
+                _clean_error(exc),
+                description,
+                owner,
+                tags,
+                updated,
+                updated_ts,
             )
 
         with self._template_lock:
@@ -1265,6 +1648,12 @@ class RunStore:
         return sorted(self._templates_dir.glob("*.md"))
 
     def _card_for(self, parsed: _ParsedTemplate) -> TemplateCard:
+        taxonomy = load_taxonomy()
+        tags, _tag_issues = taxonomy.normalize(parsed.tags)
+        tokens = list(taxonomy.tokens_for(tags))
+        chips, n_more = _chips_for(tags, taxonomy)
+        aria = _tag_aria(tags, taxonomy)
+
         if parsed.template is None:
             return TemplateCard(
                 key=parsed.key,
@@ -1283,6 +1672,18 @@ class RunStore:
                 sources_total=0,
                 readiness="broken",
                 readiness_text="Not runnable — this file is not a report template.",
+                tags=tags,
+                tag_tokens=tokens,
+                chips=chips,
+                n_more_tags=n_more,
+                tag_aria=aria,
+                updated=parsed.updated,
+                updated_ts=parsed.updated_ts,
+                search=_search_haystack(
+                    card_bits=(parsed.key, parsed.description, parsed.owner),
+                    tags=tags,
+                    taxonomy=taxonomy,
+                ),
             )
 
         template = parsed.template
@@ -1329,6 +1730,27 @@ class RunStore:
             sources_total=total,
             readiness=readiness,
             readiness_text=readiness_text,
+            tags=tags,
+            tag_tokens=tokens,
+            chips=chips,
+            n_more_tags=n_more,
+            tag_aria=aria,
+            updated=parsed.updated,
+            updated_ts=parsed.updated_ts,
+            search=_search_haystack(
+                card_bits=(
+                    template.title,
+                    parsed.description,
+                    parsed.owner,
+                    parsed.key,
+                    template.template_id,
+                    template.version,
+                ),
+                tags=tags,
+                taxonomy=taxonomy,
+                section_titles=[s.title for s in sections],
+                prompts=[f.prompt for f in fields],
+            ),
         )
 
     def list_templates(self) -> tuple[list[TemplateCard], list[TemplateCard]]:
@@ -1381,6 +1803,142 @@ class RunStore:
     def default_inputs(self, key: str) -> dict[str, str]:
         card = self.get_template(key)
         return {f.binding_id: f.default for f in card.form_fields}
+
+    # -- gallery: group / sort / filter ------------------------------------
+
+    def gallery_view(
+        self,
+        *,
+        group: str | None = None,
+        sort: str | None = None,
+        tags: Iterable[str] = (),
+        q: str = "",
+    ) -> GalleryView:
+        """Everything `GET /` renders, filtered and grouped SERVER-SIDE.
+
+        Non-matching cards are omitted, never rendered-then-hidden, so there
+        is exactly one predicate in exactly one language (contract R7).
+        """
+        runnable, unavailable = self.list_templates()
+        return _build_gallery_view(
+            runnable,
+            unavailable,
+            load_taxonomy(),
+            group=group,
+            sort=sort,
+            tags=tags,
+            q=q,
+        )
+
+    # -- authoring ---------------------------------------------------------
+
+    @property
+    def templates_dir(self) -> Path:
+        return self._templates_dir
+
+    @property
+    def trash_dir(self) -> Path:
+        return self._trash_dir
+
+    def template_path(self, key: str) -> Path:
+        """`report-templates/{key}.md`, or KeyError for anything unsafe."""
+        if not TEMPLATE_KEY_RE.match(str(key or "")):
+            raise KeyError(f"unknown report template: {key!r}")
+        return self._templates_dir / f"{key}.md"
+
+    def template_keys(self) -> list[str]:
+        """Every `*.md` stem on disk right now — re-globbed on every call, so
+        a template created through the editor is visible immediately."""
+        return [p.stem for p in self._template_paths()]
+
+    def template_exists(self, key: str) -> bool:
+        try:
+            return self.template_path(key).is_file()
+        except KeyError:
+            return False
+
+    def invalidate_template(self, key: str) -> None:
+        """Drop one key from the parse cache after the file changed on disk."""
+        with self._template_lock:
+            self._template_cache.pop(key, None)
+
+    def raw_template_text(self, key: str) -> str:
+        path = self.template_path(key)
+        if not path.is_file():
+            raise KeyError(f"unknown report template: {key!r}")
+        return path.read_text(encoding="utf-8")
+
+    def draft_for(self, key: str) -> Any:
+        """`TemplateDraft` for an existing file. KeyError when it is missing;
+        `TemplateWriteError` when the file is not a report template."""
+        path = self.template_path(key)
+        if not path.is_file():
+            raise KeyError(f"unknown report template: {key!r}")
+        return draft_from_path(path)
+
+    def runs_using_template(self, key: str) -> int:
+        with self._lock:
+            return sum(1 for r in self._records.values() if r.template_key == key)
+
+    def save_draft(
+        self,
+        draft: Any,
+        *,
+        create: bool,
+        expected_sha256: str | None = None,
+    ) -> Any:
+        """The only path in the UI that writes into `report-templates/`."""
+        path = self.template_path(draft.report_type)
+        result = write_template(
+            draft,
+            path,
+            facet_order=load_taxonomy().facet_order_ids(),
+            backup_dir=self._backups_dir,
+            expected_sha256=expected_sha256,
+            create=create,
+        )
+        self.invalidate_template(draft.report_type)
+        return result
+
+    def delete_template(self, key: str) -> Path:
+        """Back the file up, then move it to the trash folder. Recoverable."""
+        path = self.template_path(key)
+        if not path.is_file():
+            raise KeyError(f"unknown report template: {key!r}")
+        backup_template(path, self._backups_dir)
+        moved = trash_template(path, self._trash_dir)
+        self.invalidate_template(key)
+        return moved
+
+    def trashed_template(self, key: str) -> Path | None:
+        try:
+            self.template_path(key)
+        except KeyError:
+            return None
+        return find_trashed(key, self._trash_dir)
+
+    def undelete_template(self, key: str) -> Path:
+        trashed = self.trashed_template(key)
+        if trashed is None:
+            raise KeyError(f"nothing in the trash for {key!r}")
+        dest = self.template_path(key)
+        restore_trashed(trashed, dest)
+        self.invalidate_template(key)
+        return dest
+
+    def suggest_template_key(self, base: str) -> str:
+        """A free `report_type` derived from `base`, for Clone."""
+        stem = re.sub(r"[^a-z0-9_]+", "_", str(base or "").lower()).strip("_")[:52]
+        stem = stem or "new_template"
+        if not stem[0].isalpha():
+            stem = f"t_{stem}"[:56]
+        taken = {k.lower() for k in self.template_keys()}
+        candidate = f"{stem}_copy"
+        n = 2
+        while candidate.lower() in taken:
+            candidate = f"{stem}_copy{n}"
+            n += 1
+        return candidate
 
     # -- evidence folder ---------------------------------------------------
 
@@ -3897,6 +4455,1018 @@ def _citations_csv(summary: RunSummary, draft: DraftView | None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Gallery: filter / group / sort  (contract §5.2, §5.6, §5.7)
+# ---------------------------------------------------------------------------
+
+
+def gallery_url(
+    *,
+    group: str = "",
+    sort: str = "",
+    tags: Iterable[str] = (),
+    q: str = "",
+    taxonomy: Any = None,
+) -> str:
+    """Canonical `GET /` URL. Default group/sort are left out of the query."""
+    params: list[tuple[str, str]] = []
+    if group and (taxonomy is None or group != taxonomy.default_group):
+        params.append(("group", group))
+    if sort and (taxonomy is None or sort != taxonomy.default_sort):
+        params.append(("sort", sort))
+    params.extend(("tag", str(t)) for t in tags)
+    if q:
+        params.append(("q", q))
+    return "/" + (f"?{urlencode(params)}" if params else "")
+
+
+def _card_matches(
+    card: TemplateCard, selected: Mapping[str, list[str]], needle: str
+) -> bool:
+    """OR within a facet, AND across facets, plus a plain substring search."""
+    if needle and needle not in card.search:
+        return False
+    tokens = set(card.tag_tokens)
+    for facet_id, values in selected.items():
+        if not values:
+            continue
+        if not tokens & {f"{facet_id}:{v}" for v in values}:
+            return False
+    return True
+
+
+def _sort_key(sort: str) -> Any:
+    if sort == "updated":
+        return lambda c: (-c.updated_ts, c.title.casefold(), c.key.casefold())
+    if sort == "sections":
+        return lambda c: (-c.n_sections, c.title.casefold(), c.key.casefold())
+    if sort == "ready":
+        return lambda c: (
+            _READINESS_ORDER.get(c.readiness, 9),
+            -(c.sources_ready / max(c.sources_total, 1)),
+            c.title.casefold(),
+            c.key.casefold(),
+        )
+    if sort == "owner":
+        return lambda c: (c.owner.casefold() or "￿", c.title.casefold(), c.key.casefold())
+    return lambda c: (c.title.casefold(), c.key.casefold())
+
+
+def _heading_id(prefix: str, value: str, used: set[str]) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-") or "none"
+    candidate = f"g-{prefix}-{slug}"
+    n = 2
+    while candidate in used:
+        candidate = f"g-{prefix}-{slug}-{n}"
+        n += 1
+    used.add(candidate)
+    return candidate
+
+
+def _group_cards(
+    cards: list[TemplateCard], group: str, taxonomy: Any, discovered: Mapping[str, list[str]]
+) -> list[GroupView]:
+    """Group order is STABLE and never touched by `sort`; untagged is last."""
+    used: set[str] = set()
+
+    if group == GROUP_NONE:
+        return [
+            GroupView(
+                key="all",
+                facet_id="",
+                value_id="",
+                label="",
+                heading_id=_heading_id("all", "", used),
+                untagged=False,
+                count=len(cards),
+                cards=list(cards),
+            )
+        ]
+
+    if group == "owner":
+        buckets: dict[str, list[TemplateCard]] = {}
+        for card in cards:
+            buckets.setdefault(card.owner.strip(), []).append(card)
+        order = sorted((o for o in buckets if o), key=str.casefold)
+        if "" in buckets:
+            order.append("")
+        return [
+            GroupView(
+                key=f"owner:{owner or UNTAGGED}",
+                facet_id="owner",
+                value_id=owner or UNTAGGED,
+                label=owner or "No owning team",
+                heading_id=_heading_id("owner", owner or "none", used),
+                untagged=not owner,
+                count=len(buckets[owner]),
+                cards=buckets[owner],
+            )
+            for owner in order
+        ]
+
+    if group == "readiness":
+        buckets = {}
+        for card in cards:
+            buckets.setdefault(str(card.readiness), []).append(card)
+        order = sorted(buckets, key=lambda r: _READINESS_ORDER.get(r, 9))
+        return [
+            GroupView(
+                key=f"readiness:{state}",
+                facet_id="readiness",
+                value_id=state,
+                label=_READINESS_GROUP_LABEL.get(state, state),
+                heading_id=_heading_id("readiness", state, used),
+                untagged=False,
+                count=len(buckets[state]),
+                cards=buckets[state],
+            )
+            for state in order
+        ]
+
+    facet = taxonomy.facet(group)
+    value_order: list[str] = list(facet.value_ids) if facet is not None else []
+    known = set(value_order)
+    extra = [v for v in discovered.get(group, ()) if v not in known]
+    value_order.extend(sorted(extra, key=lambda v: taxonomy.label_for(group, v).casefold()))
+
+    groups: list[GroupView] = []
+    for value_id in value_order:
+        members = [c for c in cards if value_id in (c.tags.get(group) or ())]
+        if not members:
+            continue
+        groups.append(
+            GroupView(
+                key=f"{group}:{value_id}",
+                facet_id=group,
+                value_id=value_id,
+                label=taxonomy.label_for(group, value_id),
+                heading_id=_heading_id(group, value_id, used),
+                untagged=False,
+                count=len(members),
+                cards=members,
+            )
+        )
+    untagged = [c for c in cards if not (c.tags.get(group) or ())]
+    if untagged:
+        groups.append(
+            GroupView(
+                key=f"{group}:{UNTAGGED}",
+                facet_id=group,
+                value_id=UNTAGGED,
+                label=taxonomy.untagged_label_for(group),
+                heading_id=_heading_id(group, "none", used),
+                untagged=True,
+                count=len(untagged),
+                cards=untagged,
+            )
+        )
+    return groups
+
+
+def _build_gallery_view(
+    runnable: list[TemplateCard],
+    unavailable: list[TemplateCard],
+    taxonomy: Any,
+    *,
+    group: str | None,
+    sort: str | None,
+    tags: Iterable[str],
+    q: str,
+) -> GalleryView:
+    text = " ".join(str(q or "").split())
+    needle = text.casefold()
+
+    # --- the vocabulary that actually exists: config + what the corpus uses
+    discovered: dict[str, list[str]] = {}
+    for card in runnable:
+        for facet_id, values in card.tags.items():
+            bucket = discovered.setdefault(facet_id, [])
+            for value_id in values or ():
+                if value_id not in bucket:
+                    bucket.append(value_id)
+
+    facet_ids: list[str] = [f.id for f in taxonomy.facets]
+    for facet_id in discovered:
+        if facet_id not in facet_ids:
+            facet_ids.append(facet_id)
+
+    def known_values(facet_id: str) -> set[str]:
+        facet = taxonomy.facet(facet_id)
+        out = set(facet.value_ids) if facet is not None else set()
+        out.update(discovered.get(facet_id, ()))
+        return out
+
+    # --- canonicalise the query string. A stale bookmark widens the result
+    # --- set; it never 404s and never renders an empty page.
+    selected: dict[str, list[str]] = {}
+    for token in tags:
+        pair = parse_token(str(token))
+        if pair is None:
+            continue
+        facet_id, value_id = pair
+        if facet_id not in facet_ids:
+            continue
+        if value_id != UNTAGGED and value_id not in known_values(facet_id):
+            continue
+        bucket = selected.setdefault(facet_id, [])
+        if value_id not in bucket:
+            bucket.append(value_id)
+    selected = {k: v for k, v in selected.items() if v}
+
+    groupable = {f.id for f in taxonomy.groupable_facets()}
+    valid_groups = groupable | set(DERIVED_GROUPS) | {GROUP_NONE}
+    active_group = str(group or "").strip().lower()
+    if active_group not in valid_groups:
+        active_group = (
+            taxonomy.default_group
+            if taxonomy.default_group in valid_groups
+            else GROUP_NONE
+        )
+
+    active_sort = str(sort or "").strip().lower()
+    if active_sort not in _SORT_IDS:
+        active_sort = taxonomy.default_sort if taxonomy.default_sort in _SORT_IDS else "name"
+
+    # --- the filter rail. Counts for a facet ignore that facet's OWN
+    # --- selections, so a value showing (12) really does yield >= 12.
+    facets: list[FacetView] = []
+    for facet_id in facet_ids:
+        facet = taxonomy.facet(facet_id)
+        others = {k: v for k, v in selected.items() if k != facet_id}
+        pool = [c for c in runnable if _card_matches(c, others, needle)]
+
+        counts: dict[str, int] = {}
+        n_untagged = 0
+        for card in pool:
+            values = card.tags.get(facet_id) or ()
+            if not values:
+                n_untagged += 1
+            for value_id in values:
+                counts[value_id] = counts.get(value_id, 0) + 1
+
+        here = selected.get(facet_id, [])
+        views: list[FacetValueView] = []
+        configured = list(facet.values) if facet is not None else []
+        for value in configured:
+            if value.deprecated and not counts.get(value.id) and value.id not in here:
+                continue
+            views.append(
+                FacetValueView(
+                    id=value.id,
+                    label=value.label,
+                    token=f"{facet_id}:{value.id}",
+                    count=counts.get(value.id, 0),
+                    selected=value.id in here,
+                )
+            )
+        known = {v.id for v in configured}
+        for value_id in sorted(
+            (v for v in discovered.get(facet_id, ()) if v not in known),
+            key=lambda v: (taxonomy.label_for(facet_id, v).casefold(), v),
+        ):
+            views.append(
+                FacetValueView(
+                    id=value_id,
+                    label=taxonomy.label_for(facet_id, value_id),
+                    token=f"{facet_id}:{value_id}",
+                    count=counts.get(value_id, 0),
+                    selected=value_id in here,
+                )
+            )
+        if n_untagged or UNTAGGED in here:
+            views.append(
+                FacetValueView(
+                    id=UNTAGGED,
+                    label=taxonomy.untagged_label_for(facet_id),
+                    token=f"{facet_id}:{UNTAGGED}",
+                    count=n_untagged,
+                    selected=UNTAGGED in here,
+                )
+            )
+        if not views:
+            continue
+        facets.append(
+            FacetView(
+                id=facet_id,
+                label=taxonomy.facet_label(facet_id),
+                description=(facet.description if facet is not None else ""),
+                multi=(facet.is_multi if facet is not None else True),
+                groupable=(facet.groupable if facet is not None else False),
+                untagged_label=taxonomy.untagged_label_for(facet_id),
+                values=views,
+                n_selected=len(here),
+            )
+        )
+
+    shown = [c for c in runnable if _card_matches(c, selected, needle)]
+    shown.sort(key=_sort_key(active_sort))
+
+    # The grouping facet is already named by every section heading, so its
+    # chip is redundant on the card. This one rule is what keeps the default
+    # view calm (contract §5.4 rule 1).
+    suppress = active_group if taxonomy.facet(active_group) is not None else ""
+    for card in shown:
+        card.chips, card.n_more_tags = _chips_for(
+            card.tags, taxonomy, suppress_facet=suppress
+        )
+
+    groups = _group_cards(shown, active_group, taxonomy, discovered)
+
+    summary: list[str] = []
+    for facet_id in facet_ids:
+        values = selected.get(facet_id) or []
+        if not values:
+            continue
+        labels = [
+            taxonomy.untagged_label_for(facet_id)
+            if v == UNTAGGED
+            else taxonomy.label_for(facet_id, v)
+            for v in values
+        ]
+        summary.append(f"{taxonomy.facet_label(facet_id)}: " + " or ".join(labels))
+    if text:
+        summary.append(f"Search: “{text}”")
+
+    n_active = sum(len(v) for v in selected.values())
+    group_options = [(f.id, f.label) for f in taxonomy.groupable_facets()]
+    group_options += [
+        ("owner", "Owning team"),
+        ("readiness", "Source readiness"),
+        (GROUP_NONE, "Nothing (one flat list)"),
+    ]
+
+    return GalleryView(
+        group=active_group,
+        sort=active_sort,
+        q=text,
+        facets=facets,
+        groups=groups,
+        cards=shown,
+        unavailable=list(unavailable),
+        group_options=group_options,
+        sort_options=list(SORT_OPTIONS),
+        n_shown=len(shown),
+        n_total=len(runnable),
+        n_active=n_active,
+        active_summary=summary,
+        clear_url=gallery_url(group=active_group, sort=active_sort, taxonomy=taxonomy),
+        filtering=bool(n_active or text),
+        taxonomy_ok=not bool(getattr(taxonomy, "load_errors", ())),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Authoring: form -> draft, structural ops, editor context
+# ---------------------------------------------------------------------------
+
+
+def _form_str(form: Any, name: str, default: str = "") -> str:
+    value = form.get(name)
+    if value is None:
+        return default
+    return str(value)
+
+
+def _form_list(form: Any, name: str) -> list[str]:
+    getlist = getattr(form, "getlist", None)
+    if getlist is None:
+        value = form.get(name)
+        return [] if value is None else [str(value)]
+    return [str(v) for v in getlist(name)]
+
+
+def _form_flag(form: Any, name: str) -> bool:
+    return _form_str(form, name).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _form_keys(form: Any) -> list[str]:
+    seen: list[str] = []
+    try:
+        candidates = list(form.keys())
+    except Exception:  # noqa: BLE001 - a Mapping without keys() is still usable
+        candidates = []
+    for key in candidates:
+        name = str(key)
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def _row_keys(form: Any, group: str) -> list[str]:
+    """DOM order for one repeating group, from its hidden anchor field."""
+    out: list[str] = []
+    for raw in _form_list(form, f"{group}.k"):
+        key = raw.strip()
+        if key and _ROW_KEY_RE.match(key) and key not in out:
+            out.append(key)
+    return out
+
+
+def parse_params_text(text: str) -> dict[str, str]:
+    """One `name = value` per line (contract R12). Blank lines and `#` skipped."""
+    out: dict[str, str] = {}
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        name, sep, value = stripped.partition("=")
+        if not sep:
+            name, sep, value = stripped.partition(":")
+        name = name.strip()
+        if name:
+            out[name] = value.strip()
+    return out
+
+
+def format_params_text(params: Mapping[str, str]) -> str:
+    return "\n".join(f"{k} = {v}" for k, v in (params or {}).items())
+
+
+def _split_list(text: str) -> list[str]:
+    return [p.strip() for p in re.split(r"[,\n]", str(text or "")) if p.strip()]
+
+
+def _parse_passthrough(text: str) -> dict[str, Any]:
+    if not str(text or "").strip():
+        return {}
+    import yaml
+
+    try:
+        loaded = yaml.safe_load(text)
+    except Exception:  # noqa: BLE001 - a bad paste must not break the editor
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def tags_from_form(form: Any, taxonomy: Any) -> dict[str, list[str]]:
+    """Read every `tags__*` / `tags_new__*` field, including facets that are
+    not in the config — an unknown facet must survive a round trip."""
+    raw: dict[str, list[str]] = {}
+    for name in _form_keys(form):
+        if name.startswith("tags__"):
+            facet_id = name[len("tags__") :]
+            raw.setdefault(facet_id, []).extend(_form_list(form, name))
+        elif name.startswith("tags_new__"):
+            facet_id = name[len("tags_new__") :]
+            bucket = raw.setdefault(facet_id, [])
+            for chunk in _split_list(" , ".join(_form_list(form, name))):
+                slug = slugify_value(chunk)
+                if slug:
+                    bucket.append(slug)
+    shaped = _shape_tag_map(raw)
+    # Keep facets in config order first so the writer's front matter is stable.
+    ordered: dict[str, list[str]] = {}
+    for facet in taxonomy.facets:
+        if facet.id in shaped:
+            ordered[facet.id] = shaped.pop(facet.id)
+    ordered.update(shaped)
+    return {k: v for k, v in ordered.items() if v}
+
+
+def draft_from_form(form: Any, *, taxonomy: Any = None) -> Any:
+    """Rebuild the whole `TemplateDraft` from a submitted editor form.
+
+    Row order comes from the repeated hidden `input.k` / `source.k` /
+    `section.k` anchors, so nothing is ever renumbered between round trips.
+    """
+    taxonomy = taxonomy if taxonomy is not None else load_taxonomy()
+
+    granularity = _form_str(form, "citation_granularity", "claim").strip().lower()
+    if granularity not in ("claim", "paragraph", "section"):
+        granularity = "claim"
+    try:
+        min_per_paragraph = int(str(_form_str(form, "citation_min", "1")).strip() or 1)
+    except ValueError:
+        min_per_paragraph = 1
+    min_per_paragraph = max(0, min(min_per_paragraph, 10))
+
+    draft = TemplateDraft(
+        report_type=_form_str(form, "report_type").strip().lower(),
+        title=" ".join(_form_str(form, "title").split()),
+        description=" ".join(_form_str(form, "description").split()),
+        version=_form_str(form, "version").strip() or "0.1.0",
+        owner=_form_str(form, "owner").strip(),
+        tags=tags_from_form(form, taxonomy),
+        doc_heading=" ".join(_form_str(form, "doc_heading").split()),
+        citation_required=_form_flag(form, "citation_required"),
+        citation_granularity=granularity,
+        citation_min_per_paragraph=min_per_paragraph,
+        passthrough=_parse_passthrough(_form_str(form, "passthrough_yaml")),
+    )
+
+    for key in _row_keys(form, "input"):
+        draft.inputs.append(
+            DraftInput(
+                key=key,
+                id=_form_str(form, f"input.{key}.id").strip().lower(),
+                prompt=" ".join(_form_str(form, f"input.{key}.prompt").split()),
+                required=_form_flag(form, f"input.{key}.required"),
+            )
+        )
+
+    for key in _row_keys(form, "source"):
+        kind = _form_str(form, f"source.{key}.kind").strip().lower()
+        if kind not in SOURCE_KINDS:
+            kind = "bigquery"
+        draft.sources.append(
+            DraftSource(
+                key=key,
+                id=_form_str(form, f"source.{key}.id").strip().lower(),
+                kind=kind,
+                required=_form_flag(form, f"source.{key}.required"),
+                dataset=_form_str(form, f"source.{key}.dataset").strip(),
+                query_id=_form_str(form, f"source.{key}.query_id").strip(),
+                sql=_form_str(form, f"source.{key}.sql").strip(),
+                space=_form_str(form, f"source.{key}.space").strip(),
+                cql=_form_str(form, f"source.{key}.cql").strip(),
+                page_id=_form_str(form, f"source.{key}.page_id").strip(),
+                filter_tags=_split_list(_form_str(form, f"source.{key}.filter_tags")),
+                connector=_form_str(form, f"source.{key}.connector").strip(),
+                endpoint=_form_str(form, f"source.{key}.endpoint").strip(),
+                params=parse_params_text(_form_str(form, f"source.{key}.params")),
+            )
+        )
+
+    for key in _row_keys(form, "section"):
+        # Source references are kept VERBATIM, including keys with no matching
+        # source row. Dropping them here would silently discard the user's
+        # intent and leave a section with no evidence behind it, while
+        # `validate_draft`'s `dangling_source` / `dangling_table` errors — the
+        # rules written to catch exactly that — could never fire. The one
+        # legitimate way a reference disappears is the `remove:` / `retype:`
+        # cascade in `apply_structural_op`, which says so in `cascade_notes`.
+        picked = [k for k in _form_list(form, f"section.{key}.sources") if k]
+        draft.sections.append(
+            DraftSection(
+                key=key,
+                heading=" ".join(_form_str(form, f"section.{key}.heading").split()),
+                instruction=_form_str(form, f"section.{key}.instruction").strip(),
+                source_keys=list(dict.fromkeys(picked)),
+                table_key=_form_str(form, f"section.{key}.table").strip(),
+            )
+        )
+    return draft
+
+
+def is_structural_op(op: str) -> bool:
+    return str(op or "").startswith(("add:", "remove:", "move:", "retype:"))
+
+
+def _new_row_key(prefix: str, existing: Iterable[str]) -> str:
+    taken = set(existing)
+    n = len(taken) + 1
+    while f"{prefix}{n}" in taken:
+        n += 1
+    return f"{prefix}{n}"
+
+
+def _source_label(draft: Any, key: str) -> str:
+    for index, source in enumerate(draft.sources, start=1):
+        if source.key == key:
+            return source.id or f"source {index}"
+    return key
+
+
+def _drop_source_references(draft: Any, key: str) -> tuple[list[int], list[int]]:
+    used_by = [i for i, s in enumerate(draft.sections, start=1) if key in s.source_keys]
+    table_for = [i for i, s in enumerate(draft.sections, start=1) if s.table_key == key]
+    for section in draft.sections:
+        section.source_keys = [k for k in section.source_keys if k != key]
+        if section.table_key == key:
+            section.table_key = ""
+    return used_by, table_for
+
+
+def _sections_phrase(numbers: list[int]) -> str:
+    return f"{_plural(len(numbers), 'section')} {_join_numbers(numbers)}"
+
+
+def _cascade_sentence(lead: str, used_by: list[int], table_for: list[int]) -> str:
+    if used_by and table_for:
+        body = (
+            f"used by {_sections_phrase(used_by)}, and was the table for "
+            f"{_sections_phrase(table_for)}"
+        )
+    elif used_by:
+        body = f"used by {_sections_phrase(used_by)}"
+    elif table_for:
+        body = f"the table for {_sections_phrase(table_for)}"
+    else:
+        return ""
+    tail = (
+        "That reference has been cleared."
+        if len(used_by) + len(table_for) == 1
+        else "Those references have been cleared."
+    )
+    return f"{lead} It was {body}. {tail} Nothing is written until you press Save."
+
+
+def _join_numbers(numbers: list[int]) -> str:
+    text = [str(n) for n in numbers]
+    if len(text) == 1:
+        return text[0]
+    return ", ".join(text[:-1]) + " and " + text[-1]
+
+
+def apply_structural_op(
+    draft: Any, op: str, *, add_source_kind: str = "bigquery"
+) -> list[str]:
+    """Apply one add / remove / move / retype op IN MEMORY and cascade.
+
+    Nothing here touches `report-templates/`: the draft is not the file, so
+    the undo for any mistake is "do not press Save".
+    """
+    notes: list[str] = []
+    parts = str(op or "").split(":")
+    verb = parts[0] if parts else ""
+
+    if verb == "add" and len(parts) >= 2:
+        what = parts[1]
+        if what == "input":
+            draft.inputs.append(DraftInput(key=_new_row_key("i", [r.key for r in draft.inputs])))
+        elif what == "source":
+            kind = str(add_source_kind or "bigquery").strip().lower()
+            if kind not in SOURCE_KINDS:
+                kind = "bigquery"
+            draft.sources.append(
+                DraftSource(key=_new_row_key("s", [r.key for r in draft.sources]), kind=kind)
+            )
+        elif what == "section":
+            draft.sections.append(
+                DraftSection(key=_new_row_key("t", [r.key for r in draft.sections]))
+            )
+        return notes
+
+    if verb == "remove" and len(parts) >= 3:
+        what, key = parts[1], parts[2]
+        if what == "input":
+            draft.inputs = [r for r in draft.inputs if r.key != key]
+        elif what == "source":
+            label = _source_label(draft, key)
+            draft.sources = [r for r in draft.sources if r.key != key]
+            used_by, table_for = _drop_source_references(draft, key)
+            sentence = _cascade_sentence(f"Removed source “{label}”.", used_by, table_for)
+            if sentence:
+                notes.append(sentence)
+        elif what == "section":
+            draft.sections = [r for r in draft.sections if r.key != key]
+        return notes
+
+    if verb == "move" and len(parts) >= 4:
+        what, key, direction = parts[1], parts[2], parts[3]
+        rows = {
+            "input": draft.inputs,
+            "source": draft.sources,
+            "section": draft.sections,
+        }.get(what)
+        if rows is None:
+            return notes
+        index = next((i for i, r in enumerate(rows) if r.key == key), -1)
+        if index < 0:
+            return notes
+        target = index - 1 if direction == "up" else index + 1
+        if 0 <= target < len(rows):
+            rows[index], rows[target] = rows[target], rows[index]
+        return notes
+
+    if verb == "retype" and len(parts) >= 2:
+        key = parts[1]
+        source = next((s for s in draft.sources if s.key == key), None)
+        if source is not None and source.kind != "bigquery":
+            table_for = [
+                i for i, s in enumerate(draft.sections, start=1) if s.table_key == key
+            ]
+            for section in draft.sections:
+                if section.table_key == key:
+                    section.table_key = ""
+            if table_for:
+                notes.append(
+                    f"Source “{source.id or key}” is no longer a BigQuery "
+                    f"source, so it was cleared as the table for "
+                    f"{_plural(len(table_for), 'section')} {_join_numbers(table_for)}. "
+                    "Nothing is written until you press Save."
+                )
+        return notes
+
+    return notes
+
+
+def validate_template_draft(
+    draft: Any,
+    *,
+    existing_keys: Sequence[str] = (),
+    is_new: bool = True,
+    taxonomy: Any = None,
+    base_draft: Any = None,
+) -> list[Any]:
+    """`validate_draft` merged with the taxonomy's own view of the tags.
+
+    Rules 4 and 5 of §3.1 (a required facet with no value; more than one value
+    on a single-value facet) are the only tag problems that BLOCK a save.
+    Everything else is a warning, so an unknown value typed by another team
+    survives a round trip instead of being silently dropped.
+    """
+    taxonomy = taxonomy if taxonomy is not None else load_taxonomy()
+    issues = list(validate_draft(draft, existing_keys=tuple(existing_keys), is_new=is_new))
+
+    for issue in taxonomy.validate(draft.tags):
+        blocking = issue.code in ("missing_required", "cardinality")
+        issues.append(
+            DraftIssue(
+                field=f"tags__{issue.facet}",
+                severity="error" if blocking else "warning",
+                code=issue.code,
+                message=issue.message,
+                fix_hint=(
+                    "Choose a value before saving." if blocking else ""
+                ),
+            )
+        )
+
+    if base_draft is not None and _structure_changed(base_draft, draft):
+        if base_draft.version == draft.version:
+            issues.append(
+                DraftIssue(
+                    field="version",
+                    severity="warning",
+                    code="structure_changed_no_bump",
+                    message=(
+                        "The sections, inputs or sources changed but the version "
+                        "is still " + str(draft.version) + "."
+                    ),
+                    fix_hint="Bump the version so a run can be traced to what it used.",
+                )
+            )
+    return issues
+
+
+def _structure_changed(before: Any, after: Any) -> bool:
+    def shape(draft: Any) -> tuple:
+        return (
+            tuple((i.id, i.required) for i in draft.inputs),
+            tuple((s.id, s.kind) for s in draft.sources),
+            tuple(s.heading for s in draft.sections),
+        )
+
+    return shape(before) != shape(after)
+
+
+def draft_has_errors(issues: Iterable[Any]) -> bool:
+    return any(getattr(i, "severity", "") == "error" for i in issues)
+
+
+# --- editor context --------------------------------------------------------
+
+
+def _row_errors(field_errors: Mapping[str, str], prefix: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for name, message in field_errors.items():
+        if name.startswith(prefix):
+            out[name[len(prefix) :]] = message
+    return out
+
+
+def _editor_tag_facets(
+    tags: Mapping[str, list[str]], taxonomy: Any, field_errors: Mapping[str, str]
+) -> list[EditorFacet]:
+    facet_ids = [f.id for f in taxonomy.facets]
+    for facet_id in tags:
+        if facet_id not in facet_ids:
+            facet_ids.append(facet_id)
+
+    out: list[EditorFacet] = []
+    for facet_id in facet_ids:
+        facet = taxonomy.facet(facet_id)
+        selected = list(tags.get(facet_id) or ())
+        values: list[EditorFacetValue] = []
+        configured = list(facet.values) if facet is not None else []
+        for value in configured:
+            if value.deprecated and value.id not in selected:
+                continue
+            values.append(
+                EditorFacetValue(
+                    id=value.id,
+                    label=value.label,
+                    description=value.description,
+                    selected=value.id in selected,
+                    deprecated=value.deprecated,
+                    unknown=False,
+                )
+            )
+        known = {v.id for v in configured}
+        for value_id in selected:
+            if value_id in known:
+                continue
+            values.append(
+                EditorFacetValue(
+                    id=value_id,
+                    label=value_id,
+                    description="",
+                    selected=True,
+                    deprecated=False,
+                    unknown=True,
+                )
+            )
+        out.append(
+            EditorFacet(
+                id=facet_id,
+                label=taxonomy.facet_label(facet_id),
+                description=(facet.description if facet is not None else ""),
+                multi=(facet.is_multi if facet is not None else True),
+                required=(facet.required if facet is not None else False),
+                open_mode=(facet.mode == "open" if facet is not None else True),
+                field_name=f"tags__{facet_id}",
+                new_field_name=(
+                    f"tags_new__{facet_id}"
+                    if (facet is None or facet.mode == "open")
+                    else ""
+                ),
+                selected=selected,
+                values=values,
+                error=field_errors.get(f"tags__{facet_id}", ""),
+                new_value_text="",
+            )
+        )
+    return out
+
+
+def editor_context(
+    draft: Any,
+    *,
+    mode: str,
+    key: str = "",
+    base_sha: str = "",
+    issues: Iterable[Any] = (),
+    banner: Mapping[str, str] | None = None,
+    cascade_notes: Iterable[str] = (),
+    preview: str = "",
+    checked: bool = False,
+    conflict: bool = False,
+    delete_info: Mapping[str, Any] | None = None,
+    taxonomy: Any = None,
+) -> dict[str, Any]:
+    """The whole §5.3 context. Every key is ALWAYS present."""
+    taxonomy = taxonomy if taxonomy is not None else load_taxonomy()
+    issue_list = list(issues)
+
+    field_errors: dict[str, str] = {}
+    for issue in issue_list:
+        if issue.severity == "error" and issue.field:
+            field_errors.setdefault(issue.field, issue.message)
+
+    ordered = [i for i in issue_list if i.severity == "error"]
+    ordered += [i for i in issue_list if i.severity != "error"]
+
+    input_rows = [
+        EditorInputRow(
+            key=row.key,
+            id=row.id,
+            prompt=row.prompt,
+            required=row.required,
+            errors=_row_errors(field_errors, f"input.{row.key}."),
+        )
+        for row in draft.inputs
+    ]
+
+    source_rows: list[EditorSourceRow] = []
+    for index, row in enumerate(draft.sources, start=1):
+        fields = {name: "" for name in SOURCE_FIELD_NAMES}
+        fields.update(
+            {
+                "dataset": row.dataset,
+                "query_id": row.query_id,
+                "sql": row.sql,
+                "space": row.space,
+                "cql": row.cql,
+                "page_id": row.page_id,
+                "filter_tags": ", ".join(row.filter_tags or []),
+                "connector": row.connector,
+                "endpoint": row.endpoint,
+                "params": format_params_text(row.params or {}),
+            }
+        )
+        source_rows.append(
+            EditorSourceRow(
+                key=row.key,
+                id=row.id,
+                kind=row.kind,
+                required=row.required,
+                legend=f"Source {index} — {row.id or 'unnamed'}",
+                fields=fields,
+                errors=_row_errors(field_errors, f"source.{row.key}."),
+            )
+        )
+
+    section_rows = [
+        EditorSectionRow(
+            key=row.key,
+            number=index,
+            heading=row.heading,
+            instruction=row.instruction,
+            source_keys=list(row.source_keys or []),
+            table_key=row.table_key,
+            errors=_row_errors(field_errors, f"section.{row.key}."),
+        )
+        for index, row in enumerate(draft.sections, start=1)
+    ]
+
+    source_choices = [
+        {
+            "key": row.key,
+            "id": row.id,
+            "kind": row.kind,
+            "label": row.id or f"Source {index} (unnamed)",
+            "is_bigquery": row.kind == "bigquery",
+        }
+        for index, row in enumerate(draft.sources, start=1)
+    ]
+
+    if mode == "new":
+        page_title = "New report template"
+        form_action = "/templates"
+        cancel_url = "/"
+    elif mode == "delete":
+        page_title = f"Delete “{draft.title or key}”?"
+        form_action = f"/templates/{key}/delete"
+        cancel_url = f"/new/{key}"
+    else:
+        page_title = f"Edit — {draft.title or key}"
+        form_action = f"/templates/{key}"
+        cancel_url = f"/new/{key}"
+
+    import yaml
+
+    passthrough_yaml = ""
+    if draft.passthrough:
+        try:
+            passthrough_yaml = yaml.safe_dump(
+                dict(draft.passthrough), sort_keys=False, allow_unicode=True
+            ).strip()
+        except Exception:  # noqa: BLE001 - never block the editor on a dump
+            passthrough_yaml = ""
+
+    return {
+        "mode": mode,
+        "page_title": page_title,
+        "form_action": form_action,
+        "cancel_url": cancel_url,
+        "key": key,
+        "key_locked": mode != "new",
+        "base_sha": base_sha,
+        "identity": {
+            "report_type": draft.report_type,
+            "title": draft.title,
+            "description": draft.description,
+            "version": draft.version,
+            "owner": draft.owner,
+            "doc_heading": draft.doc_heading,
+        },
+        "citation": {
+            "required": bool(draft.citation_required),
+            "granularity": draft.citation_granularity,
+            "min_per_paragraph": int(draft.citation_min_per_paragraph),
+        },
+        "granularity_options": list(GRANULARITY_OPTIONS),
+        "tag_facets": _editor_tag_facets(draft.tags, taxonomy, field_errors),
+        "input_rows": input_rows,
+        "source_rows": source_rows,
+        "section_rows": section_rows,
+        "source_choices": source_choices,
+        "source_kinds": list(SOURCE_KIND_OPTIONS),
+        "placeholders": [f"{{{{inputs.{r.id}}}}}" for r in draft.inputs if r.id],
+        "issues": [
+            {
+                "field": i.field,
+                "severity": i.severity,
+                "code": i.code,
+                "message": i.message,
+                "fix_hint": i.fix_hint,
+            }
+            for i in ordered
+        ],
+        "field_errors": field_errors,
+        "n_errors": sum(1 for i in issue_list if i.severity == "error"),
+        "n_warnings": sum(1 for i in issue_list if i.severity != "error"),
+        "banner": dict(banner) if banner else None,
+        "cascade_notes": list(cascade_notes),
+        "preview": preview,
+        "passthrough_yaml": passthrough_yaml,
+        "checked": bool(checked),
+        "conflict": bool(conflict),
+        "delete_info": dict(delete_info) if delete_info else None,
+    }
+
+
+def preview_text(draft: Any, *, taxonomy: Any = None) -> str:
+    """The Markdown a save would write. Never raises — the preview is a
+    courtesy, and a serialiser problem is reported as a validation issue."""
+    taxonomy = taxonomy if taxonomy is not None else load_taxonomy()
+    try:
+        return serialize_draft(draft, facet_order=taxonomy.facet_order_ids())
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # Process-wide singleton
 # ---------------------------------------------------------------------------
 
@@ -3918,6 +5488,41 @@ __all__ = [
     "Anchor",
     "BandKind",
     "CitationRef",
+    "DERIVED_GROUPS",
+    "EditorFacet",
+    "EditorFacetValue",
+    "EditorInputRow",
+    "EditorSectionRow",
+    "EditorSourceRow",
+    "FacetView",
+    "FacetValueView",
+    "GRANULARITY_OPTIONS",
+    "GROUP_NONE",
+    "GalleryView",
+    "GroupView",
+    "MAX_CARD_CHIPS",
+    "SORT_OPTIONS",
+    "SOURCE_KIND_OPTIONS",
+    "TEMPLATE_BACKUPS_DIR",
+    "TEMPLATE_KEY_RE",
+    "TEMPLATE_TRASH_DIR",
+    "TagChip",
+    "TemplateConflict",
+    "TemplateWriteError",
+    "apply_structural_op",
+    "blank_draft",
+    "clone_draft",
+    "draft_from_form",
+    "draft_has_errors",
+    "editor_context",
+    "gallery_url",
+    "is_structural_op",
+    "load_taxonomy",
+    "parse_params_text",
+    "preview_text",
+    "read_sha256",
+    "tags_from_form",
+    "validate_template_draft",
     "CitationView",
     "ClaimView",
     "CORPUS_DIR",
