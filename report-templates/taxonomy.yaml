@@ -27,9 +27,14 @@ defaults:
 
 facets:
 
+  # `domain` is the BROAD bucket a template is filed under — the thing you
+  # group the gallery by. Keep these mutually exclusive and few. Sub-areas
+  # belong on `discipline` below, so that filtering by e.g. Pre-Clinical
+  # returns every preclinical template rather than only those that happen
+  # not to have a more specific label.
   - id: domain
     label: Domain area
-    description: The scientific or functional area this report belongs to.
+    description: The broad area this report is filed under.
     cardinality: single
     required: true
     mode: closed
@@ -38,16 +43,33 @@ facets:
     untagged_label: No domain set
     values:
       - {id: discovery,          label: Discovery}
-      - {id: target_sciences,    label: Target Sciences}
       - {id: pre_clinical,       label: Pre-Clinical,
          description: "Preclinical / nonclinical research reports."}
+      - {id: clinical,           label: Clinical}
+      - {id: regulatory_writing, label: Regulatory Writing}
+      - {id: cmc,                label: CMC / Pharmaceutical Development}
+      - {id: data_science,       label: Data Science}
+
+  # The sub-area(s) within a domain. Multi-value, because plenty of reports
+  # straddle two (a candidate dossier is pharmacology AND DMPK AND safety),
+  # and `open` so a team can use a discipline we have not listed yet.
+  - id: discipline
+    label: Discipline
+    description: The scientific sub-area(s) this report covers.
+    cardinality: multi
+    required: false
+    mode: open
+    groupable: true
+    card_chip: always
+    untagged_label: No discipline set
+    values:
+      - {id: target_sciences,    label: Target Sciences}
       - {id: pharmacology,       label: Pharmacology}
       - {id: dmpk,               label: DMPK / ADME}
       - {id: nonclinical_safety, label: Nonclinical Safety}
-      - {id: cmc,                label: CMC / Pharmaceutical Development}
-      - {id: clinical,           label: Clinical}
-      - {id: regulatory_writing, label: Regulatory Writing}
-      - {id: data_science,       label: Data Science}
+      - {id: developability,     label: Developability}
+      - {id: biomarkers,         label: Biomarkers}
+      - {id: translational,      label: Translational}
 
   - id: compliance
     label: Compliance

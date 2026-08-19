@@ -9,7 +9,8 @@ description: >
 owner: nonclinical-safety
 
 tags:
-  domain: nonclinical_safety
+  domain: pre_clinical
+  discipline: [nonclinical_safety]
   compliance: non_gxp
   document_class: technical_summary
   modality: [small_molecule]

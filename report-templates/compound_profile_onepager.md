@@ -9,6 +9,7 @@ owner: preclinical-project-team
 
 tags:
   domain: pre_clinical
+  discipline: [pharmacology, dmpk, nonclinical_safety]
   compliance: non_gxp
   document_class: share_out
   modality: [small_molecule]

@@ -105,6 +105,7 @@ def test_shipped_taxonomy_loads_without_a_single_complaint(taxonomy: Taxonomy) -
     assert taxonomy.version == 1
     assert taxonomy.facet_ids == (
         "domain",
+        "discipline",
         "compliance",
         "document_class",
         "therapeutic_area",
@@ -353,7 +354,7 @@ def test_normalize_keeps_an_unknown_value_on_a_closed_facet(taxonomy: Taxonomy) 
 
 def test_normalize_is_silent_about_new_values_on_an_open_facet(taxonomy: Taxonomy) -> None:
     tags, issues = taxonomy.normalize(
-        {"domain": "dmpk", "compliance": "non_gxp", "modality": ["peptide"]}
+        {"domain": "pre_clinical", "compliance": "non_gxp", "modality": ["peptide"]}
     )
     assert tags["modality"] == ["peptide"]
     assert issues == []
@@ -361,9 +362,9 @@ def test_normalize_is_silent_about_new_values_on_an_open_facet(taxonomy: Taxonom
 
 def test_normalize_truncates_a_single_cardinality_facet(taxonomy: Taxonomy) -> None:
     tags, issues = taxonomy.normalize(
-        {"domain": ["dmpk", "clinical"], "compliance": "non_gxp"}
+        {"domain": ["discovery", "clinical"], "compliance": "non_gxp"}
     )
-    assert tags["domain"] == ["dmpk"]
+    assert tags["domain"] == ["discovery"]
     (issue,) = issues
     assert issue.code == "cardinality"
     assert "Clinical" in issue.message  # names what it discarded
@@ -372,7 +373,7 @@ def test_normalize_truncates_a_single_cardinality_facet(taxonomy: Taxonomy) -> N
 def test_normalize_applies_a_default_for_a_missing_required_facet(
     taxonomy: Taxonomy,
 ) -> None:
-    tags, issues = taxonomy.normalize({"domain": "dmpk"})
+    tags, issues = taxonomy.normalize({"domain": "pre_clinical"})
     assert tags["compliance"] == ["non_gxp"]
     assert [i.code for i in issues] == ["missing_required"]
 
@@ -438,7 +439,7 @@ def test_normalize_never_raises(taxonomy: Taxonomy, raw: object) -> None:
 
 
 def test_validate_reports_without_changing_anything(taxonomy: Taxonomy) -> None:
-    tags = {"domain": ["dmpk", "clinical"], "retired": ["x"]}
+    tags = {"domain": ["pre_clinical", "clinical"], "retired": ["x"]}
     before = {k: list(v) for k, v in tags.items()}
     codes = {i.code for i in taxonomy.validate(tags)}
     assert tags == before
@@ -448,7 +449,8 @@ def test_validate_reports_without_changing_anything(taxonomy: Taxonomy) -> None:
 def test_validate_is_quiet_on_a_conforming_template(taxonomy: Taxonomy) -> None:
     assert taxonomy.validate(
         {
-            "domain": ["dmpk"],
+            "domain": ["pre_clinical"],
+            "discipline": ["dmpk"],
             "compliance": ["non_gxp"],
             "document_class": ["technical_summary"],
             "modality": ["small_molecule"],
@@ -471,9 +473,10 @@ def test_defaults_for_new_is_the_non_gxp_default(taxonomy: Taxonomy) -> None:
 def test_tokens_include_an_untagged_sentinel_per_empty_configured_facet(
     taxonomy: Taxonomy,
 ) -> None:
-    tokens = taxonomy.tokens_for({"domain": ["dmpk"], "custom": ["x"]})
+    tokens = taxonomy.tokens_for({"domain": ["pre_clinical"], "custom": ["x"]})
     assert tokens == [
-        "domain:dmpk",
+        "domain:pre_clinical",
+        f"discipline:{UNTAGGED}",
         f"compliance:{UNTAGGED}",
         f"document_class:{UNTAGGED}",
         f"therapeutic_area:{UNTAGGED}",
@@ -515,7 +518,7 @@ def test_the_untagged_sentinel_cannot_collide_with_a_real_value() -> None:
 
 
 def test_label_for_falls_back_to_the_raw_id_verbatim(taxonomy: Taxonomy) -> None:
-    assert taxonomy.label_for("domain", "dmpk") == "DMPK / ADME"
+    assert taxonomy.label_for("discipline", "dmpk") == "DMPK / ADME"
     assert taxonomy.label_for("domain", "some_new_thing") == "some_new_thing"
     assert taxonomy.label_for("no_such_facet", "x") == "x"
     assert taxonomy.facet_label("no_such_facet") == "no_such_facet"
@@ -534,8 +537,8 @@ def test_a_facet_without_an_untagged_label_gets_a_derived_one(tmp_path: Path) ->
 
 def test_sort_values_follows_config_order_then_the_stragglers(taxonomy: Taxonomy) -> None:
     assert taxonomy.sort_values(
-        "domain", ["clinical", "zebra", "dmpk", "discovery", "apple"]
-    ) == ["discovery", "dmpk", "clinical", "apple", "zebra"]
+        "domain", ["clinical", "zebra", "pre_clinical", "discovery", "apple"]
+    ) == ["discovery", "pre_clinical", "clinical", "apple", "zebra"]
 
 
 def test_the_untagged_sentinel_always_sorts_last(taxonomy: Taxonomy) -> None:
@@ -687,18 +690,40 @@ def test_the_tags_block_sits_between_owner_and_inputs(path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "name, expected_domain",
+    "name, expected_domain, expected_discipline",
     [
-        ("candidate_selection_dossier", "pre_clinical"),
-        ("compound_profile_onepager", "pre_clinical"),
-        ("dmpk_adme_summary", "dmpk"),
-        ("nonclinical_safety_summary", "nonclinical_safety"),
-        ("ib_nonclinical_sections", "regulatory_writing"),
-        ("target_assessment", "target_sciences"),
+        (
+            "candidate_selection_dossier",
+            "pre_clinical",
+            ["pharmacology", "dmpk", "nonclinical_safety", "developability"],
+        ),
+        (
+            "compound_profile_onepager",
+            "pre_clinical",
+            ["pharmacology", "dmpk", "nonclinical_safety"],
+        ),
+        ("dmpk_adme_summary", "pre_clinical", ["dmpk"]),
+        ("nonclinical_safety_summary", "pre_clinical", ["nonclinical_safety"]),
+        (
+            "ib_nonclinical_sections",
+            "pre_clinical",
+            ["pharmacology", "dmpk", "nonclinical_safety"],
+        ),
+        ("target_assessment", "discovery", ["target_sciences"]),
     ],
 )
-def test_the_agreed_domain_per_template(name: str, expected_domain: str) -> None:
-    assert load_report_doc(TEMPLATES_DIR / f"{name}.md").tags["domain"] == [expected_domain]
+def test_the_agreed_domain_per_template(
+    name: str, expected_domain: str, expected_discipline: list[str]
+) -> None:
+    """`domain` is the broad bucket; the fine-grained area is on `discipline`.
+
+    Both halves are pinned here: with five of the six filed under Pre-Clinical,
+    `domain` alone no longer tells these templates apart — `discipline` is what
+    carries the distinction now.
+    """
+    tags = load_report_doc(TEMPLATES_DIR / f"{name}.md").tags
+    assert tags["domain"] == [expected_domain]
+    assert tags["discipline"] == expected_discipline
 
 
 def test_therapeutic_area_is_left_unset_on_the_migrated_templates() -> None:
@@ -744,7 +769,7 @@ def test_no_template_is_ever_auto_tagged_gxp(path: Path) -> None:
 def test_the_gxp_value_is_inert_in_the_taxonomy(taxonomy: Taxonomy) -> None:
     """Selecting GxP is a label. It must change nothing: same normalisation,
     same issue list, same chip treatment, same ordering weight as Non-GxP."""
-    base = {"domain": ["dmpk"], "document_class": ["technical_summary"]}
+    base = {"domain": ["pre_clinical"], "document_class": ["technical_summary"]}
     non_gxp, issues_non = taxonomy.normalize({**base, "compliance": ["non_gxp"]})
     gxp, issues_gxp = taxonomy.normalize({**base, "compliance": ["gxp"]})
 

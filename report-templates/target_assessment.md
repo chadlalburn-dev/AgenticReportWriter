@@ -9,7 +9,8 @@ description: >
 owner: target-sciences
 
 tags:
-  domain: target_sciences
+  domain: discovery
+  discipline: [target_sciences]
   compliance: non_gxp
   document_class: internal_decision
 

@@ -8,7 +8,8 @@ description: >
 owner: dmpk
 
 tags:
-  domain: dmpk
+  domain: pre_clinical
+  discipline: [dmpk]
   compliance: non_gxp
   document_class: technical_summary
   modality: [small_molecule]

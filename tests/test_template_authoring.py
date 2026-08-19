@@ -178,7 +178,7 @@ def form_pairs(key: str = "probe_template", **overrides) -> list[tuple[str, str]
         ("version", "0.1.0"),
         ("owner", "dmpk"),
         ("doc_heading", f"Probe {key}"),
-        ("tags__domain", "dmpk"),
+        ("tags__domain", "pre_clinical"),
         ("tags__compliance", "non_gxp"),
         ("input.k", "i1"),
         ("input.i1.id", "compound_id"),
@@ -745,7 +745,7 @@ def valid_draft(key: str = "safety_probe") -> TemplateDraft:
         version="0.1.0",
         owner="dmpk",
         doc_heading="Safety Probe",
-        tags={"domain": ["dmpk"], "compliance": ["non_gxp"]},
+        tags={"domain": ["pre_clinical"], "compliance": ["non_gxp"]},
         inputs=[DraftInput(key="i1", id="compound_id", prompt="Compound identifier")],
         sources=[
             DraftSource(key="s1", id="assays", kind="bigquery", dataset="p", query_id="q")
@@ -838,7 +838,7 @@ def test_create_writes_a_file_the_loader_reads_back_and_shows_it_in_the_gallery(
 
     template = load_report_doc(path)
     assert template.report_type == "probe_template"
-    assert template.tags == {"domain": ["dmpk"], "compliance": ["non_gxp"]}
+    assert template.tags == {"domain": ["pre_clinical"], "compliance": ["non_gxp"]}
     assert [s.title for s in template.all_sections()] == ["Overview", "Method"]
 
     assert "probe_template" in card_keys_in_order(client.get("/").text)
@@ -878,7 +878,7 @@ def test_a_duplicate_key_differing_only_in_case_is_still_a_duplicate(
     [
         ({"tags__compliance": ""}, "Compliance has not been set"),
         ({"tags__domain": ""}, "Domain area has not been set"),
-        ({"tags__domain": "dmpk", "tags__domain_2": None}, None),
+        ({"tags__domain": "pre_clinical", "tags__domain_2": None}, None),
     ],
     ids=["no-compliance", "no-domain", "control"],
 )
@@ -1074,20 +1074,43 @@ def test_a_stale_base_sha_is_a_conflict_rather_than_a_silent_overwrite(
 @pytest.fixture()
 def populated(client: TestClient, store) -> TestClient:
     """Four templates chosen so grouping, sorting and filtering each have a
-    discriminating case rather than an accidental one."""
+    discriminating case rather than an accidental one.
+
+    Every `domain` here is a CONFIGURED value, and the three are picked so that
+    config order (discovery, pre_clinical, clinical) matches nothing else a
+    buggy implementation might order groups by:
+
+      * alphabetically it would be clinical, discovery, pre_clinical;
+      * by the cards' own sort it would be clinical (alpha), discovery (bravo),
+        pre_clinical (charlie) — the alphabetically FIRST card deliberately
+        sits in the LAST group;
+      * by size it would put the two-card group (clinical) first.
+
+    An unconfigured value could not do that job — it lands in the trailing
+    alphabetical bucket whichever way the configured groups are ordered — which
+    is why the fine-grained areas live on `discipline` here, not on `domain`.
+    """
     create(
         client,
         "alpha_dmpk",
         title="Alpha DMPK",
         owner="dmpk",
-        **{"tags__domain": "dmpk", "tags__compliance": "non_gxp"},
+        **{
+            "tags__domain": "clinical",
+            "tags__discipline": "dmpk",
+            "tags__compliance": "non_gxp",
+        },
     )
     create(
         client,
         "bravo_safety",
         title="Bravo Safety",
         owner="safety",
-        **{"tags__domain": "nonclinical_safety", "tags__compliance": "gxp"},
+        **{
+            "tags__domain": "discovery",
+            "tags__discipline": "nonclinical_safety",
+            "tags__compliance": "gxp",
+        },
     )
     create(
         client,
@@ -1106,7 +1129,11 @@ def populated(client: TestClient, store) -> TestClient:
         "delta_dmpk",
         title="Delta DMPK",
         owner="alpha_team",
-        **{"tags__domain": "dmpk", "tags__compliance": "gxp"},
+        **{
+            "tags__domain": "clinical",
+            "tags__discipline": "dmpk",
+            "tags__compliance": "gxp",
+        },
     ) + [
         ("section.k", "t3"),
         ("section.t3.heading", "Limitations"),
@@ -1125,15 +1152,17 @@ def test_group_by_domain_puts_each_card_under_its_own_heading(populated) -> None
     assert view.group == "domain"
     by_value = {g.value_id: [c.key for c in g.cards] for g in view.groups}
     assert by_value == {
+        "discovery": ["bravo_safety"],
         "pre_clinical": ["charlie_preclinical"],
-        "dmpk": ["alpha_dmpk", "delta_dmpk"],
-        "nonclinical_safety": ["bravo_safety"],
+        "clinical": ["alpha_dmpk", "delta_dmpk"],
     }
-    # Group ORDER follows config order, never the sort.
+    # Group ORDER follows config order, never the sort: alphabetically this
+    # would be clinical, discovery, pre_clinical, and by the cards' own name
+    # sort it would be clinical (alpha) first.
     assert [g.value_id for g in view.groups] == [
+        "discovery",
         "pre_clinical",
-        "dmpk",
-        "nonclinical_safety",
+        "clinical",
     ]
     assert sum(g.count for g in view.groups) == view.n_shown
 
@@ -1163,9 +1192,17 @@ def test_group_none_is_one_flat_list(populated) -> None:
 
 
 def test_the_gallery_page_renders_the_group_headings(populated) -> None:
-    page = populated.get("/?group=domain").text
-    headings = group_headings(page)
+    """Every group heading is the configured LABEL, never the raw value id.
+
+    Checked across two facets because the labels live on two: the broad bucket
+    is on `domain`, the scientific sub-areas are on `discipline`.
+    """
+    headings = group_headings(populated.get("/?group=domain").text)
+    assert "Discovery" in headings
     assert "Pre-Clinical" in headings
+    assert "Clinical" in headings
+
+    headings = group_headings(populated.get("/?group=discipline").text)
     assert "DMPK / ADME" in headings
     assert "Nonclinical Safety" in headings
 
@@ -1198,7 +1235,7 @@ def test_sort_survives_the_round_trip_through_the_rendered_page(populated) -> No
 
 
 def test_a_tag_filter_narrows_the_result_set(populated) -> None:
-    view = runs_module.get_store().gallery_view(tags=["domain:dmpk"])
+    view = runs_module.get_store().gallery_view(tags=["domain:clinical"])
     assert sorted(c.key for c in view.cards) == ["alpha_dmpk", "delta_dmpk"]
     assert view.n_shown == 2
     assert view.n_total == 4
@@ -1208,7 +1245,7 @@ def test_a_tag_filter_narrows_the_result_set(populated) -> None:
 
 def test_two_values_of_one_facet_are_combined_with_or(populated) -> None:
     view = runs_module.get_store().gallery_view(
-        tags=["domain:dmpk", "domain:pre_clinical"]
+        tags=["domain:clinical", "domain:pre_clinical"]
     )
     assert sorted(c.key for c in view.cards) == [
         "alpha_dmpk",
@@ -1219,7 +1256,7 @@ def test_two_values_of_one_facet_are_combined_with_or(populated) -> None:
 
 def test_two_different_facets_are_combined_with_and(populated) -> None:
     view = runs_module.get_store().gallery_view(
-        tags=["domain:dmpk", "compliance:non_gxp"]
+        tags=["domain:clinical", "compliance:non_gxp"]
     )
     assert [c.key for c in view.cards] == ["alpha_dmpk"]
 
@@ -1231,7 +1268,7 @@ def test_two_different_facets_are_combined_with_and(populated) -> None:
 
 def test_or_within_a_facet_and_and_across_facets_compose(populated) -> None:
     view = runs_module.get_store().gallery_view(
-        tags=["domain:dmpk", "domain:nonclinical_safety", "compliance:gxp"]
+        tags=["domain:clinical", "domain:discovery", "compliance:gxp"]
     )
     assert sorted(c.key for c in view.cards) == ["bravo_safety", "delta_dmpk"]
 
@@ -1272,7 +1309,7 @@ def test_a_stale_bookmark_widens_instead_of_erroring(populated) -> None:
 
 def test_the_query_parameters_round_trip_into_the_rendered_controls(populated) -> None:
     page = populated.get(
-        "/?group=compliance&sort=sections&tag=domain:dmpk&q=Alpha"
+        "/?group=compliance&sort=sections&tag=domain:clinical&q=Alpha"
     ).text
 
     group_select = re.search(r'name="group".*?</select>', page, re.S).group(0)
@@ -1282,12 +1319,12 @@ def test_the_query_parameters_round_trip_into_the_rendered_controls(populated) -
     assert re.search(r'value="sections"[^>]*\bselected\b', sort_select)
 
     assert re.search(r'name="q"[^>]*value="Alpha"', page)
-    assert re.search(r'name="tag" value="domain:dmpk"[^>]*\bchecked\b', page)
+    assert re.search(r'name="tag" value="domain:clinical"[^>]*\bchecked\b', page)
 
 
 def test_the_clear_url_keeps_the_view_but_drops_the_filters(populated) -> None:
     view = runs_module.get_store().gallery_view(
-        group="compliance", sort="sections", tags=["domain:dmpk"], q="Alpha"
+        group="compliance", sort="sections", tags=["domain:clinical"], q="Alpha"
     )
     parsed = urllib.parse.parse_qs(urllib.parse.urlparse(view.clear_url).query)
     assert parsed.get("group") == ["compliance"]
@@ -1299,11 +1336,11 @@ def test_the_clear_url_keeps_the_view_but_drops_the_filters(populated) -> None:
 def test_facet_counts_ignore_that_facets_own_selection(populated) -> None:
     """A value showing "(2)" has to actually yield 2 when it is ticked; if the
     count were filtered by its own facet every unselected value would read 0."""
-    view = runs_module.get_store().gallery_view(tags=["domain:dmpk"])
+    view = runs_module.get_store().gallery_view(tags=["domain:clinical"])
     domain = next(f for f in view.facets if f.id == "domain")
     counts = {v.id: v.count for v in domain.values}
-    assert counts["dmpk"] == 2
-    assert counts["nonclinical_safety"] == 1
+    assert counts["clinical"] == 2
+    assert counts["discovery"] == 1
     assert counts["pre_clinical"] == 1
 
     compliance = next(f for f in view.facets if f.id == "compliance")

@@ -9,7 +9,8 @@ description: >
 owner: nonclinical / medical-writing
 
 tags:
-  domain: regulatory_writing
+  domain: pre_clinical
+  discipline: [pharmacology, dmpk, nonclinical_safety]
   compliance: non_gxp
   document_class: regulatory_component
   modality: [small_molecule]
