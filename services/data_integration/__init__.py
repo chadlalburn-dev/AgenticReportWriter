@@ -47,10 +47,18 @@ from services.data_integration.sql_safety import (
     SqlSafetyViolation,
 )
 
+# BigQueryQueryExecutor is exposed lazily — google-cloud-bigquery is only in
+# the [gcp] extra, so the rest of the engine imports without it.
+try:
+    from services.data_integration.bigquery_executor import BigQueryQueryExecutor
+except ImportError:  # pragma: no cover - depends on local install
+    BigQueryQueryExecutor = None  # type: ignore[assignment,misc]
+
 __all__ = [
     "ApprovalCallback",
     "ApprovalDecision",
     "ApprovalRequest",
+    "BigQueryQueryExecutor",
     "NamedQuery",
     "NamedQueryRegistry",
     "QueryExecutor",

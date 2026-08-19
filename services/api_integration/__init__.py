@@ -32,6 +32,10 @@ from services.api_integration.gate import (
     ApiCallGate,
     ApiSafetyViolation,
 )
+from services.api_integration.confluence import (
+    ConfluenceConnector,
+    MockConfluenceConnector,
+)
 from services.api_integration.mock_connector import (
     InMemoryApiConnector,
     MockChemblConnector,
@@ -49,7 +53,9 @@ __all__ = [
     "ApiConnectorRegistry",
     "ApiOperationError",
     "ApiSafetyViolation",
+    "ConfluenceConnector",
     "InMemoryApiConnector",
     "MockChemblConnector",
     "MockClinicalTrialsConnector",
+    "MockConfluenceConnector",
 ]

@@ -41,6 +41,7 @@ from services.template_service.builder import (
     TemplateBuildResult,
     TemplateBuilder,
 )
+from services.template_service.report_doc import ReportDocError, load_report_doc
 
 __all__ = [
     "DocxAdapter",
@@ -50,9 +51,11 @@ __all__ = [
     "LibraryAdapter",
     "LibraryAdapterOptions",
     "LibraryNotFound",
+    "ReportDocError",
     "SampleReportsAdapter",
     "SampleReportsAdapterOptions",
     "ScopingSpec",
     "TemplateBuildResult",
     "TemplateBuilder",
+    "load_report_doc",
 ]
