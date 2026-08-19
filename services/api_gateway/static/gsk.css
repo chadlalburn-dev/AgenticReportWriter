@@ -373,6 +373,12 @@ body {
   display: grid;
   gap: var(--rg-s-24);
   grid-template-columns: minmax(0, 1fr);
+  /* .rg-grid is applied to <ul> in the gallery and run history, so the
+     UA list marker and indent must be cleared here — the grid items are
+     cards, not bullets. */
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 @media (min-width: 768px) {
   .rg-grid--2,
