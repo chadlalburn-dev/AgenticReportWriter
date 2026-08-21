@@ -628,3 +628,28 @@ def test_source_outside_the_evidence_folder_is_404(
 
     response = client.get(f"/runs/{completed_run}/source/local::C:/Windows/win.ini")
     assert response.status_code == 404
+
+
+def test_static_assets_are_revalidated_not_heuristically_cached(
+    client: TestClient,
+) -> None:
+    """A stylesheet edit must show up on a normal reload.
+
+    Starlette sends etag + last-modified but no Cache-Control. With no
+    directive the browser applies heuristic freshness and serves a cached
+    stylesheet without asking whether it changed — so CSS edits appear only
+    after a hard refresh. That cost real debugging time, so the header is
+    pinned here.
+
+    `no-cache` means "revalidate", not "don't store": the etag still answers
+    304, so an unchanged file costs one conditional request.
+    """
+    response = client.get("/static/titanium.css")
+    assert response.status_code == 200
+    cache_control = response.headers.get("cache-control", "")
+    assert "no-cache" in cache_control, cache_control
+    etag = response.headers.get("etag")
+    assert etag, "no etag — revalidation would re-download the whole file"
+
+    conditional = client.get("/static/titanium.css", headers={"If-None-Match": etag})
+    assert conditional.status_code == 304, "revalidation should be cheap"

@@ -30,10 +30,33 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.types import Scope
 
 from services.api_gateway import ui as ui_module
 
 _HERE = Path(__file__).resolve().parent
+
+
+class _RevalidatingStatic(StaticFiles):
+    """StaticFiles that always forces a revalidation.
+
+    Starlette sends `etag` and `last-modified` but no `Cache-Control`. With no
+    directive, browsers fall back to heuristic freshness and will happily serve
+    a cached stylesheet WITHOUT asking us whether it changed — so an edit to
+    titanium.css does not show up on reload, only on a hard refresh. That
+    wasted real debugging time ("I don't see any changes") and the fix belongs
+    in the server, not in a habit of hard-refreshing.
+
+    `no-cache` does not mean "do not store" — it means "revalidate before
+    use". The etag still answers 304 Not Modified, so a reload of an unchanged
+    file is one cheap conditional request, not a re-download. This is a
+    local-only dev server; correctness beats a saved round trip.
+    """
+
+    def file_response(self, *args: object, **kwargs: object):  # type: ignore[override]
+        response = super().file_response(*args, **kwargs)  # type: ignore[arg-type]
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
 
 @asynccontextmanager
@@ -59,6 +82,6 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "api-gateway", "mode": "dev/stub"}
 
 
-app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
+app.mount("/static", _RevalidatingStatic(directory=str(_HERE / "static")), name="static")
 app.include_router(ui_module.router)
 ui_module.install_error_handlers(app)
