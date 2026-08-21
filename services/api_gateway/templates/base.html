@@ -1,5 +1,12 @@
 {#-
-  base.html — shared macro library + app shell.  OWNER: ENG-3.
+  base.html — shared macro library.  OWNER: ENG-3.
+
+  NO LONGER A SHELL. Nothing extends or renders this file: the error page was
+  the last route on it and now renders error.html on Titanium. What survives
+  is the macro library, which template_editor.html imports `without context`.
+  Everything below the macros — <html>, <head>, the nav, the footer, the
+  <link> to the deleted gsk.css and the <script> to app.js — is unreachable
+  and kept only because this file is frozen (R1/R2). Do not add to it.
 
   Contract notes for the other engineers:
     * Children do BOTH:

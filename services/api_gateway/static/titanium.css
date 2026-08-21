@@ -4,7 +4,9 @@
    Implements design_handoff_compound_page (see docs/design/). This is a
    DELIBERATE departure from gsk.css: GSK brand compliance is explicitly not
    required for this surface, and the palette/typefaces below are specified by
-   the handoff. gsk.css still governs the legacy gallery/run/editor pages.
+   the handoff. gsk.css is gone — it governed the legacy gallery/run/editor
+   pages, all of which are deleted, and the error page, which now renders on
+   this sheet. There is one shell.
 
    Accessibility rules from the handoff are load-bearing, not advisory. Each was
    found by measurement after being wrong in an earlier revision:
@@ -700,8 +702,25 @@
   border-radius: 50%;
   box-sizing: border-box;
 }
+/* Green for resolved, not the rust accent.
+   ------------------------------------------------------------------------
+   All three usages mean "this source resolved": the compound page, the
+   run-setup preflight and the draft's source ledger. Set to --ti-accent, a
+   source that resolved got a solid red dot while one that failed got a hollow
+   grey ring — inverted for anyone reading a safety document, where red means
+   look here.
+
+   Not a new colour: the system already says ok/bad with --ti-ok and
+   --ti-accent-dark (.ti-state--ok / .ti-state--bad). The dot was the one
+   status signal not following that, so this makes it consistent rather than
+   introducing a fourth vocabulary.
+
+   Absence stays a hollow ring rather than becoming a red one. The paired text
+   already names the specific failure ("nothing", "gap") in accent-dark, so the
+   alarm is stated once, in words, and the accent stays as scarce as the
+   handoff's accent budget asks. */
 .ti-dot--on {
-  background: var(--ti-accent);
+  background: var(--ti-ok);
   box-shadow: var(--ti-sh-dot-halo);
 }
 /* 2px, not 1.5px: sub-pixel borders floor at DPR 1 and this border IS the
@@ -2294,3 +2313,75 @@
   vertical-align: 1px;
   white-space: nowrap;
 }
+
+/* ---------------------------------------------------------------------------
+   Error page.
+   ---------------------------------------------------------------------------
+   Deliberately quiet. An error page is read once, in a bad mood, and the only
+   things that matter are what went wrong and where to go next — so the code is
+   a small mono overline, the title carries the weight, and the links are the
+   only thing with any colour.
+
+   No panel and no red-washed box: the message already reads as a problem from
+   its icon and its position, and a filled alert would be the loudest thing in
+   the app appearing on its least important screen.
+   --------------------------------------------------------------------------- */
+.ti-errpage { max-width: 58ch; padding-top: var(--ti-20); }
+
+.ti-errpage__code {
+  margin: 0 0 var(--ti-8);
+  font-family: var(--ti-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ti-mut);
+}
+
+.ti-errpage__title {
+  margin: 0 0 var(--ti-14);
+  font-size: 26px;
+  line-height: 30px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ti-ink);
+  text-wrap: balance;
+}
+
+.ti-errpage__msg {
+  display: flex;
+  gap: var(--ti-8);
+  align-items: baseline;
+  margin: 0 0 var(--ti-16);
+  padding-left: var(--ti-12);
+  border-left: 2px solid var(--ti-accent-dark);
+  font-size: 14px;
+  line-height: 21px;
+  color: var(--ti-ink);
+  text-wrap: pretty;
+}
+.ti-errpage__msg svg { flex: none; color: var(--ti-accent-dark); }
+
+.ti-errpage__detail { margin: 0 0 var(--ti-20); }
+.ti-errpage__detail summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ti-mut);
+}
+.ti-errpage__detail summary:hover { color: var(--ti-ink); }
+/* A traceback is the one place a horizontal scroller beats wrapping: wrapped
+   stack frames are unreadable. Focusable for the same reason the retrieved
+   tables are — an overflow box no keyboard can reach hides the content. */
+.ti-errpage__detail pre {
+  overflow-x: auto;
+  margin: var(--ti-8) 0 0;
+  padding: var(--ti-12);
+  border: 1px solid var(--ti-line);
+  border-radius: 2px;
+  background: var(--ti-panel);
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  line-height: 17px;
+  color: var(--ti-sec);
+}
+
+.ti-errpage__links { display: flex; flex-wrap: wrap; gap: var(--ti-12); }

@@ -178,3 +178,71 @@ def test_a_state_with_no_members_is_not_mentioned(ledger: list):
         assert " 0 " not in view.ledger_summary, view.ledger_summary
         if not any(row.status == "resolved_uncited" for row in view.ledger):
             assert "unused" not in view.ledger_summary, view.ledger_summary
+
+
+# --- the status dot ---------------------------------------------------------
+
+
+def test_the_resolved_dot_uses_the_systems_own_ok_colour(client: TestClient):
+    """It was the rust accent, so a source that resolved got a solid red dot
+    while one that failed got a hollow grey ring — inverted for anyone reading
+    a safety document, where red means look here.
+
+    The fix is consistency, not a new colour: .ti-state--ok and
+    .ti-state--bad already establish green/rust, and the dot was the one status
+    signal not following them.
+    """
+    import re as _re
+
+    css = client.get("/static/titanium.css").text
+    bare = _re.sub(r"/\*.*?\*/", "", css, flags=_re.DOTALL)
+
+    def value(selector: str, prop: str) -> str:
+        rule = _re.search(_re.escape(selector) + r"\s*\{([^}]*)\}", bare)
+        assert rule, f"{selector} has no rule"
+        found = _re.search(prop + r":\s*([^;]+);", rule.group(1))
+        assert found, f"{selector} sets no {prop}"
+        return found.group(1).strip()
+
+    assert value(".ti-dot--on", "background") == value(".ti-state--ok", "color"), (
+        "the resolved dot and the ok chip disagree about what ok looks like"
+    )
+    assert "accent" not in value(".ti-dot--on", "background"), (
+        "the resolved state must not wear the accent"
+    )
+
+
+def test_absence_is_shown_as_absence_not_as_alarm(client: TestClient):
+    """A hollow ring, not a red one.
+
+    The paired text already names the specific failure ("nothing", "gap") in
+    accent-dark, so the alarm is stated once, in words — and the accent stays
+    as scarce as the handoff's accent budget asks.
+    """
+    import re as _re
+
+    css = client.get("/static/titanium.css").text
+    bare = _re.sub(r"/\*.*?\*/", "", css, flags=_re.DOTALL)
+    rule = _re.search(r"\.ti-dot--off\s*\{([^}]*)\}", bare)
+    assert rule
+    body = rule.group(1)
+    assert "background: transparent" in body, "the absent state must stay hollow"
+    assert "accent" not in body, (
+        "two accent signals for one gap — the value column already carries it"
+    )
+
+
+def test_the_dot_is_never_the_only_signal(client: TestClient, ledger: list):
+    """Colour-blind readers and greyscale printouts both need the words."""
+    store = runs_module.get_store()
+    run_id = next(
+        s.run_id
+        for s in store.list_runs(limit=40)
+        if s.terminal and (store.draft_view(s.run_id) or None)
+        and store.draft_view(s.run_id).ledger
+    )
+    body = client.get(f"/runs/{run_id}?tab=sources").text
+    assert 'aria-hidden="true"' in body, "the decorative dot is not hidden from AT"
+    # every row states its outcome in text as well
+    for row in store.draft_view(run_id).ledger:
+        assert row.returned_text, f"{row.binding_id} has no written outcome"

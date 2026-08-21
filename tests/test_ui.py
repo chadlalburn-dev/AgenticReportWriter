@@ -511,8 +511,13 @@ def test_run_result_json_is_available_once_terminal(
 @pytest.mark.parametrize(
     ("name", "content_type", "needle"),
     [
-        ("gsk.css", "text/css", ".rg-btn"),
-        ("app.js", "javascript", "rg-progress"),
+        # The sheets and scripts the app actually loads. This was pointed at
+        # gsk.css, which was deleted with the legacy shell — and using it as
+        # the representative stylesheet meant the smoke test never touched the
+        # one every page depends on.
+        ("titanium.css", "text/css", ".ti-page"),
+        ("editor-titanium.css", "text/css", ".rg-input"),
+        ("editor.js", "javascript", "data-"),
     ],
 )
 def test_static_assets_are_served(

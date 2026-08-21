@@ -13,7 +13,8 @@
    an admin authoring route does not justify that risk to get visual parity.
 
    Load order matters — this file must come AFTER titanium.css, and the editor
-   must NOT load gsk.css. Anything not covered here inherits the Titanium base,
+   loads no gsk.css — that sheet is deleted. Anything not covered here inherits
+   the Titanium base,
    which is why the editor now reads as one app with the rest.
    ========================================================================= */
 

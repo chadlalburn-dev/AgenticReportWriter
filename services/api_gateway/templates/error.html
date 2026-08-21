@@ -1,0 +1,54 @@
+{% extends "titanium_base.html" %}
+{% import "_icons.html" as ic %}
+{#- ---------------------------------------------------------------------- -#}
+{#- Error page — Titanium.                                                  -#}
+{#-                                                                        -#}
+{#- Every 404, 405, 409, 422, 500 and 503 used to render base.html, which   -#}
+{#- is the only remaining page on the legacy gsk.css shell. So the app was  -#}
+{#- one application until you mistyped a URL and then a different one:      -#}
+{#- white canvas instead of the Titanium field, "Report types" instead of   -#}
+{#- "Templates", no search, no engine chip, and a footer hard-coding "Runs  -#}
+{#- locally against a stub model" — a claim that goes false the moment the  -#}
+{#- local Claude CLI is signed in.                                          -#}
+{#-                                                                        -#}
+{#- Same content as before: code, title, message, optional technical detail -#}
+{#- behind a <details>, and the caller's own links. The links come from     -#}
+{#- _error_page() rather than being hard-coded here, because a 422 from the -#}
+{#- run form wants somewhere different to go than a 404 does.               -#}
+{#- ---------------------------------------------------------------------- -#}
+
+{% block page_title %}{{ error.title }} — Report Generator{% endblock %}
+
+{% block content %}
+<div class="ti-page" style="max-width:720px">
+
+  <div class="ti-errpage">
+    <p class="ti-errpage__code" translate="no">Error {{ error.code }}</p>
+    <h1 class="ti-errpage__title">{{ error.title }}</h1>
+
+    {%- if error.message %}
+    {#- The server's own words. Kept verbatim and not prettified: on a 422 this
+        is the validation reason, and rewording it would lose the thing that
+        tells you what to change. -#}
+    <p class="ti-errpage__msg">{{ ic.icon('warn') }}<span>{{ error.message }}</span></p>
+    {%- endif %}
+
+    {%- if error.detail %}
+    {#- Collapsed, not hidden. A traceback is noise to most readers and the
+        only useful thing on the page to whoever is debugging the run that
+        produced it. -#}
+    <details class="ti-errpage__detail">
+      <summary>Technical detail</summary>
+      <pre>{{ error.detail }}</pre>
+    </details>
+    {%- endif %}
+
+    <div class="ti-errpage__links">
+      {%- for link_label, link_href in (error.links or [('Compounds', '/'), ('Runs', '/runs')]) %}
+      <a class="{{ 'ti-btn-primary' if loop.first else 'ti-seg__btn' }}" href="{{ link_href }}">{{ link_label }}</a>
+      {%- endfor %}
+    </div>
+  </div>
+
+</div>
+{% endblock %}

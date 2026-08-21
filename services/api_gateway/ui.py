@@ -1336,12 +1336,19 @@ def _error_page(
         "title": _ERROR_TITLES.get(status_code, "Something went wrong"),
         "message": message,
         "detail": detail,
-        "links": [("Back to report types", "/"), ("Run history", "/runs")],
+        # Labelled with the nav's own words. "Report types" is what Templates
+        # was called before the Titanium port, and "/" is Compounds now, not
+        # the gallery — so both links pointed a lost reader at names that are
+        # no longer on screen anywhere.
+        "links": [("Compounds", "/"), ("Runs", "/runs"), ("Templates", "/templates")],
     }
     try:
+        # error.html, not base.html. base.html is the legacy gsk.css shell and
+        # is now only the editor's macro source; rendering it here meant a
+        # mistyped URL dropped you into a visibly different application.
         return _render(
             request,
-            "base.html",
+            "error.html",
             {"error": error},
             nav_active="",
             status_code=status_code,
