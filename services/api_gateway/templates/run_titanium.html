@@ -148,12 +148,19 @@
     {#- Non-dismissible, and part of the deliverable — it is carried into the
         markdown export too. This is the one thing on the page that must never
         be collapsible, hoverable or behind a tab. -#}
-    <p class="ti-notice {{ 'ti-notice--stub' if engine is defined and not engine.real }}" role="note">
+    {#- `run_engine`, NOT `engine`. `engine` is the ambient one — what the app
+        would use if you started a run now. This notice is about the draft in
+        front of you, which was written at some point in the past. Rendering the
+        ambient answer meant a report drafted by Claude read "PLACEHOLDER text
+        from an offline stub", and once the CLI is signed in the same code would
+        have labelled every existing stub-drafted report as the model's own
+        words — invented prose behind a real provenance claim. -#}
+    <p class="ti-notice {{ 'ti-notice--stub' if run_engine is defined and not run_engine.real }}" role="note">
       <strong>AI-generated draft for human review.</strong>
       Nothing here is approved. Every number must be
       verified against its citation before this text is used or shared.
-      {%- if engine is defined %}
-      <span class="ti-notice__engine">{{ engine.detail }}</span>
+      {%- if run_engine is defined %}
+      <span class="ti-notice__engine">{{ run_engine.detail }}</span>
       {%- endif %}
     </p>
 

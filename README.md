@@ -107,3 +107,25 @@ decision for a human, so `ClaudeCliConfig.allow_real_data` defaults to `False`
 and the client refuses to run when a caller flags the corpus as real. That
 check is a tripwire against accident, not a DLP control, and says so in its own
 docstring.
+
+#### Where the engine is disclosed
+
+Two different questions, deliberately kept apart:
+
+- **What would the app use now?** The header chip on every page. It appears on
+  pages that have no run at all.
+- **What drafted the report in front of me?** The notice above the draft, the
+  Runs list marker, and the first line of every markdown export — all read the
+  run's own recorded `model_version`, never the ambient engine.
+
+Confusing the two is a provenance bug, not a cosmetic one. The draft page
+originally rendered the ambient answer, so a report drafted by Claude read
+"PLACEHOLDER text from an offline stub" — and once the CLI is signed in the same
+code would have labelled every *existing* stub-drafted report as the model's own
+words. That second direction is what the split guards against: invented prose
+sitting behind a real provenance claim.
+
+Where the engine is unrecorded (runs written before the field existed), the app
+claims the stub. Under-claiming costs a reader nothing; over-claiming voids the
+only thing this product asserts. `tests/test_engine_provenance.py` pins both
+directions.

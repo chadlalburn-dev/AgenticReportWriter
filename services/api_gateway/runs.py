@@ -123,6 +123,20 @@ DRAFT_NOTICE_GAPS: str = (
     " Drafted with no source data, verify from scratch: {sections}."
 )
 
+#: Appended when the engine was the offline stub.
+#:
+#: The notice already names the model version, but "stub-claude-sonnet-4-6@stub"
+#: reads like a real Sonnet build to anyone who does not know the codebase — and
+#: this notice travels: it is the first line of every exported markdown file,
+#: read by people who never saw the app. The page says "PLACEHOLDER text from an
+#: offline stub" in plain words and the artifact that leaves the building should
+#: not say less.
+DRAFT_NOTICE_STUB: str = (
+    " The section prose is PLACEHOLDER text from an offline stub, not a "
+    "model: retrieval, citations and the audit trail are real, the sentences "
+    "are not."
+)
+
 STUB_LLM_WARNING: str = (
     "Stub LLM — the narrative is placeholder text. Citations and data are "
     "real; the prose is not."
@@ -1118,6 +1132,52 @@ def resolve_engine_now() -> EngineInfo:
     if cached is not None:
         return cached
     return _cache_engine(choice, _probe_engine(choice))
+
+
+#: Model-version strings that mean "no model wrote this". Observed values in
+#: the store are `stub` and `stub-claude-sonnet-4-6@stub`; the prefix covers
+#: both and anything else the stub client tags itself with later.
+_STUB_VERSION_PREFIX = "stub"
+
+
+def engine_for_run(model_version: str) -> EngineInfo:
+    """Which engine drafted THIS run, from the run's own record.
+
+    Not the same question as `resolve_engine()`, and confusing the two is a
+    provenance bug rather than a cosmetic one. `resolve_engine()` describes the
+    app right now; a draft was written at some point in the past, possibly by a
+    different engine. The draft page was rendering the ambient answer, so a
+    report drafted by Claude read "PLACEHOLDER text from an offline stub" — and
+    once the CLI is signed in, the same code would have labelled every existing
+    stub-drafted report as the model's own words. That direction is the one that
+    matters: it would put invented prose behind a real provenance claim.
+    """
+    version = (model_version or "").strip()
+    if not version or version.lower().startswith(_STUB_VERSION_PREFIX):
+        # `fix` is cleared deliberately. It carries "run `claude`, then
+        # `/login`" or "unset REPORTGEN_ENGINE", which are instructions for
+        # configuring the app — nonsense attached to a run that already
+        # finished. Nothing renders it today; leaving it populated would arm a
+        # trap for whoever does. An unrecorded version claims the stub because
+        # under-claiming costs a reader nothing and over-claiming voids the
+        # only thing this product asserts.
+        return dataclasses.replace(_stub_engine(hint="", choice="stub"), fix="")
+    return EngineInfo(
+        # "model" for anything that is neither the CLI nor the stub — a Vertex
+        # model version, once that path exists. `resolve_engine()` only ever
+        # returns "cli" or "stub", so this is the one producer of that value.
+        kind="cli" if version == "claude-code-cli" else "model",
+        label="local Claude" if version == "claude-code-cli" else version,
+        detail=(
+            "Drafted by the Claude Code CLI on this machine. Prose is the "
+            "model's; every table and number is still pulled deterministically "
+            "from source."
+            if version == "claude-code-cli"
+            else f"Drafted by {version}. Prose is the model's; every table and "
+            "number is still pulled deterministically from source."
+        ),
+        real=True,
+    )
 
 
 def prime_engine() -> None:
@@ -4306,6 +4366,8 @@ def _notice_for(record: RunRecord, hollow_sections: list[str]) -> str:
     )
     if hollow_sections:
         notice += DRAFT_NOTICE_GAPS.format(sections="; ".join(hollow_sections))
+    if not engine_for_run(record.model_version).real:
+        notice += DRAFT_NOTICE_STUB
     return notice
 
 
@@ -5850,6 +5912,7 @@ __all__ = [
     "CORPUS_DIR",
     "DataTableView",
     "DRAFT_NOTICE",
+    "DRAFT_NOTICE_STUB",
     "DraftView",
     "EDC_SQLITE",
     "EventView",

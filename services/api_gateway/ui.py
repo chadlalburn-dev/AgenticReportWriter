@@ -1065,6 +1065,11 @@ def run_detail(request: Request, run_id: str) -> HTMLResponse:
             "record": record,
             "tab": tab,
             "draft": draft,
+            # Which engine drafted THIS run, from the run's own record — not
+            # the ambient `engine` every page gets, which describes the app
+            # right now. A draft was written in the past, possibly by a
+            # different engine, and mislabelling that is a provenance bug.
+            "run_engine": runs_module.engine_for_run(record.model_version),
             "poll_url": str(request.url_for("api_run_progress", run_id=run_id)),
             "tabs": _tab_items(request, run_id),
             "partial": partial,

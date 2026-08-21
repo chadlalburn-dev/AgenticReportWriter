@@ -52,7 +52,18 @@
       <a class="ti-lrow ti-lrow--run" href="/runs/{{ r.run_id }}">
         <div style="min-width:0">
           <p class="ti-lrow__title">{{ r.template_title }}</p>
-          <p class="ti-lrow__sub" translate="no">{{ r.primary_input or 'no compound' }}</p>
+          <p class="ti-lrow__sub" translate="no">
+            {{ r.primary_input or 'no compound' }}
+            {#- Marked only when the prose is placeholder. The store can now
+                hold a mix — some runs drafted by the local Claude CLI, some by
+                the offline stub — and this list is where you choose what to
+                open. Real drafts carry no marker: adding "local Claude" to
+                every row would cost a column to say the same thing on all of
+                them, and the exception is what changes a reader's plans. -#}
+            {%- if not r.model_version or r.model_version.startswith('stub') %}
+            <span class="ti-lrow__stub" title="Section prose is placeholder text from an offline stub, not a model.">placeholder prose</span>
+            {%- endif %}
+          </p>
         </div>
 
         {#- Colour is never the only signal — each state carries a glyph. -#}

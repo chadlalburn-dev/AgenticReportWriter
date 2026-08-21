@@ -2273,3 +2273,24 @@
    the same characters-per-line for 12px and 14px text — the two must be
    measured separately.
    --------------------------------------------------------------------------- */
+
+/* "placeholder prose" on a run row. Sits on the secondary line beside the
+   compound, not in its own column: it appears on some rows and not others, so
+   a column would be mostly empty, and it reads as a qualifier on the run
+   rather than as a measure of it. Accent-bordered rather than filled — the row
+   is scanned, and a filled chip on a dense list pulls harder than the state
+   column it sits next to. */
+.ti-lrow__stub {
+  display: inline-block;
+  margin-left: var(--ti-6);
+  padding: 0 var(--ti-4);
+  border: 1px solid var(--ti-accent-dark);
+  border-radius: 2px;
+  font-family: var(--ti-mono);
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.04em;
+  color: var(--ti-accent-dark);
+  vertical-align: 1px;
+  white-space: nowrap;
+}
