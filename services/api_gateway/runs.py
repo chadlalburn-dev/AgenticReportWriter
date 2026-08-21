@@ -4197,11 +4197,22 @@ def _build_draft_view(
 
     n_cited_rows = sum(1 for r in ledger if r.status == "cited" or r.citation_ns)
     n_unavailable = sum(1 for r in ledger if r.status == "unavailable")
-    ledger_summary = (
-        f"{len(ledger)} bound {_plural(len(ledger), 'source')} · "
-        f"{n_cited_rows} cited in the draft · "
-        f"{n_unavailable} could not be resolved"
-    )
+    # Three states, and the summary must account for all of them. It named
+    # only "cited" and "could not be resolved", so a source that WAS pulled and
+    # then went unused by the draft vanished from the arithmetic — 8 bound, 3
+    # cited, 4 unresolved, and one unaccounted for. In a provenance product
+    # that omission is the interesting case: it means retrieval worked and the
+    # draft ignored the result, which is a reviewer's problem, not a silent one.
+    n_unused = sum(1 for row in ledger if row.status == "resolved_uncited")
+    parts = [
+        f"{len(ledger)} bound {_plural(len(ledger), 'source')}",
+        f"{n_cited_rows} cited in the draft",
+    ]
+    if n_unused:
+        parts.append(f"{n_unused} pulled but unused")
+    if n_unavailable:
+        parts.append(f"{n_unavailable} could not be resolved")
+    ledger_summary = " · ".join(parts)
 
     # --- trust bar --------------------------------------------------------
     n_no_data = sum(1 for s in section_views if s.band == "no_data")

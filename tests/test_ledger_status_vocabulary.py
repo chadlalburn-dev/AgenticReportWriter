@@ -131,3 +131,50 @@ def test_the_unused_state_is_visually_distinct(client: TestClient):
         assert re.search(
             r"\.ti-brow__returns" + re.escape(variant) + r"\s*\{[^}]*color:", css
         ), f"{variant} has no colour of its own"
+
+
+def test_the_summary_accounts_for_every_source(ledger: list):
+    """The arithmetic has to close.
+
+    The summary named only "cited" and "could not be resolved", so a source
+    that WAS pulled and then went unused by the draft vanished: 8 bound, 3
+    cited, 4 unresolved, one unaccounted for. That omission is the interesting
+    case — retrieval worked and the draft ignored the result — and it was the
+    one silently dropped.
+    """
+    import re as _re
+
+    store = runs_module.get_store()
+    checked = 0
+    for summary in store.list_runs(limit=40):
+        if not summary.terminal:
+            continue
+        view = store.draft_view(summary.run_id)
+        if not view or not view.ledger:
+            continue
+        checked += 1
+        counts = {"cited": 0, "resolved_uncited": 0, "unavailable": 0}
+        for row in view.ledger:
+            counts[row.status] += 1
+        numbers = [int(n) for n in _re.findall(r"\b(\d+)\b", view.ledger_summary)]
+        assert numbers, f"no figures in {view.ledger_summary!r}"
+        total, *stated = numbers
+        assert total == len(view.ledger)
+        assert sum(stated) == total, (
+            f"{view.ledger_summary!r} accounts for {sum(stated)} of {total} sources"
+        )
+    assert checked, "no run with a ledger to check"
+
+
+def test_a_state_with_no_members_is_not_mentioned(ledger: list):
+    """A summary reading "0 pulled but unused" is noise, not information."""
+    store = runs_module.get_store()
+    for summary in store.list_runs(limit=40):
+        if not summary.terminal:
+            continue
+        view = store.draft_view(summary.run_id)
+        if not view or not view.ledger:
+            continue
+        assert " 0 " not in view.ledger_summary, view.ledger_summary
+        if not any(row.status == "resolved_uncited" for row in view.ledger):
+            assert "unused" not in view.ledger_summary, view.ledger_summary

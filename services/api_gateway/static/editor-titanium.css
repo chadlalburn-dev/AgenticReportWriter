@@ -20,15 +20,20 @@
 /* --- Layout ------------------------------------------------------------ */
 
 .ti .rg-container { max-width: 1100px; margin: 0 auto; padding: var(--ti-20); }
-/* The editor spanned 1249px of a 1280px viewport on 8px of padding, while
-   every other page centres inside 1060-1200. Matching them puts the two
-   surfaces in the same room. */
-.ti .rg-editor {
-  display: block;
+/* The editor page's container. It had none: titanium_base.html does not wrap
+   the content block, so both the edit form and the delete confirmation ran the
+   full viewport — the confirmation at ~230 characters of prose per line, on the
+   one screen in the app where you are about to destroy something.
+
+   1200px matches .ti-page, so the editor and the rest of the app sit in the
+   same room. .rg-editor itself needs no cap now that its parent has one. */
+.ti .rg-page {
   max-width: 1200px;
   margin-inline: auto;
-  padding-inline: var(--ti-20);
+  padding: var(--ti-20);
 }
+
+.ti .rg-editor { display: block; }
 .ti .rg-cols { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--ti-20); align-items: start; }
 .ti .rg-cols__main { min-width: 0; }
 .ti .rg-cols__rail { min-width: 0; }
@@ -58,8 +63,11 @@
   font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
   font-weight: 400; color: var(--ti-mut);
 }
-.ti .rg-body    { font-size: 14px; line-height: 21px; color: var(--ti-ink); max-width: 72ch; }
-.ti .rg-body-sm { font-size: 13px; line-height: 20px; color: var(--ti-sec); max-width: 72ch; }
+/* 58ch, not 72ch: `ch` is the width of the "0" glyph, which in this sans is
+   much wider than the average letter, so 72ch was rendering ~94 characters
+   per line. Same correction as .ti-para__body. */
+.ti .rg-body    { font-size: 14px; line-height: 21px; color: var(--ti-ink); max-width: 58ch; }
+.ti .rg-body-sm { font-size: 13px; line-height: 20px; color: var(--ti-sec); max-width: 58ch; }
 .ti .rg-caption { font-size: 11px; line-height: 16px; color: var(--ti-dim); }
 .ti .rg-subtle  { color: var(--ti-dim); }
 .ti .rg-mono    { font-family: var(--ti-mono); font-size: 11px; }
@@ -218,10 +226,15 @@
 /* --- Issues rail ------------------------------------------------------- */
 
 .ti .rg-issues { margin: 0; padding: 0; list-style: none; }
+/* The consequences of a destructive action. Uncapped these ran 1126px —
+   about 166 characters per line — on the one screen in the app where
+   someone is about to destroy something and the text is what stops them
+   doing it by accident. */
 .ti .rg-issues__row {
   display: flex; gap: var(--ti-8); align-items: flex-start;
   padding: var(--ti-8) 0; border-bottom: 1px solid var(--ti-rule);
   font-size: 12px; line-height: 18px; color: var(--ti-sec);
+  max-width: 58ch;
 }
 .ti .rg-issues__row:last-child { border-bottom: 0; }
 
@@ -266,3 +279,7 @@
 /* A whole number does not need 44 characters of box. Sized to four digits so
    the field itself says "a small number goes here". */
 .ti .rg-input--num { max-width: 8ch; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Sits directly above .rg-issues__row and reads as one block with it, so
+   it takes the same measure rather than running the panel's full width. */
+.ti .rg-card__sub { max-width: 58ch; }

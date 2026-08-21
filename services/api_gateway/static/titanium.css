@@ -430,7 +430,10 @@
   background: #FFFFFF;
   box-shadow: var(--ti-sh-ctl-raised);
   font-family: var(--ti-mono);
-  font-size: 9px;
+  /* 10px is the smallest step in this system's type scale; the
+     initials were set below it, at a size two capitals in a 22px
+     circle do not need. */
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--ti-ink);
@@ -574,11 +577,18 @@
 
 /* --- Main (two columns) ------------------------------------------------- */
 
+/* The compound page's two-column body. It had no max-width, so it stretched
+   to the viewport — 1365px at 1400 and unbounded beyond, which puts the 7fr
+   reading column past any sane measure on a wide monitor. 1240px matches the
+   compounds home, the app's other two-column page, rather than inventing a
+   third width. */
 .ti-main {
   display: grid;
   grid-template-columns: minmax(0, 7fr) minmax(300px, 5fr);
   gap: var(--ti-20);
   padding: var(--ti-20);
+  max-width: 1240px;
+  margin-inline: auto;
   align-items: start;
 }
 .ti-col { min-width: 0; }
@@ -916,7 +926,6 @@
   text-transform: uppercase;
   white-space: nowrap;
 }
-.ti-state__glyph { font-size: 9px; }
 .ti-state--ok      { color: var(--ti-ok); }
 .ti-state--bad     { color: var(--ti-accent-dark); }
 .ti-state--busy    { color: var(--ti-mut); }
@@ -1583,14 +1592,6 @@
   margin: 0 auto;
   padding: 72px var(--ti-20) var(--ti-32);
 }
-.ti-home__lede {
-  margin: 0 0 var(--ti-20);
-  font-weight: 300;
-  font-size: 17px;
-  line-height: 24px;
-  color: var(--ti-sec);
-  max-width: 60ch;
-}
 /* One large search field, nothing else above it */
 .ti-home__search {
   display: flex;
@@ -1609,52 +1610,8 @@
 
 /* Compounds as plain text rows, 56px, NOT cards.
    140px mono ID column, name, owner, right-aligned run count + date. */
-.ti-crow {
-  display: grid;
-  grid-template-columns: 140px minmax(0, 1fr) auto auto;
-  gap: var(--ti-16);
-  align-items: center;
-  height: 56px;
-  padding: 0 var(--ti-4);
-  border-bottom: 1px solid var(--ti-line);
-  text-decoration: none;
-  color: var(--ti-ink);
-}
 .ti-crow:last-child { border-bottom: 0; }
 .ti-crow:hover { background: rgba(255, 255, 255, 0.55); color: var(--ti-ink); }
-.ti-crow__id {
-  font-family: var(--ti-mono);
-  font-weight: 500;
-  font-size: 13px;
-  color: var(--ti-ink);
-}
-.ti-crow__name {
-  font-size: 13px;
-  line-height: 18px;
-  color: var(--ti-sec);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ti-crow__owner {
-  font-family: var(--ti-mono);
-  font-size: 11px;
-  color: var(--ti-mut);
-  justify-self: end;
-  white-space: nowrap;
-  max-width: 18ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ti-crow__meta {
-  font-family: var(--ti-mono);
-  font-size: 11px;
-  color: var(--ti-mut);
-  justify-self: end;
-  white-space: nowrap;
-  min-width: 15ch;
-  text-align: right;
-}
 
 /* --- Density toggle ---------------------------------------------------- */
 
@@ -1750,7 +1707,6 @@
   height: 1em;
   vertical-align: -0.125em;
 }
-.ti-icon--sm { width: 12px; height: 12px; }
 .ti-state .ti-icon { width: 11px; height: 11px; }
 .ti-lrow__arrow .ti-icon,
 .ti-rrow__arrow .ti-icon { width: 14px; height: 14px; }
@@ -2299,3 +2255,21 @@
 .ti-progress__why li { margin: 0; }
 .ti-progress__why li + li { margin-top: var(--ti-2); }
 .ti-progress__item--failed .ti-progress__why { color: var(--ti-accent-dark); }
+
+/* ---------------------------------------------------------------------------
+   The measure.
+   ---------------------------------------------------------------------------
+   58ch is this app's line-length cap for running prose, and it is one number
+   rather than a per-component guess: .ti-para__body, .ti-progress__foot,
+   .rg-body, .rg-issues__row and .rg-card__sub all use it.
+
+   Why 58 and not the 65-75 the guidance quotes: `ch` is the width of the "0"
+   glyph, and in Chivo that is far wider than the average letter, so 58ch
+   renders about 74 real characters. The earlier 72ch was rendering 94.
+
+   Measured with a fixed 100-character reference string in each element's own
+   computed font. Note that reading `getComputedStyle(el).font` on a flex item
+   can return a shorthand without its size, which makes a naive probe report
+   the same characters-per-line for 12px and 14px text — the two must be
+   measured separately.
+   --------------------------------------------------------------------------- */

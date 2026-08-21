@@ -19,7 +19,11 @@
      mode == "edit"    GET  /templates/{key}/edit       POST /templates/{key}
      mode == "delete"  GET  /templates/{key}/delete     POST /templates/{key}/delete
 
-  base.html already wraps {% block content %} in .rg-container — do not add another.
+  This extends titanium_base.html, which does NOT wrap {% block content %}
+  in a container — the .rg-page div below is what bounds the page. The
+  previous note here said base.html did the wrapping; after the Titanium
+  port that stopped being true and both screens ran edge to edge, the
+  delete confirmation at 1531px of prose per line.
 
   Accent budget (§6.4): exactly ONE orange element on this view — "Save template"
   in the rail. The second .rg-editor__actions cluster at the foot of the form
@@ -183,6 +187,7 @@
 {% endblock %}
 
 {% block content %}
+<div class="rg-page">
 
 {#- kind id -> human word, built from the context so the server and editor.js
     can never disagree about the wording. -#}
@@ -1009,6 +1014,7 @@
 
 </div>
 {% endif %}
+</div>
 {% endblock %}
 
 {% block scripts %}
