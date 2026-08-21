@@ -103,6 +103,12 @@ class _FormScraper(HTMLParser):
         if tag == "label" and attr.get("for"):
             self.label_for.add(attr["for"])
         if tag == "form" and not self._done:
+            # Skip GET forms. The Titanium shell puts a global search form
+            # (method=get) in the header of every page, so "the first form on
+            # the page" is no longer the form that submits the thing under
+            # test. Every form these tests exercise is a POST.
+            if attr.get("method", "").lower() != "post":
+                return
             self._depth = 1
             self.action = attr.get("action", "")
             self.method = attr.get("method", "").lower()
@@ -449,17 +455,20 @@ def test_completed_run_page_renders_section_titles_and_citation_markers(
     for title in titles:
         assert str(escape(title)) in body, f"section {title!r} missing from draft"
 
-    # ...and the draft must be cited: inline markers pointing at real
-    # <article id="ref-N"> records in the source list.
+    # ...and the draft must be cited: every marker in the provenance gutter
+    # resolves to a real citation record on the same page. The contract is the
+    # resolution, not the naming — Titanium renders the record as
+    # <details id="cite-N"> where the legacy shell used <article id="ref-N">.
     draft = store.draft_view(completed_run)
     assert draft is not None
     assert draft.citations, "the run produced no citations to render"
 
     for citation in draft.citations:
-        assert f'id="ref-{citation.n}"' in body
-        assert f'href="#ref-{citation.n}"' in body
+        assert f'id="cite-{citation.n}"' in body
+        assert f'href="#cite-{citation.n}"' in body
 
-    assert 'class="rg-cite"' in body
+    assert 'class="ti-cite"' in body
+    # the citation id stays recoverable from the DOM
     assert 'data-citation-id="' in body
 
     # the non-dismissible human-review notice is part of the deliverable
@@ -521,11 +530,12 @@ def test_static_assets_are_served(
 def test_pages_reference_the_local_static_assets(client: TestClient) -> None:
     """No off-origin <link> or <script> on either shell.
 
-    The app now has two: the legacy gsk.css shell (gallery / run / editor) and
-    the Titanium shell (home / compound page). Both must stay local-only —
-    this app runs offline against local data.
+    The app has two: the legacy gsk.css shell — now only the template editor —
+    and the Titanium shell (home, compound, runs, templates, run detail, run
+    setup). Both must stay local-only: this app runs offline against local
+    data.
     """
-    legacy = client.get("/templates").text
+    legacy = client.get("/templates/new").text
     assert "/static/gsk.css" in legacy
     assert "/static/app.js" in legacy
 

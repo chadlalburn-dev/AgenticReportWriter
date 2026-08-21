@@ -1,0 +1,198 @@
+{% extends "titanium_base.html" %}
+{#- ---------------------------------------------------------------------- -#}
+{#- Template library — Titanium.                                            -#}
+{#-                                                                        -#}
+{#- A SECONDARY browse surface, not the front door. The compound page is    -#}
+{#- where you draft; this is where you inspect and author templates.        -#}
+{#-                                                                        -#}
+{#- The tag faceting is KEPT. The taxonomy exists so a growing library      -#}
+{#- stays navigable at enterprise scale — dropping it would remove a        -#}
+{#- capability rather than restyle one. What changed is its FORM: the       -#}
+{#- original stacked six always-visible controls above six cards. Here the  -#}
+{#- filter bank is a <details> that stays closed until asked for, and the   -#}
+{#- row carries three measures instead of the card's nine data classes at   -#}
+{#- one visual weight.                                                      -#}
+{#-                                                                        -#}
+{#- Facet values are CHECKBOXES inside the one form, so filtering works     -#}
+{#- with JavaScript off. Every tag renders identically — GxP included: it   -#}
+{#- is a routing label, not a warning, and must never be styled as one.     -#}
+{#-                                                                        -#}
+{#- This file names no facet id and no tag value. Everything comes from     -#}
+{#- `facets` / `groups` / `group_options` / `sort_options`, so adding a     -#}
+{#- facet to the taxonomy needs no change here.                             -#}
+{#- ---------------------------------------------------------------------- -#}
+
+{% block page_title %}Templates — Report Generator{% endblock %}
+
+{% macro tpl_row(c) %}
+<a class="ti-lrow ti-lrow--tpl" href="/new/{{ c.key }}"
+   {% if c.tag_tokens %}data-tags="{{ c.tag_tokens | join(' ') }}"{% endif %}
+   aria-label="{{ c.title }} — set up a run{% if c.tag_aria %}. Tagged {{ c.tag_aria }}{% endif %}">
+  <div style="min-width:0">
+    <p class="ti-lrow__title">{{ c.title }}</p>
+    <p class="ti-lrow__sub">{{ c.owner or 'unowned' }} &middot; v{{ c.version }}</p>
+    {%- if c.chips %}
+    <div class="ti-tags">
+      {%- for chip in c.chips %}
+      <span class="ti-tag">{{ chip.label }}</span>
+      {%- endfor %}
+      {%- if c.n_more_tags %}
+      <span class="ti-tags__more">+{{ c.n_more_tags }}</span>
+      {%- endif %}
+    </div>
+    {%- endif %}
+  </div>
+  <div class="ti-rrow__meter">
+    <span class="ti-rrow__ratio">{{ c.sources_ready }}/{{ c.sources_total }}</span>
+    <span class="ti-sr">sources ready</span>
+    <div class="ti-track" aria-hidden="true">
+      {%- for i in range(c.sources_total) %}
+      <span class="ti-track__seg {{ 'ti-track__seg--on' if i < c.sources_ready else '' }}"></span>
+      {%- endfor %}
+    </div>
+  </div>
+  <span class="ti-lrow__num">{{ c.n_sections }}</span>
+  <span class="ti-lrow__arrow" aria-hidden="true">&rarr;</span>
+</a>
+{% endmacro %}
+
+{% macro tpl_panel(rows) %}
+<div class="ti-panel">
+  <div class="ti-thead ti-lrow--tpl" role="row">
+    <span role="columnheader">template &middot; owner</span>
+    <span role="columnheader" style="justify-self:end">sources ready</span>
+    <span role="columnheader">sections</span>
+    <span></span>
+  </div>
+  {%- for c in rows %}{{ tpl_row(c) }}{% endfor %}
+</div>
+{% endmacro %}
+
+{% block content %}
+<div class="ti-page">
+
+  <div class="ti-sec-head">
+    <h2 class="ti-h2">Report templates</h2>
+    <a class="ti-btn-primary" href="{{ new_template_url }}">New template</a>
+  </div>
+
+  <p class="ti-page__lede">
+    What each report type can pull for the sample compound. To draft one against
+    a specific compound, open the compound and pick from
+    <span class="ti-code">Draft a report</span> — coverage is per compound.
+  </p>
+
+  {%- if not taxonomy_ok %}
+  <p class="ti-footnote">
+    Some tag settings could not be read, so the built-in default is in use.
+    Grouping and filtering still work and every template keeps the tags it
+    already carries. Nothing on disk was changed.
+  </p>
+  {%- endif %}
+
+  {# ---- one form: search, group, sort, tag filters ---------------------- #}
+  <form action="/templates" method="get">
+    <div class="ti-toolbar" role="search">
+      <label class="ti-search" for="ti-tpl-q">
+        <span class="ti-search__glyph" aria-hidden="true">&#8981;</span>
+        <span class="ti-sr">Search report types</span>
+        <input class="ti-search__input" id="ti-tpl-q" name="q" type="search"
+               value="{{ q }}" autocomplete="off"
+               placeholder="Title, owner, tag, section…">
+      </label>
+
+      <label class="ti-sr" for="ti-tpl-group">Group by</label>
+      <select class="ti-select" id="ti-tpl-group" name="group">
+        {%- for value, label in group_options %}
+        <option value="{{ value }}"{% if value == group %} selected{% endif %}>{{ label }}</option>
+        {%- endfor %}
+      </select>
+
+      <label class="ti-sr" for="ti-tpl-sort">Sort</label>
+      <select class="ti-select" id="ti-tpl-sort" name="sort">
+        {%- for value, label in sort_options %}
+        <option value="{{ value }}"{% if value == sort %} selected{% endif %}>{{ label }}</option>
+        {%- endfor %}
+      </select>
+
+      <button class="ti-btn-ghost" type="submit">Apply</button>
+    </div>
+
+    {%- if facets %}
+    <details class="ti-filters"{% if n_active %} open{% endif %}>
+      <summary class="ti-filters__summary">
+        Filter by tag{% if n_active %} <span class="ti-filters__count">{{ n_active }}</span>{% endif %}
+      </summary>
+      <div class="ti-filters__body">
+        {%- for facet in facets %}
+        <fieldset class="ti-facet">
+          <legend class="ti-facet__legend">
+            {{ facet.label }}
+            {%- if facet.n_selected %}<span class="ti-sr"> — {{ facet.n_selected }} selected</span>{% endif %}
+          </legend>
+          <div class="ti-facet__values">
+            {%- for v in facet.values %}
+            {#- The checkbox is offset-hidden, not display:none, so it keeps its
+                focus order and native checked state. It must stay the immediate
+                previous sibling of .ti-tag — the checked/focus styling hangs
+                off `input:checked + .ti-tag`. -#}
+            <label class="ti-tagchk">
+              <input type="checkbox" name="tag" value="{{ v.token }}"{% if v.selected %} checked{% endif %}>
+              <span class="ti-tag">
+                <span>{{ v.label }}</span>
+                <span class="ti-tag__count">{{ v.count }}<span class="ti-sr"> matching</span></span>
+              </span>
+            </label>
+            {%- endfor %}
+          </div>
+        </fieldset>
+        {%- endfor %}
+      </div>
+    </details>
+    {%- endif %}
+  </form>
+
+  {%- if filtering %}
+  <p class="ti-active">
+    <span class="ti-active__label">Showing {{ n_shown }} of {{ n_total }}</span>
+    {%- for s in active_summary %}<span class="ti-tag ti-tag--on">{{ s }}</span>{% endfor %}
+    <a class="ti-active__clear" href="{{ clear_url }}">Clear filters</a>
+  </p>
+  {%- endif %}
+
+  {# ---- the list ------------------------------------------------------- #}
+  {%- if n_shown == 0 %}
+  <div class="ti-panel"><div class="ti-empty">
+    <p class="ti-empty__title">No report types match these filters</p>
+    <p class="ti-empty__body">
+      <a href="{{ clear_url }}">Clear filters</a> to see all {{ n_total }},
+      or <a href="{{ new_template_url }}">author a new template</a>.
+    </p>
+  </div></div>
+
+  {%- elif groups %}
+    {%- for g in groups %}
+    <div class="ti-sec-head" style="margin-top:var(--ti-20)">
+      <h3 class="ti-h2" id="{{ g.heading_id }}">{{ g.label }}</h3>
+      <span class="ti-h2" style="letter-spacing:0">{{ g.count }}</span>
+    </div>
+    {{ tpl_panel(g.cards) }}
+    {%- endfor %}
+
+  {%- else %}
+    {{ tpl_panel(cards) }}
+  {%- endif %}
+
+  {%- if unavailable %}
+  <p class="ti-footnote">
+    {{ unavailable|length }}
+    file{{ '' if unavailable|length == 1 else 's' }} in
+    <span class="ti-code">{{ templates_dir }}</span>
+    {{ 'is' if unavailable|length == 1 else 'are' }} not runnable templates:
+    {% for u in unavailable %}<span class="ti-code">{{ u.key }}</span>{{ ', ' if not loop.last }}{% endfor %}.
+    README and SKILL files live here too — that is expected.
+  </p>
+  {%- endif %}
+
+</div>
+{% endblock %}

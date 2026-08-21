@@ -16,10 +16,12 @@ import os
 
 import pytest
 from fastapi.testclient import TestClient
+from markupsafe import escape
 
 from services.api_gateway import compounds as compounds_module
 from services.api_gateway import identity as identity_module
 from services.api_gateway.main import app
+from services.api_gateway.runs import get_store
 
 IAP_HEADER = "x-goog-authenticated-user-email"
 TRUST_ENV = "REPORTGEN_TRUST_PROXY_AUTH"
@@ -260,10 +262,29 @@ def test_the_front_door_is_compounds_not_the_report_gallery(client):
     assert 'name="sort"' not in body
 
 
-def test_the_gallery_still_exists_at_templates(client):
+def test_the_template_library_still_exists_at_templates(client):
+    """`/templates` is now a plain Titanium list, not the old faceted gallery.
+
+    The six-control bank was the largest complexity finding in the UI audit, so
+    the controls moved into a <details> that opens on demand. The CAPABILITY is
+    unchanged — the taxonomy is what keeps a growing library navigable — and
+    every runnable template stays reachable on the Titanium shell.
+    """
     r = client.get("/templates")
     assert r.status_code == 200
-    assert 'name="group"' in r.text, "gallery controls should be on this surface"
+    assert "/static/titanium.css" in r.text
+    assert "gsk.css" not in r.text
+    # The tag faceting stays: the taxonomy is what keeps a growing library
+    # navigable. What changed is its form — the controls now live in a
+    # <details> instead of a permanent six-control bank.
+    assert 'name="group"' in r.text
+    assert 'name="sort"' in r.text
+    assert 'name="tag"' in r.text
+
+    runnable, _ = get_store().list_templates()
+    assert runnable
+    for card in runnable:
+        assert str(escape(card.title)) in r.text, card.key
 
 
 def test_searching_a_known_compound_redirects_to_its_page(client):

@@ -251,7 +251,19 @@ def card_keys_in_order(page: str) -> list[str]:
 
 
 def group_headings(page: str) -> list[str]:
-    return [strip_tags(h).strip() for h in re.findall(r'<h3 class="rg-h3"[^>]*>(.*?)</h3>', page, re.S)]
+    """Group headings on the Titanium templates page.
+
+    The contract is that a heading shows the taxonomy's configured LABEL, never
+    a raw value id. Titanium renders it as <h3 class="ti-h2" id="g-...">; the
+    legacy shell used <h3 class="rg-h3">. Both are matched so this helper keeps
+    working if a page is ported back or forward.
+    """
+    return [
+        strip_tags(h).strip()
+        for h in re.findall(
+            r'<h3 class="(?:ti-h2|rg-h3)"[^>]*>(.*?)</h3>', page, re.S
+        )
+    ]
 
 
 RAW_TEMPLATE = """---

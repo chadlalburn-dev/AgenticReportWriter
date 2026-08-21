@@ -1,0 +1,147 @@
+{% extends "titanium_base.html" %}
+{#- ---------------------------------------------------------------------- -#}
+{#- Run setup — Titanium.                                                   -#}
+{#-                                                                        -#}
+{#- Deliberately small. Source readiness is a property of the COMPOUND and  -#}
+{#- is shown on the compound page, so it is not restated as a wall here.    -#}
+{#- The original stated the same warning three times on this screen (a per- -#}
+{#- source amber block, a "what will be missing" table, and an amber        -#}
+{#- summary panel) — together taller than the form they qualified. Here it  -#}
+{#- is one line of text plus a per-source status column, stated once.       -#}
+{#- ---------------------------------------------------------------------- -#}
+
+{% block page_title %}Set up {{ card.title }} — Report Generator{% endblock %}
+
+{% block content %}
+<div class="ti-page" style="max-width:900px">
+
+  <div class="ti-sec-head">
+    <h2 class="ti-h2">Set up a run</h2>
+    <a class="ti-sec-head__link" href="/templates">all templates</a>
+  </div>
+
+  <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--ti-16);margin-bottom:var(--ti-16)">
+    <h1 class="ti-identity__id" style="font-size:26px;line-height:30px">{{ card.title }}</h1>
+    <div class="ti-identity__meta">
+      <span>{{ card.owner or 'unowned' }}</span>
+      <span>v{{ card.version }}</span>
+      <span>{{ card.n_sections }} sections</span>
+      <span>{{ card.sources_ready }}/{{ card.sources_total }} sources ready</span>
+    </div>
+  </div>
+
+  {%- if not card.ok %}
+  <div class="ti-panel">
+    <div class="ti-empty">
+      <p class="ti-empty__title">This template cannot be run</p>
+      <p class="ti-empty__body">{{ card.error }}</p>
+    </div>
+  </div>
+  {%- else %}
+
+  {%- if field_errors.get('__run__') %}
+  <p class="ti-footnote" style="color:var(--ti-accent-dark);font-weight:500">
+    {{ field_errors['__run__'] }}
+  </p>
+  {%- endif %}
+
+  <form method="post" action="/runs">
+    <input type="hidden" name="template_key" value="{{ card.key }}">
+
+    {# ---- inputs ---- #}
+    <section style="margin-bottom:var(--ti-20)">
+      <h2 class="ti-h2" style="margin-bottom:var(--ti-8)">Inputs</h2>
+      <div class="ti-panel" style="padding:var(--ti-16)">
+        {%- for f in fields %}
+        <div class="ti-field">
+          <label class="ti-field__label" for="f-{{ f.binding_id }}">
+            {{ f.prompt }}{% if f.required %} <span aria-hidden="true">*</span><span class="ti-sr">(required)</span>{% endif %}
+          </label>
+          {#- The error is bound to the input with aria-describedby so a screen
+              reader reads the reason, not just "invalid". The id is the
+              contract `e-{binding_id}`. -#}
+          <input class="ti-field__input {{ 'is-error' if field_errors.get(f.binding_id) }}"
+                 id="f-{{ f.binding_id }}" name="{{ f.binding_id }}" type="text"
+                 value="{{ values.get(f.binding_id, '') }}"
+                 {% if f.required %}required{% endif %}
+                 {%- if field_errors.get(f.binding_id) %}
+                 aria-invalid="true" aria-describedby="e-{{ f.binding_id }}"
+                 {%- endif %}
+                 autocomplete="off" spellcheck="false">
+          {%- if field_errors.get(f.binding_id) %}
+          <p class="ti-field__msg ti-field__msg--error" id="e-{{ f.binding_id }}">
+            {{ field_errors[f.binding_id] }}
+          </p>
+          {%- endif %}
+        </div>
+        {%- endfor %}
+
+        <div class="ti-field">
+          <label class="ti-field__label" for="f-evidence">Evidence folder</label>
+          <input class="ti-field__input" id="f-evidence" name="evidence_folder" type="text"
+                 value="{{ evidence_folder }}" autocomplete="off" spellcheck="false">
+          <p class="ti-field__msg">{{ evidence_label }}</p>
+        </div>
+      </div>
+    </section>
+
+    {# ---- what will resolve ---- #}
+    <section style="margin-bottom:var(--ti-20)">
+      <div class="ti-sec-head">
+        <h2 class="ti-h2" id="ti-pf-head">What this run can pull</h2>
+        <span class="ti-h2" style="letter-spacing:0">
+          {{ preflight.sources | selectattr('status','equalto','ready') | list | length }}/{{ preflight.sources|length }}
+        </span>
+      </div>
+      <div class="ti-panel">
+        <div class="ti-thead" role="row">
+          <span></span>
+          <span role="columnheader">binding &middot; resolves to</span>
+          <span role="columnheader">state</span>
+          <span role="columnheader">sections</span>
+        </div>
+        {%- for s in preflight.sources %}
+        {%- set ready = s.status == 'ready' %}
+        <div class="ti-brow" role="row">
+          <span class="ti-dot {{ 'ti-dot--on' if ready else 'ti-dot--off' }}" aria-hidden="true"></span>
+          <div style="min-width:0">
+            <p class="ti-brow__name">{{ s.binding_id }}</p>
+            <p class="ti-brow__detail {{ 'ti-brow__detail--on' if ready else 'ti-brow__detail--off' }}"
+               title="{{ s.label }} — {{ s.detail }}">{{ s.label }}</p>
+          </div>
+          <span class="ti-brow__returns {{ 'ti-brow__returns--on' if ready else 'ti-brow__returns--off' }}">
+            {{ 'ready' if ready else 'gap' }}
+          </span>
+          <span class="ti-brow__used">{{ s.section_ids|length }}
+            {{ 'section' if s.section_ids|length == 1 else 'sections' }}</span>
+        </div>
+        {%- endfor %}
+      </div>
+
+      {#- Stated ONCE. Missing bindings never block a run. -#}
+      {%- if preflight.sections_without_data %}
+      <p class="ti-footnote">
+        {{ preflight.sections_without_data|length }}
+        section{{ '' if preflight.sections_without_data|length == 1 else 's' }}
+        will be drafted with no source data and should be treated as unverified:
+        {% for t in preflight.sections_without_data %}<span class="ti-code">{{ t }}</span>{{ ', ' if not loop.last }}{% endfor %}.
+        Gaps become stated gaps in the draft rather than blocking the run.
+      </p>
+      {%- endif %}
+    </section>
+
+    <div style="display:flex;gap:var(--ti-12);align-items:center">
+      <button class="ti-btn-primary" type="submit"
+              {% if preflight.blocked %}disabled{% endif %}>Draft this report</button>
+      <a class="ti-seg__btn" href="/">Cancel</a>
+      {%- if preflight.blocked %}
+      <span class="ti-state ti-state--bad">
+        <span class="ti-state__glyph" aria-hidden="true">&#9632;</span>{{ preflight.headline }}
+      </span>
+      {%- endif %}
+    </div>
+  </form>
+  {%- endif %}
+
+</div>
+{% endblock %}

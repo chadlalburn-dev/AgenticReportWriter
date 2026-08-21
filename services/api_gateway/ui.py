@@ -228,7 +228,7 @@ def _render_editor(
             request,
             "template_editor.html",
             context,
-            nav_active="gallery",
+            nav_active="templates",
             status_code=status_code,
         )
     except TemplateNotFound as exc:  # pragma: no cover - build-integrity guard
@@ -414,7 +414,7 @@ def gallery(request: Request) -> HTMLResponse:
     )
     return _render(
         request,
-        "gallery.html",
+        "templates.html",
         _gallery_context(
             view="gallery",
             cards=view.cards,
@@ -436,7 +436,7 @@ def gallery(request: Request) -> HTMLResponse:
             flash=_flash_for(store, params),
             taxonomy_ok=view.taxonomy_ok,
         ),
-        nav_active="gallery",
+        nav_active="templates",
     )
 
 
@@ -864,13 +864,12 @@ def run_list(request: Request) -> HTMLResponse:
 
     return _render(
         request,
-        "gallery.html",
-        _gallery_context(
-            view="runs",
-            runs=summaries,
-            filter_q=filter_q,
-            group_by_compound=group,
-        ),
+        "runs.html",
+        {
+            "runs": summaries,
+            "filter_q": filter_q,
+            "group_by_compound": group,
+        },
         nav_active="runs",
     )
 
@@ -917,7 +916,7 @@ def new_run(request: Request, template_key: str) -> HTMLResponse:
         from_run_id=from_run_id,
     )
     status = 200 if card.ok else 422
-    return _render(request, "new_run.html", ctx, nav_active="gallery", status_code=status)
+    return _render(request, "new_run_titanium.html", ctx, nav_active="templates", status_code=status)
 
 
 @router.post("/runs", name="create_run", include_in_schema=False)
@@ -962,7 +961,7 @@ async def create_run(request: Request) -> Response:
         evidence_folder=evidence_folder,
     )
     return _render(
-        request, "new_run.html", ctx, nav_active="gallery", status_code=422
+        request, "new_run_titanium.html", ctx, nav_active="templates", status_code=422
     )
 
 
@@ -1016,7 +1015,7 @@ def run_detail(request: Request, run_id: str) -> HTMLResponse:
 
     response = _render(
         request,
-        "run.html",
+        "run_titanium.html",
         {
             "run": summary,
             "record": record,

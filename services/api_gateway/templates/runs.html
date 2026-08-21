@@ -1,0 +1,90 @@
+{% extends "titanium_base.html" %}
+{#- ---------------------------------------------------------------------- -#}
+{#- Run history — Titanium.                                                 -#}
+{#-                                                                        -#}
+{#- One row per run: what was drafted, for which compound, its state, how   -#}
+{#- much of it is evidenced, and when. The evidenced ratio is the only      -#}
+{#- number here that justifies the product, so it gets mono weight and sits -#}
+{#- next to the state rather than being buried in a stat strip.             -#}
+{#- ---------------------------------------------------------------------- -#}
+
+{% block page_title %}Runs — Report Generator{% endblock %}
+
+{% block content %}
+<div class="ti-page">
+
+  <div class="ti-sec-head">
+    <h2 class="ti-h2" id="ti-runs-head">Runs</h2>
+    <div class="ti-seg" role="group" aria-labelledby="ti-runs-head">
+      <a class="ti-seg__btn" href="/runs"
+         {% if not group_by_compound %}aria-current="true"{% endif %}>newest {{ runs|length }}</a>
+      <a class="ti-seg__btn" href="/runs?group=1"
+         {% if group_by_compound %}aria-current="true"{% endif %}>by compound</a>
+    </div>
+  </div>
+
+  <form class="ti-toolbar" action="/runs" method="get" role="search">
+    {%- if group_by_compound %}<input type="hidden" name="group" value="1">{% endif %}
+    <label class="ti-search" for="ti-runs-q">
+      <span class="ti-search__glyph" aria-hidden="true">&#8981;</span>
+      <span class="ti-sr">Filter runs</span>
+      <input class="ti-search__input" id="ti-runs-q" name="q" type="search"
+             value="{{ filter_q|default('') }}" autocomplete="off"
+             placeholder="Filter by report, compound or state">
+    </label>
+    {%- if filter_q %}
+    <a class="ti-seg__btn" href="/runs{{ '?group=1' if group_by_compound else '' }}">clear</a>
+    {%- endif %}
+  </form>
+
+  <div class="ti-panel">
+    <div class="ti-thead ti-lrow--run" role="row">
+      <span role="columnheader">report &middot; compound</span>
+      <span role="columnheader">state</span>
+      <span role="columnheader">cited</span>
+      <span role="columnheader" style="justify-self:end">started</span>
+      <span></span>
+    </div>
+
+    {%- if runs %}
+      {%- for r in runs %}
+      <a class="ti-lrow ti-lrow--run" href="/runs/{{ r.run_id }}">
+        <div style="min-width:0">
+          <p class="ti-lrow__title">{{ r.template_title }}</p>
+          <p class="ti-lrow__sub">{{ r.primary_input or 'no compound' }}</p>
+        </div>
+
+        {#- Colour is never the only signal — each state carries a glyph. -#}
+        {%- set st = r.status_state %}
+        <span class="ti-state ti-state--{{ 'ok' if st == 'ok' else ('bad' if st in ('error','bad') else ('busy' if not r.terminal else 'neutral')) }}">
+          <span class="ti-state__glyph" aria-hidden="true">
+            {%- if st == 'ok' %}&#9679;{% elif st in ('error','bad') %}&#9632;{% elif not r.terminal %}&#9678;{% else %}&#9675;{% endif %}
+          </span>{{ r.status_label }}
+        </span>
+
+        <span class="ti-lrow__num" title="claims cited / claims total">
+          {{ r.n_claims_cited }}/{{ r.n_claims }}
+        </span>
+        <span class="ti-lrow__meta">{{ r.created_human }}</span>
+        <span class="ti-lrow__arrow" aria-hidden="true">&rarr;</span>
+      </a>
+      {%- endfor %}
+    {%- else %}
+      <div class="ti-empty">
+        <p class="ti-empty__title">
+          {%- if filter_q %}Nothing matches “{{ filter_q }}”{% else %}No runs yet{% endif %}
+        </p>
+        <p class="ti-empty__body">
+          {%- if filter_q %}
+          <a href="/runs">Clear the filter</a> to see every run.
+          {%- else %}
+          Pick a compound from <a href="/">Compounds</a> and draft the report with
+          the most evidence behind it.
+          {%- endif %}
+        </p>
+      </div>
+    {%- endif %}
+  </div>
+
+</div>
+{% endblock %}

@@ -1,0 +1,334 @@
+{% extends "titanium_base.html" %}
+{#- ---------------------------------------------------------------------- -#}
+{#- Run / draft — Titanium.                                                 -#}
+{#-                                                                        -#}
+{#- The provenance gutter is the whole point of this screen. A 44px left    -#}
+{#- column runs the height of the draft; each paragraph's left edge carries -#}
+{#- a 2px rule, SOLID where a claim is backed by retrieved data and ABSENT  -#}
+{#- where the model wrote it unsupported. Citation markers sit in the       -#}
+{#- gutter aligned to their claim rather than inline in the prose.          -#}
+{#-                                                                        -#}
+{#- This replaces two things from the original: the sticky five-number stat -#}
+{#- strip (three of whose numbers were zero, and which occluded the h1 in   -#}
+{#- every scrolled state), and the epistemic load previously carried        -#}
+{#- entirely by superscript numbers.                                       -#}
+{#-                                                                        -#}
+{#- Retrieved tables sit on the RECESSED surface. Model prose sits on the   -#}
+{#- base surface. That distinction is the contract; nothing else may use    -#}
+{#- the recessed surface.                                                   -#}
+{#- ---------------------------------------------------------------------- -#}
+
+{% block page_title %}{{ run.template_title }} — {{ run.primary_input or 'run' }}{% endblock %}
+
+{#- prose, with uncited numbers marked in text as well as in the gutter -#}
+{% macro prose(marks, text) -%}
+  {%- if marks -%}
+    {%- for chunk, flagged in marks -%}
+      {%- if flagged -%}<mark class="ti-uncited-num" title="Not covered by a citation">{{ chunk }}</mark>
+      {%- else -%}{{ chunk }}{%- endif -%}
+    {%- endfor -%}
+  {%- else -%}{{ text }}{%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="ti-page" style="max-width:1060px">
+
+  {# ---- identity ------------------------------------------------------- #}
+  <div class="ti-sec-head">
+    <div>
+      <h1 class="ti-identity__id" style="font-size:24px;line-height:28px">{{ run.template_title }}</h1>
+      <div class="ti-identity__meta" style="margin-top:var(--ti-4)">
+        {%- if run.primary_input %}
+        <span><a href="/compound/{{ run.primary_input }}">{{ run.primary_input }}</a></span>
+        {%- endif %}
+        <span>{{ run.created_human }}</span>
+        <span class="ti-code">{{ run.run_id }}</span>
+      </div>
+    </div>
+    {%- set st = run.status_state %}
+    <span class="ti-state ti-state--{{ 'ok' if st == 'ok' else ('bad' if st in ('error','bad') else ('busy' if not run.terminal else 'neutral')) }}">
+      <span class="ti-state__glyph" aria-hidden="true">
+        {%- if st == 'ok' %}&#9679;{% elif st in ('error','bad') %}&#9632;{% elif not run.terminal %}&#9678;{% else %}&#9675;{% endif %}
+      </span>{{ run.status_label }}
+    </span>
+  </div>
+
+  {# ---- still running -------------------------------------------------- #}
+  {%- if not run.terminal %}
+  <div class="ti-panel" style="padding:var(--ti-16)" data-poll-url="{{ poll_url }}">
+    <p class="ti-lrow__title">Drafting…</p>
+    <p class="ti-para__body" style="border:0;padding-left:0">
+      {{ record.sections | selectattr('status','in',['passed','failed']) | list | length }}
+      of {{ record.sections|length }} sections done.
+      This page refreshes itself; nothing is lost if you close it.
+    </p>
+    <noscript><p class="ti-field__msg"><a href="">Reload</a> to see progress.</p></noscript>
+  </div>
+  <script>
+    (function () {
+      var el = document.querySelector('[data-poll-url]');
+      if (!el) return;
+      setInterval(function () {
+        fetch(el.dataset.pollUrl, { cache: 'no-store' })
+          .then(function (r) { return r.json(); })
+          .then(function (d) { if (d && d.terminal) location.reload(); })
+          .catch(function () { /* offline: the next tick retries */ });
+      }, 2000);
+    })();
+  </script>
+
+  {%- else %}
+
+  {# ---- tabs ----------------------------------------------------------- #}
+  <div class="ti-seg" role="tablist" style="margin-bottom:var(--ti-16)">
+    {%- for label, href, key in tabs %}
+    <a class="ti-seg__btn" href="{{ href }}" role="tab"
+       {% if tab == key %}aria-current="true" aria-selected="true"{% endif %}>{{ label }}</a>
+    {%- endfor %}
+  </div>
+
+  {%- if partial %}
+  <p class="ti-footnote" style="color:var(--ti-accent-dark);font-weight:500">
+    This run did not finish. The sections below are what completed.
+  </p>
+  {%- endif %}
+
+  {# =================== DRAFT ========================================== #}
+  {%- if tab == 'draft' and draft %}
+
+    {#- Non-dismissible, and part of the deliverable — it is carried into the
+        markdown export too. This is the one thing on the page that must never
+        be collapsible, hoverable or behind a tab. -#}
+    <p class="ti-notice" role="note">
+      <strong>AI-generated draft for human review.</strong>
+      Nothing here is approved. Every number must be
+      verified against its citation before this text is used or shared.
+    </p>
+
+    {#- One line, not a five-number strip. Only non-zero facts appear. -#}
+    <p class="ti-page__lede">
+      {{ draft.trust.n_claims_cited }} of {{ draft.trust.n_claims }} claims carry a
+      citation across {{ draft.trust.n_sections }} sections.
+      {%- if draft.trust.n_uncited_numbers %}
+      {{ draft.trust.n_uncited_numbers }} number{{ '' if draft.trust.n_uncited_numbers == 1 else 's' }}
+      in the prose {{ 'is' if draft.trust.n_uncited_numbers == 1 else 'are' }} not covered —
+      each is marked in place.
+      {%- endif %}
+      {%- if draft.trust.n_sections_no_data %}
+      {{ draft.trust.n_sections_no_data }} section{{ '' if draft.trust.n_sections_no_data == 1 else 's' }}
+      had no source data.
+      {%- endif %}
+    </p>
+
+    {%- if draft.hollow %}
+    <div class="ti-panel"><div class="ti-empty">
+      <p class="ti-empty__title">Nothing was drafted</p>
+      <p class="ti-empty__body">{{ draft.notice or 'The run produced no sections.' }}</p>
+    </div></div>
+    {%- else %}
+
+    <div class="ti-draft">
+      {%- for s in draft.sections %}
+
+        <div class="ti-section-head">
+          <h2 class="ti-section-head__title">{{ s.title }}</h2>
+          <p class="ti-section-head__meta">
+            {{ s.n_citations }} citation{{ '' if s.n_citations == 1 else 's' }}
+            {%- if s.n_uncited_numbers %} &middot; {{ s.n_uncited_numbers }} uncited number{{ '' if s.n_uncited_numbers == 1 else 's' }}{% endif %}
+            {%- if s.critique_status and s.critique_status != 'passed' %} &middot; {{ s.critique_status }}{% endif %}
+          </p>
+        </div>
+
+        {#- retrieved data first: it is the evidence the prose narrates -#}
+        {%- for t in s.tables %}
+        <div class="ti-para">
+          <div class="ti-gutter">
+            {%- if t.citation_n %}
+            <a class="ti-cite" href="#cite-{{ t.citation_n }}"
+               data-citation-id="{{ t.citation_id }}">{{ t.citation_n }}</a>
+            {%- endif %}
+          </div>
+          <div style="min-width:0;padding-left:var(--ti-14)">
+            <div class="ti-retrieved">
+              <div class="ti-retrieved__head">
+                <span>{{ t.caption or t.binding_id }}</span>
+                <span>{{ t.source_label }}{% if t.row_count %} &middot; {{ t.row_count }} rows{% endif %}</span>
+              </div>
+              {%- if t.columns %}
+              <div class="ti-retrieved__scroll">
+                <table class="ti-table">
+                  <thead><tr>{% for c in t.columns %}<th scope="col">{{ c }}</th>{% endfor %}</tr></thead>
+                  <tbody>
+                    {%- for row in t.rows %}
+                    <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+                    {%- endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {%- else %}
+              <div style="padding:var(--ti-12)">
+                <p class="ti-field__msg">{{ t.deferred_note or 'No rows returned.' }}</p>
+              </div>
+              {%- endif %}
+            </div>
+          </div>
+        </div>
+        {%- endfor %}
+
+        {#- model prose: the 2px rule states whether it is backed -#}
+        {%- for p in s.paragraphs %}
+        {%- set cited_refs = [] %}
+        {%- for seg in p.segments if seg.kind == 'claim' and seg.claim %}
+          {%- for c in seg.claim.citations %}{% set _ = cited_refs.append(c) %}{% endfor %}
+        {%- endfor %}
+        <div class="ti-para">
+          <div class="ti-gutter">
+            {%- for c in cited_refs %}
+            <a class="ti-cite" href="#cite-{{ c.n }}"
+               data-citation-id="{{ c.citation_id }}"
+               aria-label="{{ c.aria_label }}">{{ c.n }}{% if c.approx %}~{% endif %}</a>
+            {%- endfor %}
+          </div>
+          <div class="ti-para__body {{ 'ti-para__body--backed' if (cited_refs or p.orphan_claims) else '' }}">
+            {%- for seg in p.segments -%}
+              {%- if seg.kind == 'claim' and seg.claim -%}
+                {%- if seg.claim.uncited -%}
+                <span class="ti-unsupported" title="No citation for this claim">{{ seg.claim.text }}</span>
+                {%- else -%}{{ seg.claim.text }}{%- endif -%}
+              {%- else -%}{{ prose(seg.marks, seg.text) }}{%- endif -%}
+            {%- endfor -%}
+
+            {#- Cited claims the engine could not anchor to a sentence above.
+                They are stated, never dropped: their sources still apply to
+                this paragraph and a citation that vanishes from the UI is the
+                worst failure this product can have. -#}
+            {%- if p.orphan_claims %}
+            <aside class="ti-orphans"
+                   aria-label="Cited claims that could not be placed in the paragraph above">
+              <p class="ti-orphans__note">
+                These cited claims could not be matched to a sentence above. Their
+                sources still apply to this paragraph, but the exact wording they
+                support is unclear.
+              </p>
+              <ul class="ti-orphans__list">
+                {%- for c in p.orphan_claims %}
+                <li>
+                  {{ c.text }}
+                  {%- for ref in c.citations %}
+                  <a class="ti-cite" href="#cite-{{ ref.n }}"
+                     data-citation-id="{{ ref.citation_id }}"
+                     aria-label="{{ ref.aria_label }}">{{ ref.n }}{% if ref.approx %}~{% endif %}</a>
+                  {%- endfor %}
+                </li>
+                {%- endfor %}
+              </ul>
+            </aside>
+            {%- endif %}
+          </div>
+        </div>
+        {%- endfor %}
+
+      {%- endfor %}
+    </div>
+
+    {# ---- citation detail, resolved in place ---------------------------- #}
+    {%- if draft.citations %}
+    <div class="ti-sec-head" style="margin-top:var(--ti-32)">
+      <h2 class="ti-h2">Citations</h2>
+      <span class="ti-h2" style="letter-spacing:0">{{ draft.citations|length }}</span>
+    </div>
+    <div class="ti-panel">
+      {%- for c in draft.citations %}
+      <details id="cite-{{ c.n }}" class="ti-brow" style="display:block"
+               data-citation-id="{{ c.citation_id }}">
+        <summary style="cursor:pointer;display:flex;gap:var(--ti-12);align-items:baseline">
+          <span class="ti-cite" style="pointer-events:none">{{ c.n }}</span>
+          <span style="min-width:0">
+            <span class="ti-brow__name">{{ c.title }}</span>
+            <span class="ti-brow__detail ti-brow__detail--on">{{ c.source_word }} &middot; {{ c.uri_display }}</span>
+          </span>
+        </summary>
+        <div class="ti-cite-detail">
+          {%- for k, v in c.locator_rows %}
+          <div class="ti-cite-detail__row">
+            <span class="ti-cite-detail__k">{{ k }}</span>
+            <span class="ti-cite-detail__v">{{ v }}</span>
+          </div>
+          {%- endfor %}
+          <div class="ti-cite-detail__row">
+            <span class="ti-cite-detail__k">retrieved</span>
+            <span class="ti-cite-detail__v">{{ c.retrieved_human }}</span>
+          </div>
+          {%- if c.snippet %}
+          <p class="ti-cite-detail__snippet">{{ c.snippet }}</p>
+          {%- endif %}
+          {%- if c.open_url %}
+          <p style="margin:var(--ti-8) 0 0"><a href="{{ c.open_url }}">Open the source</a></p>
+          {%- endif %}
+        </div>
+      </details>
+      {%- endfor %}
+    </div>
+    {%- endif %}
+
+    {%- endif %}{# hollow #}
+
+  {# =================== SOURCES ======================================== #}
+  {%- elif tab == 'sources' and draft %}
+
+    <p class="ti-page__lede">{{ draft.ledger_summary }}</p>
+    <div class="ti-panel">
+      <div class="ti-thead" role="row">
+        <span></span>
+        <span role="columnheader">binding &middot; resolves to</span>
+        <span role="columnheader">returned</span>
+        <span role="columnheader">used in</span>
+      </div>
+      {%- for r in draft.ledger %}
+      {%- set ready = r.status == 'ready' %}
+      <div class="ti-brow" role="row">
+        <span class="ti-dot {{ 'ti-dot--on' if ready else 'ti-dot--off' }}" aria-hidden="true"></span>
+        <div style="min-width:0">
+          <p class="ti-brow__name">{{ r.binding_id }}</p>
+          <p class="ti-brow__detail {{ 'ti-brow__detail--on' if ready else 'ti-brow__detail--off' }}"
+             title="{{ r.label }} — {{ r.detail }}">{{ r.label }}</p>
+          {%- if r.fix_hint %}<p class="ti-field__msg">{{ r.fix_hint }}</p>{% endif %}
+        </div>
+        <span class="ti-brow__returns {{ 'ti-brow__returns--on' if ready else 'ti-brow__returns--off' }}">
+          {%- if r.row_count is not none %}{{ r.row_count }} rows{% else %}{{ r.status_text }}{% endif %}
+        </span>
+        <span class="ti-brow__used">
+          {%- if r.citation_ns %}
+            {%- for n in r.citation_ns %}<a class="ti-cite" href="?tab=draft#cite-{{ n }}">{{ n }}</a>{% endfor %}
+          {%- else %}&mdash;{% endif %}
+        </span>
+      </div>
+      {%- endfor %}
+    </div>
+
+  {# =================== LOG ============================================ #}
+  {%- elif tab == 'log' and draft %}
+
+    <p class="ti-page__lede">
+      Every step this run took, in order. This is the provenance record.
+    </p>
+    <div class="ti-panel">
+      {%- for e in draft.events %}
+      <div class="ti-lrow ti-lrow--run" style="cursor:default">
+        <div style="min-width:0">
+          <p class="ti-lrow__title">{{ e.action_label }}</p>
+          <p class="ti-lrow__sub">{{ e.target }}</p>
+        </div>
+        <span class="ti-lrow__num">{{ e.group }}</span>
+        <span></span>
+        <span class="ti-lrow__meta">{{ e.ts_human }}</span>
+        <span></span>
+      </div>
+      {%- endfor %}
+    </div>
+
+  {%- endif %}
+  {%- endif %}{# terminal #}
+
+</div>
+{% endblock %}

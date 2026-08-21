@@ -339,10 +339,13 @@ def test_gxp_changes_nothing_about_a_template_card_except_its_tags(client, store
 def test_the_gxp_chip_is_visually_identical_to_every_other_tag_chip(client):
     submit(client, "/templates", draft_form("probe_gxp", **{"tags__compliance": "gxp"}))
     html = client.get("/templates?group=none").text
-    card = re.search(
-        r"<li[^>]*>(?:(?!</li>).)*?/new/probe_gxp\"(?:(?!</li>).)*?</li>", html, re.S
-    ).group(0)
-    classes = re.findall(r'<span class="([^"]*rg-badge--tag[^"]*)"[^>]*>([^<]*)', card)
+    # Titanium renders each template as one <a class="ti-lrow"> row.
+    row = re.search(
+        r"<a[^>]*href=\"/new/probe_gxp\"(?:(?!</a>).)*?</a>", html, re.S
+    )
+    assert row, "probe_gxp row not found on the templates page"
+    card = row.group(0)
+    classes = re.findall(r'<span class="(ti-tag)"[^>]*>([^<]*)', card)
     gxp = [c for c, label in classes if label.strip() == "GxP"]
     others = [c for c, label in classes if label.strip() not in ("GxP", "")]
     assert gxp, "no GxP chip rendered"
