@@ -2523,3 +2523,22 @@
 }
 
 .ti-errpage__links { display: flex; flex-wrap: wrap; gap: var(--ti-12); }
+
+/* ---------------------------------------------------------------------------
+   Arriving at an anchor.
+   ---------------------------------------------------------------------------
+   Section heads and citation rows carry tabindex="-1" so following an outline
+   entry or a citation marker moves focus, not just the scroll position. That
+   makes them focusable, which means the app-wide 2px ring would draw a box
+   around an entire section — correct in intent, far too loud for a target this
+   large.
+
+   A left-edge marker instead: it says "you landed here" in the same visual
+   grammar as the provenance gutter two columns over, and it costs no layout.
+   Still 2px and still the accent, so it is the same signal at a different
+   scale rather than a different signal. */
+.ti-section-head:focus-visible,
+.ti-brow[tabindex]:focus-visible {
+  outline: none;
+  box-shadow: -6px 0 0 -4px var(--ti-accent);
+}

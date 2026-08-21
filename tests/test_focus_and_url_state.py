@@ -67,20 +67,49 @@ def test_the_pill_keeps_its_radius_when_focused(css: str):
         )
 
 
-def test_nothing_suppresses_a_focus_ring_without_replacing_it(css: str):
-    """`outline: 0` is allowed only where something else shows focus.
+#: Rules allowed to suppress the focus ring because a NAMED partner shows focus
+#: instead. The partner is stated so it can be checked, not just asserted.
+SUPPRESSORS_WITH_PARTNERS = {
+    # The input is borderless inside a pill, so its own outline would draw a
+    # rectangle inside a 17px radius. The pill rings instead.
+    ".ti-search__input": ".ti-search:focus-within",
+}
 
-    Today that is exactly one rule — .ti-search__input, compensated by the
-    :focus-within above. A second one appearing here without a partner is the
-    bug this test exists to catch.
+
+def test_nothing_suppresses_a_focus_ring_without_replacing_it(css: str):
+    """`outline: none` is allowed only where something else shows focus.
+
+    The first version of this listed the one permitted selector, which made it a
+    whitelist rather than a test: adding the anchor landing marker — which
+    suppresses the ring precisely so it can draw a better one — failed it even
+    though that rule replaces what it removes. What matters is the replacement,
+    so that is what is checked: either a named partner rule, or a box-shadow in
+    the same declaration.
     """
-    suppressors = [
-        m.group(1).strip()
-        for m in re.finditer(r"([^{}]+)\{[^}]*outline:\s*(?:0|none)", css)
-    ]
-    assert suppressors == [".ti-search__input"], (
-        f"focus rings suppressed without a documented replacement: {suppressors}"
+    offenders = []
+    for match in re.finditer(r"([^{}]+)\{([^}]*outline:\s*(?:0|none)[^}]*)\}", css):
+        selectors = match.group(1).strip()
+        body = match.group(2)
+        if "box-shadow" in body:
+            continue                      # replaced in place
+        partner = SUPPRESSORS_WITH_PARTNERS.get(selectors)
+        if partner and partner in css:
+            continue                      # replaced by a named partner rule
+        offenders.append(selectors.replace(chr(10), " ")[:80])
+    assert not offenders, (
+        "focus rings suppressed with nothing shown instead:" + chr(10)
+        + chr(10).join(offenders)
     )
+
+
+def test_the_named_partners_actually_exist(css: str):
+    """A partner that gets renamed turns the exemption above into a hole."""
+    for suppressor, partner in SUPPRESSORS_WITH_PARTNERS.items():
+        assert suppressor in css, f"{suppressor} no longer exists — drop the entry"
+        assert partner in css, (
+            f"{suppressor} is exempt because {partner} shows focus, and that "
+            "rule is gone"
+        )
 
 
 def test_every_page_offers_a_skip_link(client: TestClient):

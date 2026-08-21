@@ -48,6 +48,14 @@
 {%- if error %}<p class="rg-field__error" id="e-{{ name }}">{{ ui.icon('alert', 'rg-icon--error rg-icon--sm') }}<span>{{ error }}</span></p>{% endif -%}
 {%- endmacro -%}
 
+{#- The one field that gets the caret on a 422 re-render: the first that
+    failed, in form order. The run-setup form already did this; this page is
+    fifteen times taller and did not, so ten errors dropped you at the top with
+    nothing selected. Computed once here so there is exactly one autofocus. -#}
+{%- set first_error_field = (issues | selectattr('severity', 'equalto', 'error')
+                                    | selectattr('field') | map(attribute='field')
+                                    | first) if issues else none -%}
+
 {#- A text input. No HTML `required` attribute anywhere in this form: every
     rule lives server-side in validate_draft(), and a native bubble would stop
     "Check" from ever reaching the server, where the whole list is computed. -#}
@@ -67,7 +75,8 @@
          {%- if readonly %} readonly{% endif %}
          {%- if required %} aria-required="true"{% endif %}
          {%- if described %} aria-describedby="{{ described|join(' ') }}"{% endif %}
-         {%- if error %} aria-invalid="true"{% endif %}>
+         {%- if error %} aria-invalid="true"{% endif %}
+         {%- if name == first_error_field %} autofocus{% endif %}>
   {{- ed_hint(name, hint) -}}
   {{- ed_error(name, error) -}}
 </div>
@@ -290,14 +299,35 @@
   {% endif %}
 
   {% if n_errors %}
-    {%- set err_items = [] -%}
-    {%- for i in issues if i.severity == 'error' -%}
-      {{- err_items.append(i.message) or '' -}}
-    {%- endfor -%}
-    {{ ui.banner('error',
-                 'Nothing was saved — ' ~ n_errors ~ (' thing' if n_errors == 1 else ' things') ~ ' to fix',
-                 'The template file was not touched. Each item below is also marked on the field it belongs to.',
-                 items=err_items, role='alert') }}
+  {#- Written out rather than passed to ui.banner, because each item needs to be
+      a LINK to its field and the macro takes plain strings. DraftIssue already
+      carries `field` (the form field name), so the data was there; the summary
+      just listed messages.
+
+      That matters here more than on any other form in the app: this page is
+      9,100px tall, so ten errors and a count is a description of a search
+      rather than a way to fix anything. An issue with no field is a whole-form
+      problem and stays plain text. -#}
+  <div class="rg-banner rg-banner--error" role="alert">
+    {{ ui.icon('alert', 'rg-banner__icon') }}
+    <div class="rg-banner__body">
+      <p class="rg-banner__title">
+        Nothing was saved — {{ n_errors }} {{ 'thing' if n_errors == 1 else 'things' }} to fix
+      </p>
+      <p class="rg-body-sm">
+        The template file was not touched. Each item below jumps to the field it
+        belongs to, and is marked there too.
+      </p>
+      <ul class="rg-banner__list">
+        {%- for i in issues if i.severity == 'error' %}
+        <li>
+          {%- if i.field %}<a href="#f-{{ i.field }}">{{ i.message }}</a>
+          {%- else %}{{ i.message }}{% endif %}
+        </li>
+        {%- endfor %}
+      </ul>
+    </div>
+  </div>
   {% endif %}
 
   <form class="rg-editor" id="rg-editor" data-template-editor method="post" action="{{ form_action }}">
@@ -658,7 +688,16 @@
         {% call ui.card('The sections', 'In order. Each one is written from its instruction and whatever its sources return.') %}
           <div class="rg-stack-16">
 
+            {#- `f-section` because DraftIssue uses "section" as a CATEGORY, not
+                a field name — it is the target for "a template needs at least
+                one section", which belongs to the whole group rather than to
+                any one input. Every other issue field is either a real
+                top-level field or a concrete `{base}.{name}`, so this is the
+                only anchor the error summary needs that is not already an
+                input. tabindex="-1" for the same reason the draft's section
+                anchors carry it: the jump should move focus, not just scroll. -#}
             <div id="rg-rows-section">
+            <span id="f-section" tabindex="-1" class="ti-sr">Sections</span>
               <p class="rg-body-sm rg-subtle" data-empty-note{% if section_rows %} hidden{% endif %}>
                 {{- ui.icon('warn', 'rg-icon--warn rg-icon--sm') }}A template needs at least one
                 section before it can be saved.

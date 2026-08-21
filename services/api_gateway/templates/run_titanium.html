@@ -213,7 +213,12 @@
     <div class="ti-draft">
       {%- for s in draft.sections %}
 
-        <div class="ti-section-head" id="sec-{{ s.section_id }}">
+        {#- tabindex="-1" so an outline jump MOVES FOCUS, not just the scroll
+            position. Without it the browser scrolls here and a screen reader
+            reads nothing, so someone who followed a link has no confirmation
+            they arrived. Same reason <main id="ti-main"> carries it for the
+            skip link — this applies the pattern the shell already uses. -#}
+        <div class="ti-section-head" id="sec-{{ s.section_id }}" tabindex="-1">
           <h2 class="ti-section-head__title">
             <span class="ti-section-head__num" aria-hidden="true">{{ s.section_id }}</span>
             {{ s.title }}
@@ -334,7 +339,11 @@
     </div>
     <div class="ti-panel">
       {%- for c in draft.citations %}
-      <details id="cite-{{ c.n }}" class="ti-brow" style="display:block"
+      {#- tabindex="-1" for the same reason as the section anchors. A <details>
+          is not focusable itself — only its <summary> is — so following a
+          citation marker moved the viewport and left the reading cursor
+          behind, on the one interaction this whole screen is built around. -#}
+      <details id="cite-{{ c.n }}" class="ti-brow" tabindex="-1" style="display:block"
                data-citation-id="{{ c.citation_id }}">
         <summary style="cursor:pointer;display:flex;gap:var(--ti-12);align-items:baseline">
           <span class="ti-cite" style="pointer-events:none">{{ c.n }}</span>
