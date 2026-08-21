@@ -35,6 +35,7 @@ import mimetypes
 import os
 import re
 import threading
+import time
 import traceback
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -65,7 +66,15 @@ from services.generation_orchestrator.retrieval import BindingResolver
 from services.ingestion_service.connectors import ConnectorContext, LocalFileConnector
 from services.parsing_service.registry import default_registry
 from services.template_service import ReportDocError, load_report_doc
-from shared.llm import LlmRequest, LlmResponse, StubLlmClient
+from shared.llm import (
+    ClaudeCliConfig,
+    ClaudeCliLlmClient,
+    ClaudeCliUnavailable,
+    LlmClient,
+    LlmRequest,
+    LlmResponse,
+    StubLlmClient,
+)
 from shared.schemas import CanonicalDocument, ParsedChunk, ReportTemplate, TemplateSection
 from shared.schemas.template import (
     ApiCallBinding,
@@ -810,6 +819,23 @@ class SectionView(_Dict):
 
 @dataclass
 class LedgerRow(_Dict):
+    """One binding, as it actually behaved during the run.
+
+    `status` is one of `cited`, `resolved_uncited` or `unavailable`. Note that
+    this vocabulary is NOT the preflight one — `SourceSpec.status` uses
+    `ready` / `gap` / `unavailable`, because before a run you know whether a
+    source *can* resolve and afterwards you know whether it *did* and whether
+    the draft used it. The two are genuinely different questions.
+
+    They were confused once, and templates are the wrong place to find out:
+    the sources tab tested `status == "ready"`, which is never true here, so
+    every row rendered in the failure treatment — hollow dot, accent-coloured
+    value — including the two that resolved and were cited. In a product whose
+    entire claim is provenance, telling a reader that a cited source failed is
+    about the worst available error. Hence `resolved` and `returned_text`:
+    the vocabulary is interpreted here, once.
+    """
+
     binding_id: str
     kind: str
     label: str
@@ -824,6 +850,27 @@ class LedgerRow(_Dict):
     columns: list[str]
     rows: list[list[str]]
     sql: str | None
+
+    @property
+    def resolved(self) -> bool:
+        """Did anything come back? Says nothing about whether the draft used it."""
+        return self.status != "unavailable"
+
+    @property
+    def used(self) -> bool:
+        """Resolved AND cited by the draft — the only fully good outcome."""
+        return self.status == "cited"
+
+    @property
+    def returned_text(self) -> str:
+        """What came back, short enough for a fixed-width column.
+
+        `status_text` is a sentence for a tooltip; this is a value for a cell.
+        """
+        if self.row_count is None:
+            return "nothing"
+        unit = "extract" if self.kind in ("file_set", "file_ref") else "row"
+        return f"{self.row_count} {_plural(self.row_count, unit)}"
 
 
 @dataclass
@@ -976,11 +1023,267 @@ class TolerantSqlSafetyGate(SqlSafetyGate):
             raise SqlSafetyViolation("BAD_QUERY_PARAMETERS", str(exc)) from exc
 
 
-def build_llm_client() -> StubLlmClient:
+#: Which engine drafts the prose. `auto` prefers the local Claude Code CLI and
+#: falls back to the stub when it is not signed in; `stub` and `cli` force one.
+ENGINE_ENV = "REPORTGEN_ENGINE"
+
+#: How long a resolved engine is trusted before it is probed again.
+#:
+#: Probing means spawning `claude -p` and waiting for a round trip — seconds,
+#: not milliseconds. Every page names the engine, so resolving per request made
+#: the whole app as slow as a subprocess launch. It is cached instead.
+#:
+#: The TTL exists because the answer legitimately changes underneath us: the
+#: fix for the stub state is "run `claude`, then `/login`", which happens in
+#: another window while this process is running. A short expiry means the app
+#: notices within a minute, with no restart. Longer would be cheaper and would
+#: leave someone staring at a stale "stub text" chip after they did what the
+#: message told them to.
+ENGINE_TTL_S = 60.0
+
+_ENGINE_LOCK = threading.Lock()
+#: (resolved_at_monotonic, choice, EngineInfo) — `choice` is part of the key so
+#: flipping REPORTGEN_ENGINE takes effect at once, which the tests rely on.
+_ENGINE_CACHE: tuple[float, str, "EngineInfo"] | None = None
+#: True while a background probe is in flight, so page renders coalesce
+#: onto one subprocess instead of launching one each.
+_ENGINE_PROBING = False
+
+
+@dataclass(frozen=True)
+class EngineInfo:
+    """What actually generated a draft — surfaced in the UI.
+
+    Without this the app cannot tell a user whether they are reading real
+    Claude prose or placeholder text, which in a product whose entire claim is
+    provenance is the one ambiguity least affordable.
+    """
+
+    kind: str          # "cli" | "stub"
+    label: str         # short, for the header
+    detail: str        # one sentence, for the draft notice
+    real: bool         # False = placeholder text, not a model's words
+    #: What the user should do to reach the real engine, phrased for the
+    #: reason they are on the stub. Empty when nothing needs doing. Resolved
+    #: here rather than in a template, because the right sentence depends on
+    #: *why* the CLI is unavailable and a template cannot know that.
+    fix: str = ""
+    #: The CLI's own words, for diagnostics. Never the on-screen instruction:
+    #: it is a Python exception message, not a sentence for a scientist.
+    hint: str = ""
+
+
+def resolve_engine() -> EngineInfo:
+    """Name the engine without ever blocking a page render.
+
+    Every page discloses the engine, and the only way to ask the CLI whether it
+    is signed in is to run it — seconds, not milliseconds. So a page render
+    never waits: it answers from cache, kicks off a refresh in the background,
+    and until the first probe lands it claims the *stub*.
+
+    Claiming the stub while unsure is the safe direction of error. Saying
+    "placeholder text" about real Claude prose costs a reader nothing; the
+    reverse would put the product's provenance claim behind a guess.
+
+    A forced `cli` is different — that is an operator asking for the truth, so
+    it probes synchronously and lets the failure surface.
+    """
+    choice = (os.environ.get(ENGINE_ENV) or "auto").strip().lower()
+    if choice == "cli":
+        return _cache_engine(choice, _probe_engine(choice))
+
+    cached = _cached_engine(choice)
+    if cached is not None:
+        return cached
+    if choice == "auto":
+        _refresh_engine_async(choice)
+        return _stub_engine(hint="", choice=choice)
+    return _cache_engine(choice, _probe_engine(choice))
+
+
+def resolve_engine_now() -> EngineInfo:
+    """A definite answer, for starting a run.
+
+    A run takes minutes and its entire output depends on which engine drafted
+    it, so this one place is worth waiting for — the alternative is discovering
+    twenty sections in that nothing was signed in.
+
+    It still prefers a fresh cached answer. The probe costs ~27s on this
+    machine, the startup prime has almost always already paid it, and paying it
+    again per run buys nothing: if the CLI died in the last minute, section one
+    fails with the same actionable message.
+    """
+    choice = (os.environ.get(ENGINE_ENV) or "auto").strip().lower()
+    cached = _cached_engine(choice)
+    if cached is not None:
+        return cached
+    return _cache_engine(choice, _probe_engine(choice))
+
+
+def prime_engine() -> None:
+    """Start the engine probe at boot.
+
+    Without this the first visitor lands inside the ~25s probe window and is
+    told the app is "still checking". Kicking it off at startup means the
+    answer is already there by the time anyone navigates, while still keeping
+    every request non-blocking.
+    """
+    choice = (os.environ.get(ENGINE_ENV) or "auto").strip().lower()
+    if choice == "auto":
+        _refresh_engine_async(choice)
+
+
+def reset_engine_cache() -> None:
+    """Forget the cached engine. For tests, and for an explicit re-check."""
+    with _ENGINE_LOCK:
+        globals()["_ENGINE_CACHE"] = None
+
+
+def _cached_engine(choice: str) -> EngineInfo | None:
+    with _ENGINE_LOCK:
+        cached = _ENGINE_CACHE
+    if cached is None or cached[1] != choice:
+        return None
+    if time.monotonic() - cached[0] >= ENGINE_TTL_S:
+        return None
+    return cached[2]
+
+
+def _cache_engine(choice: str, engine: EngineInfo) -> EngineInfo:
+    with _ENGINE_LOCK:
+        globals()["_ENGINE_CACHE"] = (time.monotonic(), choice, engine)
+    return engine
+
+
+def _refresh_engine_async(choice: str) -> None:
+    """Probe in the background, at most one probe in flight.
+
+    A daemon thread: a pending engine check must never hold up shutdown.
+    """
+    global _ENGINE_PROBING
+    with _ENGINE_LOCK:
+        if _ENGINE_PROBING:
+            return
+        globals()["_ENGINE_PROBING"] = True
+
+    def work() -> None:
+        try:
+            _cache_engine(choice, _probe_engine(choice))
+        except Exception:  # noqa: BLE001 - a background probe must not crash
+            _cache_engine(choice, _stub_engine(hint="", choice=choice))
+        finally:
+            with _ENGINE_LOCK:
+                globals()["_ENGINE_PROBING"] = False
+
+    threading.Thread(target=work, name="engine-probe", daemon=True).start()
+
+
+def _probe_engine(choice: str) -> EngineInfo:
+    """The uncached resolution: may spawn a subprocess."""
+
+    if choice in ("auto", "cli"):
+        try:
+            client = ClaudeCliLlmClient()
+            client.check()
+            return EngineInfo(
+                kind="cli",
+                label="local Claude",
+                detail=(
+                    "Drafted by the Claude Code CLI on this machine. Prose is "
+                    "the model's; every table and number is still pulled "
+                    "deterministically from source."
+                ),
+                real=True,
+            )
+        except ClaudeCliUnavailable as exc:
+            if choice == "cli":
+                raise
+            hint = str(exc)
+
+    else:
+        hint = ""
+
+    return _stub_engine(hint=hint, choice=choice)
+
+
+#: Reasons a run falls back to the stub, and the sentence that fixes each.
+#:
+#: These are resolved server-side because the correct instruction depends on
+#: why the CLI is unavailable, and getting it wrong is worse than saying
+#: nothing: telling someone to run `/login` when they set REPORTGEN_ENGINE=stub
+#: themselves sends them chasing a problem that does not exist.
+_FIX_NOT_SIGNED_IN = (
+    "Open a terminal, run `claude`, then `/login`. This page picks it up "
+    "within a minute — no restart, and nothing else to configure."
+)
+_FIX_NOT_INSTALLED = (
+    "The Claude Code CLI was not found on this machine. Install it, or point "
+    "REPORTGEN_CLAUDE_BIN at it."
+)
+_FIX_FORCED = (
+    "The stub is in force because REPORTGEN_ENGINE is set to `stub`. Unset it "
+    "to use the local Claude CLI."
+)
+_FIX_CHECKING = (
+    "Still checking whether the local Claude CLI can generate — it takes a "
+    "few seconds after the app starts. Reload to see the answer."
+)
+
+
+def _fix_for(*, choice: str, hint: str) -> str:
+    """Turn the CLI's exception message into an instruction for a person."""
+    if choice == "stub":
+        return _FIX_FORCED
+    if not hint:
+        return _FIX_CHECKING
+    low = hint.lower()
+    if "not found" in low or "could not be executed" in low:
+        return _FIX_NOT_INSTALLED
+    return _FIX_NOT_SIGNED_IN
+
+
+def _stub_engine(*, hint: str, choice: str = "auto") -> EngineInfo:
+    """The placeholder engine, described as placeholder.
+
+    The wording is deliberate: a reader must not be able to mistake these
+    sentences for a model's.
+    """
+    return EngineInfo(
+        kind="stub",
+        label="stub text",
+        detail=(
+            "Section prose is PLACEHOLDER text from an offline stub, not a "
+            "model. Retrieval, citations and the audit trail are real; the "
+            "sentences are not."
+        ),
+        real=False,
+        fix=_fix_for(choice=choice, hint=hint),
+        hint=hint,
+    )
+
+
+def build_llm_client() -> LlmClient:
+    """The generation engine: the local Claude CLI if it is usable, else the stub.
+
+    One swap point for all three phases. `VertexLlmClient` slots in here the
+    same way when cloud access lands.
+    """
+    if resolve_engine_now().kind == "cli":
+        return ClaudeCliLlmClient(
+            ClaudeCliConfig(
+                # Report sections are long; the default 240s covers a section
+                # comfortably without hanging a whole run on one stall.
+                timeout_s=240.0,
+            )
+        )
+    return build_stub_client()
+
+
+def build_stub_client() -> StubLlmClient:
     """Deterministic offline stub — plan / fill / critique.
 
-    Moved verbatim from `main.py::_smart_stub()`. This is the single swap
-    point for `VertexLlmClient` when cloud access lands.
+    Kept as the fallback and as the engine every test uses: it makes runs
+    reproducible and free, which a real model cannot be.
     """
     stub = StubLlmClient(strict=True)
 
@@ -5576,7 +5879,10 @@ __all__ = [
     "TolerantSqlSafetyGate",
     "TrustBar",
     "build_api_gate",
+    "EngineInfo",
     "build_llm_client",
+    "build_stub_client",
+    "resolve_engine",
     "build_sql_gate",
     "get_store",
     "load_corpus",

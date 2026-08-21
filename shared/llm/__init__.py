@@ -22,6 +22,12 @@ from shared.llm.client import (
     ModelTier,
     StructuredOutputError,
 )
+from shared.llm.claude_cli import (
+    ClaudeCliConfig,
+    ClaudeCliLlmClient,
+    ClaudeCliUnavailable,
+    find_claude_binary,
+)
 from shared.llm.stub import StubLlmClient
 from shared.llm.vertex import VertexConfig, VertexLlmClient
 
@@ -35,7 +41,11 @@ __all__ = [
     "LlmValidationError",
     "ModelTier",
     "StructuredOutputError",
+    "ClaudeCliConfig",
+    "ClaudeCliLlmClient",
+    "ClaudeCliUnavailable",
     "StubLlmClient",
+    "find_claude_binary",
     "VertexConfig",
     "VertexLlmClient",
 ]

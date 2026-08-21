@@ -77,6 +77,17 @@
     <span>local data</span>
     <span class="ti-status__dot" aria-hidden="true"></span>
     <span class="ti-sr">connected</span>
+    {#- Which engine writes the prose. Stated in the chrome because a reader
+        must never have to guess whether they are looking at a model's words
+        or placeholder text. -#}
+    {%- if engine is defined %}
+    <span class="ti-status__sep" aria-hidden="true">/</span>
+    {#- The tooltip carries the fix as well as the state: the chip is where
+        someone notices "stub text", so it is where they should learn what to
+        do about it, rather than having to open a run setup to find out. -#}
+    <span class="ti-status__engine {{ 'is-stub' if not engine.real }}"
+          title="{{ engine.detail }}{% if engine.fix %} — {{ engine.fix }}{% endif %}">{{ engine.label }}</span>
+    {%- endif %}
     {%- if user is defined and user.is_known %}
     {#- Attribution, not authentication: this states who runs will be
         credited to. There is no login because there is no secret to check —

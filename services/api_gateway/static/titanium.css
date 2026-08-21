@@ -670,7 +670,12 @@
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) 76px 80px;
   gap: var(--ti-12);
-  align-items: center;
+  /* `start`, not `center`. A row with a remediation hint runs to ~98px while a
+     resolved one is 46px, and centring left the status dot floating in the
+     middle of the tall ones — a marker sitting beside nothing, 30px below the
+     identifier it describes. The offsets below put each cell on the first text
+     line instead, so the row reads across. */
+  align-items: start;
   padding: var(--ti-row-pad-y) var(--ti-12);
   border-bottom: 1px solid var(--ti-rule);
   background: var(--ti-panel);
@@ -699,6 +704,25 @@
 /* Two lines BY NECESSITY, not preference. An earlier five-column single-line
    version gave the resolve-target column 48px against 150-288px of content, so
    every value clipped to ~7 characters. Do not flatten back to one line. */
+/* `max-width: 100%` is what makes the ellipsis fire.
+   Without it these boxes measured 845px inside a 641px parent, so .ti-panel's
+   overflow:hidden clipped them instead — a filesystem path cut off mid-word
+   with no ellipsis, which reads as a rendering fault rather than as truncation.
+   The grid track is already minmax(0, 1fr); this constrains the child too. */
+.ti-brow__name,
+.ti-brow__detail {
+  /* `display: block` is the load-bearing declaration. Four of these six
+     usages are <p> and two are <span>, and on an inline box max-width,
+     overflow and text-overflow are all ignored — so the spans measured 845px
+     inside a 641px parent and .ti-panel clipped them mid-word with no
+     ellipsis, which reads as a rendering fault rather than as truncation.
+     Stated on the class so it holds whichever element a caller reaches for. */
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ti-brow__name {
   margin: 0;
   font-family: var(--ti-mono);
@@ -706,24 +730,24 @@
   font-size: 12px;
   line-height: 17px;
   color: var(--ti-ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .ti-brow__detail {
   margin: 0;
   font-size: 11px;
   line-height: 16px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .ti-brow__detail--on  { color: var(--ti-sec); }
 .ti-brow__detail--off { color: var(--ti-dim); }
 
+/* A fixed-width column holds a value, so it must not wrap. If a caller ever
+   puts a sentence back in here the ellipsis makes that obvious at a glance
+   rather than silently tripling the row height. */
 .ti-brow__returns {
   font-family: var(--ti-mono);
   font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ti-brow__returns--on {
   color: var(--ti-ink);
@@ -972,9 +996,16 @@
 
 /* --- Page container for the list surfaces ------------------------------ */
 
+/* Every page that is not the compounds home sits in this. It had a max-width
+   and no auto margin, so on any viewport wider than 1200px the whole app was
+   glued to the left edge with the remainder empty — four pages, one missing
+   declaration. `margin-inline: auto` is the fix; the top padding is larger
+   than the sides for the same reason the home page's is, so the first heading
+   is not crowded against the header rule. */
 .ti-page {
-  padding: var(--ti-20);
+  padding: var(--ti-32) var(--ti-20) var(--ti-20);
   max-width: 1200px;
+  margin-inline: auto;
 }
 .ti-page__lede {
   margin: 0 0 var(--ti-16);
@@ -1064,9 +1095,14 @@
   line-height: 22px;
   color: var(--ti-ink);
   min-width: 0;
-  /* Report prose is read, not scanned. Unbounded it ran ~110ch on a 1060px
-     page, well past the 65-75ch the eye can track without losing the line. */
-  max-width: 72ch;
+  /* Report prose is read, not scanned, so the line length is capped.
+     Measured, not assumed: `ch` is the width of the "0" glyph, which in this
+     sans is far wider than the average letter, so the previous `72ch` was
+     really rendering 94 characters per line — above the 45-75 the eye tracks
+     without losing its place. 58ch measures ~76 real characters here, the top
+     of that range: narrower would leave the prose looking thin beside the
+     772px data tables it sits among. */
+  max-width: 58ch;
   text-wrap: pretty;
 }
 .ti-para__body--backed { border-left-color: var(--ti-accent); }
@@ -1105,7 +1141,28 @@
   text-transform: uppercase;
   color: var(--ti-mut);
 }
-.ti-retrieved__scroll { overflow-x: auto; }
+/* A retrieved table can be four times the width of the column holding it, so
+   this box is the only way to reach the rest of it.
+
+   Three things make that work:
+     * it takes focus (tabindex in the markup) so arrow keys scroll it;
+     * the focus ring is inset, because an outset ring on a box clipped by
+       .ti-retrieved's overflow:hidden would be sliced off on three sides;
+     * the right-hand shadow is a CSS-only scroll cue — `local` layers scroll
+       with the content and `scroll` layers do not, so the shadow appears only
+       while there is more to the right and fades out at the end. No JS, no
+       scroll listener, and it disappears correctly when nothing overflows. */
+.ti-retrieved__scroll {
+  overflow-x: auto;
+  background:
+    linear-gradient(to right, transparent, rgba(25, 28, 30, 0.16)) 100% 0 / 18px 100% no-repeat local,
+    linear-gradient(to left, var(--ti-band-to), rgba(255, 255, 255, 0)) 100% 0 / 18px 100% no-repeat scroll;
+}
+
+.ti-retrieved__scroll:focus-visible {
+  outline: 2px solid var(--ti-accent-dark);
+  outline-offset: -2px;
+}
 .ti-table { border-collapse: collapse; width: 100%; font-size: 12px; }
 .ti-table th,
 .ti-table td {
@@ -1127,17 +1184,37 @@
 
 .ti-section-head {
   grid-column: 1 / -1;
-  margin: var(--ti-20) 0 var(--ti-10);
+  /* A document needs air between sections, and more above a heading than
+     below it. 20px above was cramped when the thing above was a table. */
+  margin: var(--ti-32) 0 var(--ti-12);
   padding-left: calc(44px + var(--ti-14));
+  /* clears the sticky header when jumped to from the outline */
+  scroll-margin-top: 64px;
 }
 .ti-section-head:first-child { margin-top: 0; }
 .ti-section-head__title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ti-10);
   margin: 0;
-  font-size: 17px;
-  line-height: 24px;
+  /* Was 17px against 14px prose — a 3px step, so section titles read as bold
+     paragraphs rather than as structure. The run title above is 24px, so 20
+     sits properly between the two instead of collapsing toward the body. */
+  font-size: 20px;
+  line-height: 26px;
   font-weight: 500;
+  letter-spacing: -0.01em;
   color: var(--ti-ink);
   text-wrap: balance;
+}
+/* Sections are countable. The number is decoration for sighted scanning only —
+   the heading text is the accessible name, so the number is aria-hidden. */
+.ti-section-head__num {
+  flex: none;
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ti-dim);
 }
 .ti-section-head__meta {
   margin: 2px 0 0;
@@ -1415,9 +1492,14 @@
   text-transform: uppercase;
   color: var(--ti-mut);
 }
+/* Width is a hint about the expected answer. An 826px-wide box for a
+   compound identifier reads as "write me an essay"; capping it at 44ch says
+   "a name goes here" without a word of help text. Paths and URLs opt out via
+   .ti-field__input--wide. */
 .ti-field__input {
   display: block;
   width: 100%;
+  max-width: 44ch;
   min-height: 34px;
   padding: 0 var(--ti-12);
   background: #FFFFFF;
@@ -1464,24 +1546,35 @@
 
 /* --- Empty state ------------------------------------------------------- */
 
+/* An empty state is a state, not an absence: it has to say what happened,
+   why, and what to do next, and carry enough weight that it reads as a
+   designed answer rather than a page that failed to load. The body text was
+   12px — smaller than the prose it replaced, which made the emptiest screen
+   in the app also the quietest. */
 .ti-empty {
-  padding: var(--ti-32) var(--ti-20);
+  padding: var(--ti-32) var(--ti-20) var(--ti-32);
   text-align: center;
 }
 .ti-empty__title {
   margin: 0 0 var(--ti-8);
-  font-size: 15px;
-  line-height: 22px;
+  font-size: 17px;
+  line-height: 24px;
   font-weight: 500;
+  letter-spacing: -0.01em;
   color: var(--ti-ink);
+  text-wrap: balance;
 }
 .ti-empty__body {
   margin: 0 auto;
-  max-width: 60ch;
-  font-size: 12px;
-  line-height: 18px;
+  max-width: 58ch;
+  font-size: 13px;
+  line-height: 20px;
   color: var(--ti-sec);
+  text-wrap: pretty;
 }
+.ti-empty__body + .ti-empty__body { margin-top: var(--ti-16); }
+/* A CTA inside an empty state is the point of the empty state. */
+.ti-empty .ti-btn-primary { margin-top: var(--ti-4); }
 
 /* --- Home / search screen --------------------------------------------- */
 
@@ -1673,3 +1766,536 @@
   content-visibility: auto;
   contain-intrinsic-size: auto 44px;
 }
+
+/* --- Engine disclosure -------------------------------------------------
+   Which engine wrote the prose. A reader must be able to tell real model
+   output from placeholder text without going to look for it: this app's whole
+   claim is provenance, so that is the one ambiguity least worth having.
+
+   The stub state is marked with the accent, not hidden. It is not an error —
+   retrieval, citations and the audit trail are all real on the stub — but the
+   sentences are not the model's, and a draft read as real when it is not is a
+   worse failure than an ugly chip. */
+
+.ti-status__sep { color: var(--ti-tick-ring); }
+.ti-status__engine { color: var(--ti-dim); }
+.ti-status__engine.is-stub {
+  color: var(--ti-accent-dark);
+  font-weight: 500;
+}
+
+.ti-notice__engine {
+  display: block;
+  margin-top: var(--ti-4);
+  color: var(--ti-dim);
+}
+.ti-notice--stub { border-left-color: var(--ti-accent-dark); }
+.ti-notice--stub .ti-notice__engine {
+  color: var(--ti-accent-dark);
+  font-weight: 500;
+}
+
+/* ==========================================================================
+   Home — compounds + rail
+   --------------------------------------------------------------------------
+   The first build centred one plain text row per compound in a 760px column.
+   With a three-compound portfolio that left ~90% of the viewport empty and the
+   page read as broken rather than calm. Emptiness is only restraint when the
+   remaining content carries weight; here there was nothing to carry it.
+
+   So: search stays primary, the compound row becomes a real object with the
+   evidence rollup on it, and a rail answers "what happened since I was last
+   here" without a trip to the Runs tab.
+   ======================================================================== */
+
+.ti-home2 { padding: var(--ti-32) var(--ti-20) var(--ti-20); max-width: 1240px; margin: 0 auto; }
+.ti-home2__search { max-width: 640px; margin: 0 auto var(--ti-8); }
+.ti-home2__miss { max-width: 640px; margin: 0 auto var(--ti-16); }
+
+.ti-home2__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: var(--ti-32);
+  align-items: start;
+  margin-top: var(--ti-32);
+}
+.ti-home2__main { min-width: 0; }
+.ti-home2__rail { min-width: 0; }
+@media (max-width: 1040px) {
+  .ti-home2__grid { grid-template-columns: minmax(0, 1fr); gap: var(--ti-20); }
+}
+
+/* --- Compound row ------------------------------------------------------
+   Five columns, each a different KIND of fact, so nothing competes: identity,
+   evidence, volume, provenance, affordance. The ratio is the only figure that
+   gets size — it is the one that says whether the work can be trusted. */
+
+.ti-cmp {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px 96px 150px 20px;
+  gap: var(--ti-12);
+  align-items: center;
+  padding: var(--ti-report-pad-y) var(--ti-14);
+  border: 0;
+  border-bottom: 1px solid var(--ti-rule);
+  background: var(--ti-panel);
+  text-decoration: none;
+  transition: background-color var(--ti-dur) var(--ti-ease);
+}
+.ti-cmp:last-child { border-bottom: 0; }
+.ti-cmp:hover { background: var(--ti-panel-hover); }
+
+.ti-cmp__main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ti-cmp__id {
+  font-size: 15px; line-height: 20px; font-weight: 500;
+  color: var(--ti-ink); letter-spacing: -0.01em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ti-cmp__name {
+  font-size: 12px; line-height: 17px; color: var(--ti-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.ti-cmp__evidence { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.ti-cmp__ratio {
+  font-family: var(--ti-mono);
+  font-size: 16px; line-height: 20px; color: var(--ti-ink);
+}
+.ti-cmp__ratio.has-gaps { color: var(--ti-accent-dark); font-weight: 500; }
+.ti-cmp__ratio-label,
+.ti-cmp__count-label,
+.ti-cmp__owner,
+.ti-cmp__when {
+  font-family: var(--ti-mono);
+  font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ti-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ti-cmp__work { display: flex; flex-direction: column; min-width: 0; }
+.ti-cmp__count { font-family: var(--ti-mono); font-size: 16px; line-height: 20px; color: var(--ti-sec); }
+.ti-cmp__who { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ti-cmp__owner { color: var(--ti-mut); text-transform: none; letter-spacing: 0.02em; font-size: 11px; }
+.ti-cmp__arrow { color: var(--ti-dim); justify-self: end; display: inline-flex; }
+
+@media (max-width: 860px) {
+  .ti-cmp { grid-template-columns: minmax(0, 1fr) 110px 20px; }
+  .ti-cmp__work, .ti-cmp__who { display: none; }
+}
+
+/* --- Rail: recent runs -------------------------------------------------- */
+
+.ti-rrun {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'title ratio' 'meta ratio';
+  gap: 0 var(--ti-8);
+  align-items: center;
+  padding: var(--ti-10) var(--ti-12);
+  border-bottom: 1px solid var(--ti-rule);
+  background: var(--ti-panel);
+  text-decoration: none;
+  transition: background-color var(--ti-dur) var(--ti-ease);
+}
+.ti-rrun:last-child { border-bottom: 0; }
+.ti-rrun:hover { background: var(--ti-panel-hover); }
+.ti-rrun__title {
+  grid-area: title;
+  font-size: 12px; line-height: 17px; font-weight: 500; color: var(--ti-ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ti-rrun__meta {
+  grid-area: meta;
+  font-family: var(--ti-mono);
+  font-size: 10px; letter-spacing: 0.04em; color: var(--ti-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ti-rrun__ratio {
+  grid-area: ratio;
+  font-family: var(--ti-mono); font-size: 11px; color: var(--ti-mut);
+}
+.ti-rrun__ratio.has-gaps { color: var(--ti-accent-dark); font-weight: 500; }
+
+/* --- Rail: portfolio facts --------------------------------------------- */
+
+.ti-facts { padding: var(--ti-4) 0; }
+.ti-fact {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: var(--ti-10) var(--ti-12);
+  border-bottom: 1px solid var(--ti-rule);
+}
+.ti-fact:last-child { border-bottom: 0; }
+.ti-fact__n {
+  font-family: var(--ti-mono);
+  font-size: 20px; line-height: 24px; color: var(--ti-ink);
+}
+.ti-fact__n.has-gaps { color: var(--ti-accent-dark); }
+.ti-fact__of { font-size: 13px; color: var(--ti-dim); }
+.ti-fact__l { font-size: 11px; line-height: 16px; color: var(--ti-dim); }
+
+/* --- First-run onboarding ----------------------------------------------
+   The one screen where explaining the product is right: there is nothing else
+   to show, and a bare "No compounds yet" leaves someone with no next action. */
+
+.ti-onboard { max-width: 720px; margin: var(--ti-32) auto 0; }
+.ti-onboard__title {
+  margin: 0 0 var(--ti-12);
+  font-size: 30px; line-height: 36px; font-weight: 300;
+  letter-spacing: -0.02em; color: var(--ti-ink);
+  text-wrap: balance;
+}
+.ti-onboard__lede {
+  margin: 0 0 var(--ti-20);
+  font-size: 15px; line-height: 23px; color: var(--ti-sec);
+  max-width: 68ch; text-wrap: pretty;
+}
+.ti-steps { list-style: none; margin: 0 0 var(--ti-20); padding: 0; }
+.ti-step {
+  display: grid; grid-template-columns: 26px minmax(0, 1fr);
+  gap: var(--ti-12);
+  padding: var(--ti-12) 0;
+  border-top: 1px solid var(--ti-rule);
+}
+.ti-step:last-child { border-bottom: 1px solid var(--ti-rule); }
+.ti-step__n {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 11px;
+  background: var(--ti-panel);
+  border: 1px solid var(--ti-line);
+  box-shadow: var(--ti-sh-chip);
+  font-family: var(--ti-mono); font-size: 11px; color: var(--ti-mut);
+}
+.ti-step__body { font-size: 13px; line-height: 20px; color: var(--ti-sec); max-width: 68ch; }
+.ti-step__body strong { color: var(--ti-ink); font-weight: 500; }
+.ti-onboard__cta { display: flex; flex-wrap: wrap; gap: var(--ti-14); align-items: center; }
+.ti-onboard__note { font-size: 12px; color: var(--ti-dim); }
+
+
+/* ==========================================================================
+   Draft: document shell + outline
+   --------------------------------------------------------------------------
+   The outline sits on the RIGHT because the left 44px is the provenance
+   gutter; a second left-hand column would compete with the one signal this
+   screen exists to carry. Mirrors the home page's rail, so the app has one
+   idea of "primary content plus a rail" rather than two.
+   ======================================================================== */
+
+.ti-docgrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 216px;
+  gap: var(--ti-32);
+  align-items: start;
+}
+.ti-docgrid > .ti-draft { grid-column: 1; grid-row: 1; }
+.ti-outline { grid-column: 2; grid-row: 1; position: sticky; top: 64px; }
+
+@media (max-width: 980px) {
+  .ti-docgrid { grid-template-columns: minmax(0, 1fr); }
+  .ti-outline { grid-column: 1; grid-row: 1; position: static; margin-bottom: var(--ti-16); }
+  .ti-docgrid > .ti-draft { grid-row: 2; }
+}
+
+.ti-outline__head {
+  margin: 0 0 var(--ti-8);
+  font-family: var(--ti-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ti-dim);
+}
+.ti-outline__list { list-style: none; margin: 0; padding: 0; }
+.ti-outline__item--l3 { padding-left: var(--ti-12); }
+.ti-outline__item--l4 { padding-left: var(--ti-20); }
+
+.ti-outline__link {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: var(--ti-8);
+  padding: var(--ti-6) 0;
+  text-decoration: none;
+  border-bottom: 1px solid var(--ti-rule);
+}
+.ti-outline__item:last-child .ti-outline__link { border-bottom: 0; }
+.ti-outline__link:hover .ti-outline__title { color: var(--ti-ink); }
+
+.ti-outline__dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  margin-top: 6px;
+  background: var(--ti-ok);
+}
+/* State is never colour alone: ok is filled, warn is a ring, error is square.
+   The written label sits beside it in every case. */
+.ti-outline__dot--warn {
+  background: transparent;
+  border: 2px solid var(--ti-accent-dark);
+  width: 8px; height: 8px;
+}
+.ti-outline__dot--error {
+  background: var(--ti-accent-dark);
+  border-radius: 1px;
+  width: 7px; height: 7px;
+}
+
+.ti-outline__title {
+  display: block;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ti-sec);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ti-outline__label {
+  display: block;
+  grid-column: 2;
+  font-family: var(--ti-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--ti-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+   Engine disclosure on the run-setup screen.
+   ---------------------------------------------------------------------------
+   Styled as a statement of fact, not an alert. When the engine is real this is
+   reassurance and should recede; when it is the stub it carries a one-time fix
+   the user is the only one who can perform, so it gets the amber treatment and
+   the fix line sits on its own row where it cannot be skimmed past.
+
+   Deliberately not a `ti-notice`: notices in this app are about the *draft*
+   ("AI-generated, review before use"). This is about the *machine*, and
+   collapsing the two would blunt both.
+   --------------------------------------------------------------------------- */
+.ti-enginebox {
+  border: 1px solid var(--ti-line);
+  border-left: 2px solid var(--ti-ok);
+  border-radius: 2px;
+  padding: var(--ti-12) var(--ti-16);
+  /* Matches the --ti-20 the sections above this one use, so the submit row
+     does not sit flush against the box. */
+  margin: 0 0 var(--ti-20);
+  background: var(--ti-surface);
+  max-width: 62ch;
+}
+
+/* Titanium has no amber. The system already says "attention" with the rust
+   accent (see .ti-state--bad), so this borrows that rather than introducing a
+   fourth status hue for one box. */
+.ti-enginebox--stub { border-left-color: var(--ti-accent-dark); }
+
+.ti-enginebox__h {
+  display: flex;
+  align-items: center;
+  gap: var(--ti-8);
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--ti-ink);
+}
+
+/* The icon inherits the state colour; the text stays ink so it keeps its
+   contrast ratio rather than riding on the accent. */
+.ti-enginebox__h svg { flex: none; color: var(--ti-ok); }
+.ti-enginebox--stub .ti-enginebox__h svg { color: var(--ti-accent-dark); }
+
+.ti-enginebox__body {
+  margin: var(--ti-6) 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ti-ink-2);
+  text-wrap: pretty;
+}
+
+.ti-enginebox__fix {
+  margin: var(--ti-8) 0 0;
+  padding-top: var(--ti-8);
+  border-top: 1px dashed var(--ti-line);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ti-ink);
+  text-wrap: pretty;
+}
+
+/* Filesystem paths and URLs are long by nature, so they keep the full measure
+   rather than scrolling inside a 44ch box. */
+.ti-field__input--wide { max-width: none; }
+
+/* ---------------------------------------------------------------------------
+   Sticky action row on the run-setup form.
+   ---------------------------------------------------------------------------
+   The decision this screen exists for was 994px down a 900px viewport: the
+   button was below the fold on a laptop, and the preflight table you need to
+   read to make the decision is what pushed it there. Sticking it to the bottom
+   keeps the action reachable while you read the thing it depends on.
+
+   `position: sticky` with no JS, so this survives scripting being off. The
+   background and top rule are load-bearing: without them the page's own rows
+   scroll visibly under the button and it stops reading as a bar.
+   --------------------------------------------------------------------------- */
+.ti-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  gap: var(--ti-12);
+  align-items: center;
+  flex-wrap: wrap;
+  /* Cancels .ti-page's side padding so the bar's rule spans the full column
+     rather than stopping short of it. */
+  margin: var(--ti-20) calc(-1 * var(--ti-20)) 0;
+  padding: var(--ti-12) var(--ti-20);
+  border-top: 1px solid var(--ti-line);
+  background: var(--ti-field);  /* the page background token */
+}
+
+/* A short form does not need a bar stuck to the bottom of the window — it is
+   already all on screen, and a rule across it would be decoration. */
+@media (min-height: 1200px) {
+  .ti-actions { position: static; }
+}
+
+/* Below this the four-column binding row squeezed the identifier — the most
+   important token in it — down to 81px, so it truncated while two 76-80px
+   status columns kept their full width. Stacking gives the name the whole
+   line and puts state and section count on a second row beside the dot. */
+@media (max-width: 560px) {
+  .ti-brow {
+    grid-template-columns: 20px minmax(0, 1fr);
+    row-gap: var(--ti-4);
+  }
+  .ti-brow__returns,
+  .ti-brow__used {
+    grid-column: 2;
+    font-size: 10px;
+  }
+  .ti-brow__used { color: var(--ti-dim); }
+}
+
+/* Resolved but never cited by the draft. Not a failure — the data came back —
+   but not evidence either, so it sits between the two rather than borrowing
+   the colour of one. The "used in" column carries the em dash that says why. */
+.ti-brow__returns--unused { color: var(--ti-mut); font-weight: 400; }
+
+/* Optical alignment to the first text line of .ti-brow__name (12px/17px):
+   the 9px dot needs (17 - 9) / 2 = 4px to sit on its centre line. The value
+   columns are 11px/16px against that 17px line, so half a pixel of lead. */
+.ti-brow > .ti-dot { margin-top: 4px; }
+.ti-brow__returns,
+.ti-brow__used { margin-top: 1px; }
+
+/* ---------------------------------------------------------------------------
+   Run in progress.
+   ---------------------------------------------------------------------------
+   On the stub engine this screen flickered past and one line was enough. On
+   the local Claude engine a six-section report takes minutes, so a number that
+   might be stuck is the wrong thing to give someone for that long. The list
+   answers "where is it?" and deliberately mirrors the finished draft's outline
+   rail, so the run and the document it becomes look like the same object.
+   --------------------------------------------------------------------------- */
+.ti-progress { padding: var(--ti-16); }
+
+.ti-progress__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ti-12);
+  margin-bottom: var(--ti-10);
+}
+.ti-progress__title { margin: 0; font-size: 15px; font-weight: 500; color: var(--ti-ink); }
+.ti-progress__count { margin: 0; font-family: var(--ti-mono); font-size: 11px; color: var(--ti-mut); }
+.ti-progress__n { font-size: 15px; color: var(--ti-ink); font-variant-numeric: tabular-nums; }
+
+/* A real <progress>: it announces its value to assistive tech and needs no
+   script, where a styled div would need both. Appearance is reset because the
+   native widget is a different grey on every platform. */
+.ti-progress__bar {
+  display: block;
+  width: 100%;
+  height: 2px;
+  margin: 0 0 var(--ti-14);
+  border: 0;
+  appearance: none;
+  background: var(--ti-tick-empty);
+}
+.ti-progress__bar::-webkit-progress-bar { background: var(--ti-tick-empty); }
+.ti-progress__bar::-webkit-progress-value { background: var(--ti-accent); }
+.ti-progress__bar::-moz-progress-bar { background: var(--ti-accent); }
+
+.ti-progress__list { list-style: none; margin: 0; padding: 0; }
+.ti-progress__item {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  gap: var(--ti-8);
+  align-items: baseline;
+  padding: var(--ti-6) 0;
+  border-bottom: 1px solid var(--ti-rule);
+}
+.ti-progress__item:last-child { border-bottom: 0; }
+
+.ti-progress__dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  /* baseline alignment: the dot sits on the text's x-height, not its box */
+  transform: translateY(-1px);
+  background: var(--ti-tick-empty);
+}
+.ti-progress__item--running .ti-progress__dot,
+.ti-progress__item--retrying .ti-progress__dot { background: var(--ti-accent); }
+.ti-progress__item--passed .ti-progress__dot { background: var(--ti-ok); }
+.ti-progress__item--failed .ti-progress__dot { background: var(--ti-accent-dark); }
+
+.ti-progress__sec {
+  min-width: 0;
+  font-size: 13px;
+  color: var(--ti-sec);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The section being written is the one you are waiting for, so it is the only
+   one at full contrast. Everything else recedes. */
+.ti-progress__item--running .ti-progress__sec,
+.ti-progress__item--retrying .ti-progress__sec { color: var(--ti-ink); font-weight: 500; }
+.ti-progress__item--pending .ti-progress__sec { color: var(--ti-dim); }
+
+.ti-progress__state {
+  font-family: var(--ti-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ti-dim);
+  white-space: nowrap;
+}
+.ti-progress__item--passed .ti-progress__state { color: var(--ti-ok); }
+.ti-progress__item--failed .ti-progress__state { color: var(--ti-accent-dark); }
+
+.ti-progress__foot {
+  margin: var(--ti-14) 0 0;
+  padding-top: var(--ti-10);
+  border-top: 1px solid var(--ti-rule);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ti-mut);
+  text-wrap: pretty;
+  max-width: 62ch;
+}
+
+/* Why a section failed or is being retried. Spans the full row width beneath
+   the three columns, because a reason is a sentence and the state column is
+   a 10px uppercase token. Capped at three: the critique can return many, and
+   a wall of them would bury the one row the reader came for. */
+.ti-progress__why {
+  grid-column: 2 / -1;
+  list-style: none;
+  margin: var(--ti-4) 0 0;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ti-mut);
+  text-wrap: pretty;
+  max-width: 62ch;
+}
+.ti-progress__why li { margin: 0; }
+.ti-progress__why li + li { margin-top: var(--ti-2); }
+.ti-progress__item--failed .ti-progress__why { color: var(--ti-accent-dark); }

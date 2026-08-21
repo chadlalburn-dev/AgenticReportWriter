@@ -14,7 +14,7 @@
 {% block page_title %}Set up {{ card.title }} — Report Generator{% endblock %}
 
 {% block content %}
-<div class="ti-page" style="max-width:900px">
+<div class="ti-page" style="max-width:960px">
 
   <div class="ti-sec-head">
     <h2 class="ti-h2">Set up a run</h2>
@@ -84,7 +84,7 @@
 
         <div class="ti-field">
           <label class="ti-field__label" for="f-evidence">Evidence folder</label>
-          <input class="ti-field__input" id="f-evidence" name="evidence_folder" type="text"
+          <input class="ti-field__input ti-field__input--wide" id="f-evidence" name="evidence_folder" type="text"
                  value="{{ evidence_folder }}" autocomplete="off" spellcheck="false">
           <p class="ti-field__msg">{{ evidence_label }}</p>
         </div>
@@ -111,7 +111,7 @@
         <div class="ti-brow" role="row">
           <span class="ti-dot {{ 'ti-dot--on' if ready else 'ti-dot--off' }}" aria-hidden="true"></span>
           <div style="min-width:0">
-            <p class="ti-brow__name" translate="no">{{ s.binding_id }}</p>
+            <p class="ti-brow__name" translate="no" title="{{ s.binding_id }}">{{ s.binding_id }}</p>
             <p class="ti-brow__detail {{ 'ti-brow__detail--on' if ready else 'ti-brow__detail--off' }}"
                title="{{ s.label }} — {{ s.detail }}">{{ s.label }}</p>
           </div>
@@ -136,7 +136,31 @@
       {%- endif %}
     </section>
 
-    <div style="display:flex;gap:var(--ti-12);align-items:center">
+    {#- ---------------------------------------------------------------------
+        Which engine will write the prose — stated before the run, not after.
+
+        The header chip says this on every page, but this is the screen where
+        it changes a decision: someone about to spend a run deserves to know
+        whether they will get Claude's sentences or placeholder ones, and if
+        the answer is placeholder, what the one-time fix is.
+        --------------------------------------------------------------------- -#}
+    <section class="ti-enginebox {{ 'ti-enginebox--stub' if not engine.real }}"
+             aria-labelledby="ti-engine-h">
+      <h2 class="ti-enginebox__h" id="ti-engine-h">
+        {{ ic.icon('warn' if not engine.real else 'check') }}
+        {% if engine.real %}Prose will be written by {{ engine.label }}
+        {%- else %}Prose will be placeholder text{% endif %}
+      </h2>
+      <p class="ti-enginebox__body">{{ engine.detail }}</p>
+      {#- The instruction is resolved server-side: which sentence is correct
+          depends on WHY the CLI is unavailable, and a template cannot know
+          that. See _fix_for() in runs.py. -#}
+      {%- if engine.fix %}
+      <p class="ti-enginebox__fix">{{ engine.fix | code_spans }}</p>
+      {%- endif %}
+    </section>
+
+    <div class="ti-actions">
       {#- Never disabled. Gaps become stated gaps in the draft, which is how
           the engine already behaves, so blocking the button would remove a
           judgement the scientist is entitled to make. The reason sits beside

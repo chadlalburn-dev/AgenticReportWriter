@@ -57,13 +57,59 @@
   </div>
 
   {# ---- still running -------------------------------------------------- #}
+  {#- This screen used to be one line: "N of 6 sections done." With the stub
+      that was fine, because a run finished before the page painted. On the
+      local Claude engine a six-section report takes minutes, so the same line
+      became several minutes of watching a number that might be stuck.
+
+      It now lists the sections and their state, which is the same information
+      the finished draft's outline rail shows — so a run in progress and the
+      document it becomes read as the same thing. -#}
   {%- if not run.terminal %}
-  <div class="ti-panel" style="padding:var(--ti-16)" data-poll-url="{{ poll_url }}">
-    <p class="ti-lrow__title">Drafting…</p>
-    <p class="ti-para__body" style="border:0;padding-left:0">
-      {{ record.sections | selectattr('status','in',['passed','failed']) | list | length }}
-      of {{ record.sections|length }} sections done.
+  {%- set done = record.sections | selectattr('status','in',['passed','failed','skipped']) | list %}
+  <div class="ti-panel ti-progress" data-poll-url="{{ poll_url }}">
+    <div class="ti-progress__head">
+      <p class="ti-progress__title">{{ run.status_label }}…</p>
+      <p class="ti-progress__count">
+        <span class="ti-progress__n">{{ done|length }}</span><span
+          class="ti-fact__of">/{{ record.sections|length }}</span>
+        sections
+      </p>
+    </div>
+
+    {#- A real <progress>: it announces its value to a screen reader and needs
+        no script, where a styled div would need both. -#}
+    <progress class="ti-progress__bar" max="{{ record.sections|length }}"
+              value="{{ done|length }}"
+              aria-label="Sections drafted">{{ done|length }} of {{ record.sections|length }}</progress>
+
+    <ol class="ti-progress__list">
+      {%- for s in record.sections %}
+      <li class="ti-progress__item ti-progress__item--{{ s.status }}">
+        <span class="ti-progress__dot" aria-hidden="true"></span>
+        <span class="ti-progress__sec">{{ s.title }}</span>
+        <span class="ti-progress__state">
+          {{- s.status_label }}
+          {%- if s.attempts > 1 %} · attempt {{ s.attempts }}{% endif %}
+          {%- if s.n_citations %} · {{ s.n_citations }} cited{% endif %}
+        </span>
+        {#- `notes` are the critique's reasons. Shown only where they change
+            what the reader understands: a section that failed or is being
+            retried is the one they want the reason for. On a passed section the
+            same notes are just noise, and eight of them would bury the one row
+            that matters. -#}
+        {%- if s.notes and s.status in ('failed', 'retrying') %}
+        <ul class="ti-progress__why">
+          {%- for n in s.notes[:3] %}<li>{{ n }}</li>{% endfor %}
+        </ul>
+        {%- endif %}
+      </li>
+      {%- endfor %}
+    </ol>
+
+    <p class="ti-progress__foot">
       This page refreshes itself; nothing is lost if you close it.
+      {%- if engine is defined %} {{ engine.detail }}{% endif %}
     </p>
     <noscript><p class="ti-field__msg"><a href="">Reload</a> to see progress.</p></noscript>
   </div>
@@ -102,10 +148,13 @@
     {#- Non-dismissible, and part of the deliverable — it is carried into the
         markdown export too. This is the one thing on the page that must never
         be collapsible, hoverable or behind a tab. -#}
-    <p class="ti-notice" role="note">
+    <p class="ti-notice {{ 'ti-notice--stub' if engine is defined and not engine.real }}" role="note">
       <strong>AI-generated draft for human review.</strong>
       Nothing here is approved. Every number must be
       verified against its citation before this text is used or shared.
+      {%- if engine is defined %}
+      <span class="ti-notice__engine">{{ engine.detail }}</span>
+      {%- endif %}
     </p>
 
     {#- One line, not a five-number strip. Only non-zero facts appear. -#}
@@ -130,11 +179,38 @@
     </div></div>
     {%- else %}
 
+    <div class="ti-docgrid">
+
+    {#- Document outline. `draft.outline` existed in the view model from the
+        start and was never rendered, so a six-section report offered no way to
+        see its own structure or jump within it. Each entry states the section's
+        evidence state, which makes the outline a triage tool and not just a
+        table of contents. -#}
+    {%- if draft.outline | length > 1 %}
+    <aside class="ti-outline" aria-label="Sections in this draft">
+      <p class="ti-outline__head">Sections</p>
+      <ol class="ti-outline__list">
+        {%- for o in draft.outline %}
+        <li class="ti-outline__item ti-outline__item--l{{ o.level }}">
+          <a class="ti-outline__link" href="#sec-{{ o.section_id }}">
+            <span class="ti-outline__dot ti-outline__dot--{{ o.state }}" aria-hidden="true"></span>
+            <span class="ti-outline__title">{{ o.title }}</span>
+            <span class="ti-outline__label">{{ o.label }}</span>
+          </a>
+        </li>
+        {%- endfor %}
+      </ol>
+    </aside>
+    {%- endif %}
+
     <div class="ti-draft">
       {%- for s in draft.sections %}
 
-        <div class="ti-section-head">
-          <h2 class="ti-section-head__title">{{ s.title }}</h2>
+        <div class="ti-section-head" id="sec-{{ s.section_id }}">
+          <h2 class="ti-section-head__title">
+            <span class="ti-section-head__num" aria-hidden="true">{{ s.section_id }}</span>
+            {{ s.title }}
+          </h2>
           <p class="ti-section-head__meta">
             {{ s.n_citations }} citation{{ '' if s.n_citations == 1 else 's' }}
             {%- if s.n_uncited_numbers %} &middot; {{ s.n_uncited_numbers }} uncited number{{ '' if s.n_uncited_numbers == 1 else 's' }}{% endif %}
@@ -158,7 +234,15 @@
                 <span>{{ t.source_label }}{% if t.row_count %} &middot; {{ t.row_count }} rows{% endif %}</span>
               </div>
               {%- if t.columns %}
-              <div class="ti-retrieved__scroll">
+              {#- tabindex + role: these tables run four times the width of the
+                  column that holds them, so without a tab stop the overflow
+                  is unreachable by keyboard — and the overflow is the evidence
+                  the citation points at. `tabindex="0"` is what makes an
+                  overflow:auto box arrow-key scrollable; role+label are what
+                  make a screen reader announce it as a thing you can move
+                  around in. No JS, so it holds with scripting off. -#}
+              <div class="ti-retrieved__scroll" tabindex="0" role="region"
+                   aria-label="{{ t.caption or t.binding_id }} — {{ t.columns|length }} columns, scrollable">
                 <table class="ti-table">
                   <thead><tr>{% for c in t.columns %}<th scope="col">{{ c }}</th>{% endfor %}</tr></thead>
                   <tbody>
@@ -233,6 +317,7 @@
 
       {%- endfor %}
     </div>
+    </div>{# /ti-docgrid #}
 
     {# ---- citation detail, resolved in place ---------------------------- #}
     {%- if draft.citations %}
@@ -247,8 +332,9 @@
         <summary style="cursor:pointer;display:flex;gap:var(--ti-12);align-items:baseline">
           <span class="ti-cite" style="pointer-events:none">{{ c.n }}</span>
           <span style="min-width:0">
-            <span class="ti-brow__name">{{ c.title }}</span>
-            <span class="ti-brow__detail ti-brow__detail--on">{{ c.source_word }} &middot; {{ c.uri_display }}</span>
+            <span class="ti-brow__name" title="{{ c.title }}">{{ c.title }}</span>
+            <span class="ti-brow__detail ti-brow__detail--on"
+                  title="{{ c.source_word }} — {{ c.uri_display }}">{{ c.source_word }} &middot; {{ c.uri_display }}</span>
           </span>
         </summary>
         <div class="ti-cite-detail">
@@ -288,18 +374,34 @@
         <span role="columnheader">used in</span>
       </div>
       {%- for r in draft.ledger %}
-      {%- set ready = r.status == 'ready' %}
+      {#- `r.resolved` / `r.used`, not a status string. This block used to test
+          `r.status == 'ready'` — a value from the PREFLIGHT vocabulary that
+          never appears in the ledger — so it was always false and every row
+          rendered as a failure, cited sources included. See LedgerRow. -#}
       <div class="ti-brow" role="row">
-        <span class="ti-dot {{ 'ti-dot--on' if ready else 'ti-dot--off' }}" aria-hidden="true"></span>
+        <span class="ti-dot {{ 'ti-dot--on' if r.resolved else 'ti-dot--off' }}" aria-hidden="true"></span>
         <div style="min-width:0">
-          <p class="ti-brow__name" translate="no">{{ r.binding_id }}</p>
-          <p class="ti-brow__detail {{ 'ti-brow__detail--on' if ready else 'ti-brow__detail--off' }}"
+          <p class="ti-brow__name" translate="no" title="{{ r.binding_id }}">{{ r.binding_id }}</p>
+          <p class="ti-brow__detail {{ 'ti-brow__detail--on' if r.resolved else 'ti-brow__detail--off' }}"
              title="{{ r.label }} — {{ r.detail }}">{{ r.label }}</p>
           {%- if r.fix_hint %}<p class="ti-field__msg">{{ r.fix_hint }}</p>{% endif %}
         </div>
-        <span class="ti-brow__returns {{ 'ti-brow__returns--on' if ready else 'ti-brow__returns--off' }}">
-          {%- if r.row_count is not none %}{{ r.row_count }} rows{% else %}{{ r.status_text }}{% endif %}
-        </span>
+        {#- A value, not a description. `status_text` is a full sentence
+            ("Not resolved — nothing was pulled for this source.") and this
+            column is 76px, so it wrapped to six lines of accent text and made
+            every unresolved row three times the height of a resolved one. The
+            sentence moves to the title; the column says what came back, which
+            is what its header asks. The remediation is already on its own line
+            below the binding name. -#}
+        {#- Three outcomes, three treatments: cited (ink), resolved but unused
+            by the draft (muted — not a failure, but not evidence either), and
+            nothing returned (accent). `status_text` is the full sentence and
+            belongs in the tooltip; this 76px column holds a value. -#}
+        <span class="ti-brow__returns
+                     {%- if r.used %} ti-brow__returns--on
+                     {%- elif r.resolved %} ti-brow__returns--unused
+                     {%- else %} ti-brow__returns--off{% endif %}"
+              title="{{ r.status_text }}">{{ r.returned_text }}</span>
         <span class="ti-brow__used">
           {%- if r.citation_ns %}
             {%- for n in r.citation_ns %}<a class="ti-cite" href="?tab=draft#cite-{{ n }}">{{ n }}</a>{% endfor %}

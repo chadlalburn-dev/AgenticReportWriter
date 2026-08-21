@@ -31,6 +31,7 @@ from fastapi.responses import (
     Response,
 )
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 from jinja2 import TemplateNotFound
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -48,6 +49,26 @@ TEMPLATES_PATH = _HERE / "templates"
 STATIC_PATH = _HERE / "static"
 
 TEMPLATES = Jinja2Templates(directory=str(TEMPLATES_PATH))
+
+
+def _code_spans(text: str) -> Markup:
+    """Render `backticked` fragments as code spans.
+
+    Some user-facing strings are resolved in Python because the right sentence
+    depends on state a template cannot see (see `_fix_for` in runs.py). Those
+    sentences still name commands — `claude`, `/login` — and a command set in
+    running prose is harder to read and easier to mistype. The text is escaped
+    first, so this adds markup without trusting the input.
+    """
+    parts = escape(text).split("`")
+    out = [
+        part if index % 2 == 0 else f'<span class="ti-code" translate="no">{part}</span>'
+        for index, part in enumerate(parts)
+    ]
+    return Markup("".join(out))
+
+
+TEMPLATES.env.filters["code_spans"] = _code_spans
 
 APP_VERSION = "0.2.0"
 
@@ -75,6 +96,11 @@ def _render(
         # Every page can name `user`. Attribution only — see identity.py for
         # why this is not authentication.
         "user": identity_module.resolve_user(request.headers),
+        # Every page can name `engine`. A reader must be able to tell real
+        # model prose from placeholder text without going to look — in a
+        # product whose whole claim is provenance, that ambiguity is the one
+        # least worth having.
+        "engine": runs_module.resolve_engine(),
     }
     payload.update(context)
     return TEMPLATES.TemplateResponse(request, name, payload, status_code=status_code)
@@ -331,6 +357,22 @@ def home(request: Request) -> HTMLResponse:
         # no runs should land on the team's work, not a zero-state.
         scope = "mine" if counts["mine"] else "all"
 
+    cards = compounds_module.compound_cards(
+        store, current_user=user.user_id, scope=scope
+    )
+
+    # Portfolio rollup, summed from the cards already in hand. Every figure is
+    # real: no coverage estimate, because preflight cannot tell compounds apart
+    # (see CompoundCard's docstring).
+    portfolio = {
+        "compounds": len(cards),
+        "reports": sum(c.reports_drafted for c in cards),
+        "runs": sum(c.run_count for c in cards),
+        "cited": sum(c.claims_cited for c in cards),
+        "claims": sum(c.claims_total for c in cards),
+        "with_gaps": sum(1 for c in cards if c.has_gaps),
+    }
+
     return _render(
         request,
         "home.html",
@@ -339,9 +381,11 @@ def home(request: Request) -> HTMLResponse:
             "no_match": bool(q),
             "scope": scope,
             "counts": counts,
-            "compounds": compounds_module.compound_cards(
-                store, current_user=user.user_id, scope=scope
-            ),
+            "compounds": cards,
+            # Continuity for a returning user: what happened last, across the
+            # whole portfolio, without going to the Runs tab.
+            "recent": store.recent(6),
+            "portfolio": portfolio,
         },
         nav_active="compounds",
     )

@@ -489,7 +489,8 @@
                   {{ ed_text('input.' ~ row.key ~ '.prompt', 'Question', row.prompt,
                              hint='The label on the run form. Write it as a question or an instruction.',
                              error=row.errors.get('prompt', ''), required=True,
-                             placeholder='Which compound?') }}
+                             placeholder='Which compound?',
+                             extra_class='rg-input--wide') }}
                 </div>
                 {{ ed_check('input.' ~ row.key ~ '.required', 'A run cannot start without this', row.required) }}
                 {{ ed_row_acts('input', row.key, 'input', loop.index) }}
@@ -591,14 +592,16 @@
                   </div>
                   {{ ed_text('source.' ~ row.key ~ '.cql', 'Search', row.fields.get('cql', ''),
                              hint='A Confluence search expression.',
-                             error=row.errors.get('cql', '')) }}
+                             error=row.errors.get('cql', ''),
+                             extra_class='rg-input--wide') }}
                 </fieldset>
 
                 <fieldset class="rg-erow__vary" data-kind="file"{% if row.kind != 'file' %} hidden{% endif %}>
                   <legend class="rg-vh">Local document settings</legend>
                   {{ ed_text('source.' ~ row.key ~ '.filter_tags', 'Document tags', row.fields.get('filter_tags', ''),
                              hint='Comma separated. Only documents carrying these tags are read. These are document tags — nothing to do with the template tags above.',
-                             error=row.errors.get('filter_tags', ''), placeholder='tox, 28day') }}
+                             error=row.errors.get('filter_tags', ''), placeholder='tox, 28day',
+                             extra_class='rg-input--wide') }}
                 </fieldset>
 
                 <fieldset class="rg-erow__vary" data-kind="api"{% if row.kind != 'api' %} hidden{% endif %}>
@@ -609,7 +612,8 @@
                                error=row.errors.get('connector', '')) }}
                     {{ ed_text('source.' ~ row.key ~ '.endpoint', 'Endpoint', row.fields.get('endpoint', ''),
                                hint='The path on that connector.',
-                               error=row.errors.get('endpoint', '')) }}
+                               error=row.errors.get('endpoint', ''),
+                             extra_class='rg-input--wide') }}
                   </div>
                 </fieldset>
 
@@ -738,7 +742,8 @@
                            citation.granularity,
                            hint='Per claim is strictest and is the default.') }}
               {{ ed_text('citation_min', 'Minimum citations per paragraph', citation.min_per_paragraph,
-                         hint='A whole number. 0 turns the check off.') }}
+                         hint='A whole number. 0 turns the check off.',
+                         extra_class='rg-input--num') }}
             </div>
           </div>
         {% endcall %}
@@ -868,7 +873,8 @@
                      required=True, placeholder='compound_id') }}
           {{ ed_text('input.__KEY__.prompt', 'Question', '',
                      hint='The label on the run form. Write it as a question or an instruction.',
-                     required=True, placeholder='Which compound?') }}
+                     required=True, placeholder='Which compound?',
+                             extra_class='rg-input--wide') }}
         </div>
         {{ ed_check('input.__KEY__.required', 'A run cannot start without this', True) }}
         {{ ed_row_acts('input', '__KEY__', 'input', 0) }}
@@ -929,19 +935,22 @@
             {{ ed_text('source.__KEY__.page_id', 'Page id', '',
                        hint='One exact page. If this is set, the search below is ignored.') }}
           </div>
-          {{ ed_text('source.__KEY__.cql', 'Search', '', hint='A Confluence search expression.') }}
+          {{ ed_text('source.__KEY__.cql', 'Search', '', hint='A Confluence search expression.',
+                             extra_class='rg-input--wide') }}
         </fieldset>
         <fieldset class="rg-erow__vary" data-kind="file" hidden>
           <legend class="rg-vh">Local document settings</legend>
           {{ ed_text('source.__KEY__.filter_tags', 'Document tags', '',
                      hint='Comma separated. Only documents carrying these tags are read. These are document tags — nothing to do with the template tags above.',
-                     placeholder='tox, 28day') }}
+                     placeholder='tox, 28day',
+                             extra_class='rg-input--wide') }}
         </fieldset>
         <fieldset class="rg-erow__vary" data-kind="api" hidden>
           <legend class="rg-vh">API connector settings</legend>
           <div class="rg-erow__grid">
             {{ ed_text('source.__KEY__.connector', 'Connector', '', hint='Which configured connector to call.') }}
-            {{ ed_text('source.__KEY__.endpoint', 'Endpoint', '', hint='The path on that connector.') }}
+            {{ ed_text('source.__KEY__.endpoint', 'Endpoint', '', hint='The path on that connector.',
+                             extra_class='rg-input--wide') }}
           </div>
         </fieldset>
         {{ ed_area('source.__KEY__.params', 'Parameters', '',

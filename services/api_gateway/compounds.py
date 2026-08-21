@@ -138,7 +138,18 @@ class CompoundView(_Dict):
 
 @dataclass
 class CompoundCard(_Dict):
-    """A row on the compounds list (the front page)."""
+    """A row on the compounds list (the front page).
+
+    Every field here is a REAL per-compound fact, derived from that compound's
+    own runs. That constraint is deliberate: the obvious thing to show is
+    source coverage ("13 of 29 bindings ready"), but preflight resolves
+    bindings against the local corpus and the mock connectors, so it returns
+    the SAME number for every compound. Putting it on the row would look like
+    per-compound signal and carry none — worse than showing nothing.
+
+    What is genuinely per-compound: which reports have been drafted, how well
+    evidenced those drafts were, who worked on it, and when.
+    """
 
     compound_id: str
     name: str
@@ -148,6 +159,16 @@ class CompoundCard(_Dict):
     mine: bool = False          # current user has run at least one report here
     owners: list[str] = field(default_factory=list)
     owners_text: str = ""       # "you" / "you +2 others" / "3 people"
+
+    # --- evidence rollup across this compound's own runs -------------------
+    reports_drafted: int = 0        # distinct report types drafted here
+    claims_cited: int = 0           # summed across runs
+    claims_total: int = 0
+    cited_text: str = ""            # "18/19 claims cited" — or "" when no runs
+    last_report: str = ""           # the most recent report type drafted
+    last_run_id: str = ""
+    last_run_url: str = ""
+    has_gaps: bool = False          # at least one uncited claim somewhere
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +353,14 @@ def compound_cards(
             meta = f"{n} {'run' if n == 1 else 'runs'} · {last}"
         else:
             meta = "no runs yet"
+
+        # Evidence rollup, from this compound's own runs. Free: these summaries
+        # are already in hand.
+        cited = sum(int(getattr(r, "n_claims_cited", 0) or 0) for r in runs)
+        claims = sum(int(getattr(r, "n_claims", 0) or 0) for r in runs)
+        titles = [t for t in ((getattr(r, "template_title", "") or "") for r in runs) if t]
+        newest = runs[0] if runs else None
+
         cards.append(
             CompoundCard(
                 compound_id=cid,
@@ -342,6 +371,16 @@ def compound_cards(
                 mine=mine,
                 owners=owners,
                 owners_text=_owners_text(owners, current_user),
+                reports_drafted=len(set(titles)),
+                claims_cited=cited,
+                claims_total=claims,
+                cited_text=(f"{cited}/{claims} claims cited" if claims else ""),
+                last_report=(titles[0] if titles else ""),
+                last_run_id=(getattr(newest, "run_id", "") if newest else ""),
+                last_run_url=(
+                    f"/runs/{getattr(newest, 'run_id', '')}" if newest else ""
+                ),
+                has_gaps=bool(claims and cited < claims),
             )
         )
         if len(cards) >= limit:

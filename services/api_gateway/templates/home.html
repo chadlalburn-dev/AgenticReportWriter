@@ -1,26 +1,70 @@
 {% extends "titanium_base.html" %}
+{% import "_icons.html" as ic %}
 {#- ---------------------------------------------------------------------- -#}
-{#- Compounds list — the front door.                                        -#}
+{#- Compounds — the front door.                                             -#}
 {#-                                                                        -#}
-{#- A list of compounds, scoped My / All. "All" is every compound anyone    -#}
-{#- has run a report against, which is the point of the split: evidence     -#}
-{#- work becomes discoverable across the team instead of each person        -#}
-{#- re-deriving what has already been evidenced.                           -#}
+{#- Search stays the primary action, as the handoff specifies. What changed -#}
+{#- is everything under it: the first build put one plain text row per      -#}
+{#- compound in a 760px column, so with a three-compound portfolio roughly  -#}
+{#- ninety percent of the viewport was empty grey and the page read as      -#}
+{#- broken rather than as calm.                                            -#}
 {#-                                                                        -#}
-{#- The report-type gallery MUST NOT be the front door: it governed six     -#}
-{#- report cards with six controls and asked the user to pick a report type -#}
-{#- before the app knew which compound they cared about. It lives at        -#}
-{#- /templates as a secondary browse surface.                              -#}
+{#- It now answers the two questions someone actually arrives with:         -#}
+{#-   "what have we evidenced, and how well?"  -> the compound rows         -#}
+{#-   "what happened since I was last here?"   -> the recent rail           -#}
+{#-                                                                        -#}
+{#- Every number on this page is a REAL per-compound fact drawn from that   -#}
+{#- compound's own runs. Source coverage is deliberately absent: preflight  -#}
+{#- resolves against the shared corpus and returns an identical figure for  -#}
+{#- every compound, so a coverage meter here would look like signal and     -#}
+{#- carry none. See CompoundCard's docstring.                              -#}
 {#- ---------------------------------------------------------------------- -#}
 
 {% block page_title %}Compounds — Report Generator{% endblock %}
 
-{% block content %}
-<div class="ti-home">
+{% macro compound_row(c) %}
+<a class="ti-cmp" href="{{ c.url }}">
+  <div class="ti-cmp__main">
+    <span class="ti-cmp__id" translate="no">{{ c.compound_id }}</span>
+    {%- if c.name %}<span class="ti-cmp__name">{{ c.name }}</span>{% endif %}
+  </div>
 
-  <form action="/" method="get" role="search">
+  <div class="ti-cmp__evidence">
+    {%- if c.claims_total %}
+    <span class="ti-cmp__ratio {{ 'has-gaps' if c.has_gaps }}">
+      {{ c.claims_cited }}/{{ c.claims_total }}
+    </span>
+    <span class="ti-cmp__ratio-label">claims cited</span>
+    {%- else %}
+    <span class="ti-cmp__ratio-label">not drafted yet</span>
+    {%- endif %}
+  </div>
+
+  <div class="ti-cmp__work">
+    {%- if c.reports_drafted %}
+    <span class="ti-cmp__count">{{ c.reports_drafted }}</span>
+    <span class="ti-cmp__count-label">
+      report{{ '' if c.reports_drafted == 1 else 's' }}
+    </span>
+    {%- endif %}
+  </div>
+
+  <div class="ti-cmp__who">
+    <span class="ti-cmp__owner">{{ c.owners_text }}</span>
+    <span class="ti-cmp__when">{{ c.meta_text }}</span>
+  </div>
+
+  <span class="ti-cmp__arrow">{{ ic.icon('arrow') }}</span>
+</a>
+{% endmacro %}
+
+{% block content %}
+<div class="ti-home2">
+
+  {# ---- search: still the primary action --------------------------------- #}
+  <form class="ti-home2__search" action="/" method="get" role="search">
     <label class="ti-home__search" for="ti-home-q">
-      <span class="ti-search__glyph" aria-hidden="true">&#8981;</span>
+      <span class="ti-search__glyph">{{ ic.icon('search') }}</span>
       <span class="ti-sr">Search compound, target or run</span>
       <input class="ti-search__input" id="ti-home-q" name="q" type="search"
              value="{{ q|default('') }}" autocomplete="off" spellcheck="false"
@@ -29,64 +73,168 @@
   </form>
 
   {%- if no_match %}
-  <p class="ti-footnote" style="margin-top:var(--ti-16)">
-    Nothing matches <span class="ti-code">{{ q }}</span>.
+  <p class="ti-footnote ti-home2__miss">
+    Nothing matches <span class="ti-code" translate="no">{{ q }}</span>.
     {%- if compounds %} Pick a compound below, or check the identifier.{% endif %}
   </p>
   {%- endif %}
 
-  <div class="ti-sec-head" style="margin-top:var(--ti-32)">
-    <h2 class="ti-h2" id="ti-compounds-head">
-      {{ 'My compounds' if scope == 'mine' else 'All compounds' }}
-    </h2>
-    {#- Same segmented control the compound page uses for binding filters —
-        reusing the established component, not inventing a second one.
-        Real links, so scoping works with scripting off. -#}
-    <div class="ti-seg" role="group" aria-labelledby="ti-compounds-head">
-      <a class="ti-seg__btn" href="/?scope=mine"
-         {% if scope == 'mine' %}aria-current="true"{% endif %}>mine {{ counts.mine }}</a>
-      <a class="ti-seg__btn" href="/?scope=all"
-         {% if scope == 'all' %}aria-current="true"{% endif %}>all {{ counts.all }}</a>
+  {%- if not compounds and scope != 'mine' %}
+  {# ================= FIRST RUN — nothing exists yet ==================== #}
+  {#- The one screen where explaining the product is the right thing to do.
+      Everywhere else it would be noise; here there is nothing else to show,
+      and a bare "No compounds yet" leaves someone with no next action. -#}
+  <div class="ti-onboard">
+    <h1 class="ti-onboard__title">Draft a preclinical report, with every number cited</h1>
+    <p class="ti-onboard__lede">
+      Pick a report type, give it a compound, and the app pulls what that report
+      is bound to — study documents, warehouse tables, Confluence pages — drafts
+      the narrative around the data, and cites every value back to the study,
+      page, cell or query it came from. You review it; the app never signs
+      anything off.
+    </p>
+
+    <ol class="ti-steps">
+      <li class="ti-step">
+        <span class="ti-step__n">1</span>
+        <span class="ti-step__body">
+          <strong>Choose a report type.</strong>
+          Six ship with the app — candidate selection, nonclinical safety,
+          DMPK/ADME, target assessment, IB sections, compound profile.
+          <a href="/templates">Browse the library</a>.
+        </span>
+      </li>
+      <li class="ti-step">
+        <span class="ti-step__n">2</span>
+        <span class="ti-step__body">
+          <strong>Name the compound.</strong>
+          The setup screen shows which sources will resolve before you commit,
+          so there are no surprises mid-run.
+        </span>
+      </li>
+      <li class="ti-step">
+        <span class="ti-step__n">3</span>
+        <span class="ti-step__body">
+          <strong>Review the cited draft.</strong>
+          Each paragraph shows whether it is backed by retrieved data. Claims
+          the model could not evidence are marked, not hidden.
+        </span>
+      </li>
+    </ol>
+
+    <div class="ti-onboard__cta">
+      <a class="ti-btn-primary" href="/templates">Choose a report type</a>
+      <span class="ti-onboard__note">
+        Runs are attributed to <span class="ti-code">{{ user.display_name }}</span>
+        and appear here afterwards.
+      </span>
     </div>
   </div>
 
-  {%- if compounds %}
-  <div>
-    {%- for c in compounds %}
-    <a class="ti-crow" href="{{ c.url }}">
-      <span class="ti-crow__id">{{ c.compound_id }}</span>
-      <span class="ti-crow__name">{{ c.name }}</span>
-      <span class="ti-crow__owner">{{ c.owners_text }}</span>
-      <span class="ti-crow__meta">{{ c.meta_text }}</span>
-    </a>
-    {%- endfor %}
-  </div>
-  {%- elif scope == 'mine' %}
-  {#- Designed zero-state: "mine" is empty but the team's work is not. -#}
-  <div class="ti-panel">
-    <div class="ti-empty">
-      <p class="ti-empty__title">You have not run a report yet</p>
-      <p class="ti-empty__body">
-        Runs you start are attributed to
-        <span class="ti-code">{{ user.display_name }}</span> and appear here.
-        {%- if counts.all %}
-        Meanwhile <a href="/?scope=all">{{ counts.all }} compound{{ '' if counts.all == 1 else 's' }}</a>
-        across the team already {{ 'has' if counts.all == 1 else 'have' }} evidence behind
-        {{ 'it' if counts.all == 1 else 'them' }}.
-        {%- endif %}
-      </p>
-    </div>
-  </div>
   {%- else %}
-  <div class="ti-panel">
-    <div class="ti-empty">
-      <p class="ti-empty__title">No compounds yet</p>
-      <p class="ti-empty__body">
-        A compound appears here once a report has been run against it, or when
-        the sample corpus is present. Start from the
-        <a href="/templates">template library</a> to make the first run.
-      </p>
-    </div>
+  {# ================= NORMAL: compounds + rail ========================== #}
+  <div class="ti-home2__grid">
+
+    <section class="ti-home2__main">
+      <div class="ti-sec-head">
+        <h2 class="ti-h2" id="ti-compounds-head">
+          {{ 'My compounds' if scope == 'mine' else 'All compounds' }}
+        </h2>
+        {#- The same segmented control the compound page uses. Real links, so
+            scoping works with scripting off. -#}
+        <div class="ti-seg" role="group" aria-labelledby="ti-compounds-head">
+          <a class="ti-seg__btn" href="/?scope=mine"
+             {% if scope == 'mine' %}aria-current="true"{% endif %}>mine {{ counts.mine }}</a>
+          <a class="ti-seg__btn" href="/?scope=all"
+             {% if scope == 'all' %}aria-current="true"{% endif %}>all {{ counts.all }}</a>
+        </div>
+      </div>
+
+      {%- if compounds %}
+      <div class="ti-panel">
+        <div class="ti-thead ti-cmp" role="row">
+          <span role="columnheader">compound</span>
+          <span role="columnheader">evidence</span>
+          <span role="columnheader">drafted</span>
+          <span role="columnheader">who &middot; when</span>
+          <span></span>
+        </div>
+        {%- for c in compounds %}{{ compound_row(c) }}{% endfor %}
+      </div>
+
+      {%- else %}
+      {#- "mine" is empty but the team's work is not. -#}
+      <div class="ti-panel"><div class="ti-empty">
+        <p class="ti-empty__title">You have not drafted a report yet</p>
+        <p class="ti-empty__body">
+          Runs you start are attributed to
+          <span class="ti-code">{{ user.display_name }}</span> and appear here.
+          {%- if counts.all %}
+          Meanwhile
+          <a href="/?scope=all">{{ counts.all }} compound{{ '' if counts.all == 1 else 's' }}</a>
+          across the team already {{ 'has' if counts.all == 1 else 'have' }}
+          evidence behind {{ 'it' if counts.all == 1 else 'them' }} —
+          worth reading before re-deriving it.
+          {%- endif %}
+        </p>
+        <p class="ti-empty__body">
+          <a class="ti-btn-primary" href="/templates">Choose a report type</a>
+        </p>
+      </div></div>
+      {%- endif %}
+    </section>
+
+    {# ---- rail: continuity + portfolio ---------------------------------- #}
+    <aside class="ti-home2__rail" aria-label="Recent activity and portfolio">
+
+      {%- if recent %}
+      <div class="ti-sec-head">
+        <h2 class="ti-h2">Recent</h2>
+        <a class="ti-sec-head__link" href="/runs">all runs</a>
+      </div>
+      <div class="ti-panel">
+        {%- for r in recent %}
+        <a class="ti-rrun" href="/runs/{{ r.run_id }}">
+          <span class="ti-rrun__title">{{ r.template_title }}</span>
+          <span class="ti-rrun__meta">
+            {%- if r.primary_input %}<span translate="no">{{ r.primary_input }}</span> &middot; {% endif %}
+            {{ r.created_human }}
+          </span>
+          {%- if r.n_claims %}
+          <span class="ti-rrun__ratio {{ 'has-gaps' if r.n_claims_cited < r.n_claims }}">
+            {{ r.n_claims_cited }}/{{ r.n_claims }}
+          </span>
+          {%- endif %}
+        </a>
+        {%- endfor %}
+      </div>
+      {%- endif %}
+
+      {%- if portfolio.claims %}
+      <div class="ti-sec-head" style="margin-top:var(--ti-20)">
+        <h2 class="ti-h2">Portfolio</h2>
+      </div>
+      <div class="ti-panel ti-facts">
+        <div class="ti-fact">
+          <span class="ti-fact__n">{{ portfolio.cited }}<span class="ti-fact__of">/{{ portfolio.claims }}</span></span>
+          <span class="ti-fact__l">claims cited across every draft</span>
+        </div>
+        <div class="ti-fact">
+          <span class="ti-fact__n">{{ portfolio.reports }}</span>
+          <span class="ti-fact__l">report types drafted over {{ portfolio.compounds }}
+            compound{{ '' if portfolio.compounds == 1 else 's' }}</span>
+        </div>
+        {%- if portfolio.with_gaps %}
+        <div class="ti-fact">
+          <span class="ti-fact__n has-gaps">{{ portfolio.with_gaps }}</span>
+          <span class="ti-fact__l">compound{{ '' if portfolio.with_gaps == 1 else 's' }}
+            with at least one uncited claim</span>
+        </div>
+        {%- endif %}
+      </div>
+      {%- endif %}
+
+    </aside>
   </div>
   {%- endif %}
 

@@ -32,6 +32,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
 
+from services.api_gateway import runs as runs_module
 from services.api_gateway import ui as ui_module
 
 _HERE = Path(__file__).resolve().parent
@@ -61,6 +62,10 @@ class _RevalidatingStatic(StaticFiles):
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    # Asking the local Claude CLI whether it can generate means running it, so
+    # the answer is fetched once at boot in the background. Every page names
+    # the engine; none of them should wait for a subprocess to find out.
+    runs_module.prime_engine()
     yield
     ui_module.get_store().shutdown(wait=False)
 

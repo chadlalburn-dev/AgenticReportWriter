@@ -85,7 +85,7 @@
           <span class="ti-dot {{ 'ti-dot--on' if b.resolved else 'ti-dot--off' }}"
                 aria-hidden="true"></span>
           <div style="min-width:0">
-            <p class="ti-brow__name">{{ b.binding_id }}</p>
+            <p class="ti-brow__name" title="{{ b.binding_id }}">{{ b.binding_id }}</p>
             <p class="ti-brow__detail {{ 'ti-brow__detail--on' if b.resolved else 'ti-brow__detail--off' }}"
                title="{{ b.resolve_target }}">{{ b.resolve_target }}</p>
           </div>

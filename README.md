@@ -55,3 +55,55 @@ pip install -e ".[dev]"
 # Run tests
 pytest
 ```
+
+### Which engine writes the prose
+
+The generation pipeline — retrieval, citation enforcement, the safety gate, the
+audit chain — is the same whichever model is behind it. Only the sentences
+change. Three engines implement `LlmClient`:
+
+| Engine | When it is used | What you get |
+| --- | --- | --- |
+| `ClaudeCliLlmClient` | The Claude Code CLI is installed **and signed in** | Real Claude prose |
+| `StubLlmClient` | Fallback, and every test | Deterministic placeholder text |
+| `VertexLlmClient` | Once GCP/Vertex access lands | Real Claude prose, sanctioned path |
+
+`REPORTGEN_ENGINE` picks one: `auto` (default — prefer the CLI, fall back to
+the stub), `cli` (fail loudly if it cannot run), or `stub`.
+
+The app never hides which one produced a draft. The engine is named in the
+header on every page, in the run-setup screen before you commit to a run, and
+in the non-dismissible notice above the draft itself. If placeholder prose
+could be mistaken for a model's words, the product's provenance claim is void,
+so this disclosure is covered by tests rather than left to convention.
+
+**To turn on real generation**, sign the CLI in once — the app cannot do this
+for you, because the login is an interactive browser flow:
+
+```bash
+claude
+```
+
+then `/login` at the prompt. The app picks it up within a minute; no restart.
+Until then it correctly falls back to the stub and says so. `find_claude_binary`
+looks at `REPORTGEN_CLAUDE_BIN`, then `PATH`, then the Windows install
+directory, so set that variable if the CLI lives somewhere unusual.
+
+Two behaviours of the CLI are worth knowing, because both cost real debugging
+and are pinned by tests in `tests/test_claude_cli_engine.py`:
+
+- **An unauthenticated `claude -p` exits 0.** It prints "Not logged in · Please
+  run /login" and returns success, so a client that trusts the exit code
+  reports success on total failure. The output is inspected instead.
+- **stdin must be closed explicitly**, or the CLI waits ~3s for piped input and
+  writes a warning into the captured output.
+
+#### Data-governance boundary
+
+The local CLI routes prompt content to Anthropic through its own session, **not**
+through GSK's sanctioned Onyx LLM path. For the synthetic `XYZ-001` corpus that
+is fine — the data is fictional. Pointing it at real GSK preclinical data is a
+decision for a human, so `ClaudeCliConfig.allow_real_data` defaults to `False`
+and the client refuses to run when a caller flags the corpus as real. That
+check is a tripwire against accident, not a DLP control, and says so in its own
+docstring.
