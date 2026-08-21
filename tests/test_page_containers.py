@@ -34,6 +34,32 @@ def _stylesheets() -> str:
     )
 
 
+def _without_print(css: str) -> str:
+    """Drop every `@media print` block, brace-matched.
+
+    A naive regex cannot do this: the block contains nested rules, so a
+    character class stopping at the first closing brace ends the match inside
+    the block rather than after it.
+    """
+    out, i = [], 0
+    while True:
+        at = css.find("@media print", i)
+        if at == -1:
+            out.append(css[i:])
+            return "".join(out)
+        out.append(css[i:at])
+        depth, j = 0, css.index("{", at)
+        while j < len(css):
+            if css[j] == "{":
+                depth += 1
+            elif css[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        i = j + 1
+
+
 def _page_containers() -> set[str]:
     """The outermost element of every Titanium page's content block.
 
@@ -117,12 +143,17 @@ def test_no_text_falls_below_the_scale(css: str):
     anything else in the app for no reason it could name.
     """
     bare = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    # The floor is a SCREEN floor. Print legitimately goes smaller — a 9px table
+    # cell on paper is normal typography and is how a 3010px evidence table fits
+    # a sheet at all — so the print block is excluded rather than exempted
+    # rule by rule.
+    bare = _without_print(bare)
     offenders = [
         f"{match.group(1).strip()[:60]} @ {match.group(2)}px"
         for match in re.finditer(r"([^{}]+)\{[^}]*font-size:\s*(\d)px", bare)
         if match.group(1).strip() not in GLYPH_SIZING_RULES
     ]
-    assert not offenders, "text below the 10px floor:" + chr(10) + chr(10).join(offenders)
+    assert not offenders, "screen text below the 10px floor:" + chr(10) + chr(10).join(offenders)
 
 
 def test_the_glyph_exemptions_really_are_glyphs():
@@ -135,3 +166,73 @@ def test_the_glyph_exemptions_really_are_glyphs():
             f"{rule} is exempt from the type floor but is not used anywhere - "
             "drop the exemption rather than carrying it"
         )
+
+
+# --- long lists ------------------------------------------------------------
+
+
+def test_the_row_placeholder_matches_the_row(css: str):
+    """`contain-intrinsic-size` is the height content-visibility hands a row it
+    has not laid out yet. If it disagrees with the real row, it causes exactly
+    the scrollbar jump it exists to prevent.
+
+    It was a hard-coded 44px against rows measuring 61px compact and 69px
+    comfortable — 28-40% short, and this route returns up to 200 rows, so four
+    to six thousand pixels of drift as they realise.
+
+    The measurement trap, recorded because it cost a wrong fix first: reading
+    getBoundingClientRect on an off-screen content-visibility row returns the
+    PLACEHOLDER, not the row. Measuring the normal way just reads this value
+    back to you. The real heights come from re-measuring with containment
+    switched off.
+    """
+    bare = _without_print(re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL))
+    # ALL the rules named .ti-lrow, not the first. There are two — the layout
+    # one near the top of the sheet and the virtualisation one at the bottom —
+    # and taking the first match is the same trap that broke the .ti-outline
+    # lookup when print styles landed.
+    body = chr(10).join(
+        m.group(1) for m in re.finditer(r"\.ti-lrow\s*\{([^}]*)\}", bare)
+    )
+    assert body, ".ti-lrow has no rule"
+    assert "content-visibility: auto" in body, (
+        "`hidden` would take these rows out of find-in-page; `auto` keeps them"
+    )
+    assert "contain-intrinsic-size" in body
+    assert "var(--ti-lrow-h)" in body, (
+        "the placeholder is a literal again; it has to follow the density that "
+        "determines the row height"
+    )
+
+
+@pytest.mark.parametrize(
+    ("density", "expected"), [("compact", 61), ("comfortable", 69)]
+)
+def test_each_density_declares_its_measured_row_height(
+    css: str, density: str, expected: int
+):
+    """Both densities need their own value — the padding differs, so the row
+    does too, and one number cannot serve both."""
+    bare = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    if density == "compact":
+        block = bare[: bare.index("[data-density='comfortable']")]
+    else:
+        block = bare[bare.index("[data-density='comfortable']") :][:400]
+    found = re.search(r"--ti-lrow-h:\s*(\d+)px", block)
+    assert found, f"{density} declares no --ti-lrow-h"
+    assert int(found.group(1)) == expected, (
+        f"{density} declares {found.group(1)}px; the row measures {expected}px"
+    )
+
+
+def test_the_draft_is_deliberately_not_virtualised(css: str):
+    """Find-in-page across a whole report matters more than the paint saving,
+    and a regulatory reader searching for a number is the point of the page."""
+    bare = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    for selector in (".ti-para", ".ti-draft", ".ti-section-head"):
+        rule = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", bare)
+        if rule:
+            assert "content-visibility" not in rule.group(1), (
+                f"{selector} is virtualised, which can hide draft text from "
+                "find-in-page"
+            )

@@ -111,9 +111,15 @@
   <span>Report Generator &middot; v{{ app_version|default('0.2.0') }}</span>
   <span>discovery research &middot; non-GxP</span>
   <span>drafts are for human review</span>
-  <span class="ti-density" data-js-only>
-    <button class="ti-seg__btn" type="button" data-density-set="compact">compact</button>
-    <button class="ti-seg__btn" type="button" data-density-set="comfortable">comfortable</button>
+  {#- A labelled group, not two loose buttons. Without the label a screen
+      reader announces "compact button, comfortable button" with no clue what
+      they control; the footer gives a sighted reader that context by position
+      and an AT user nothing. -#}
+  <span class="ti-density" data-js-only role="group" aria-label="Row density">
+    <button class="ti-seg__btn" type="button" data-density-set="compact"
+            aria-pressed="true">compact</button>
+    <button class="ti-seg__btn" type="button" data-density-set="comfortable"
+            aria-pressed="false">comfortable</button>
   </span>
 </footer>
 
@@ -140,12 +146,19 @@
 
   /* Density preference, persisted per user. */
   var root = document.documentElement;
+  /* aria-pressed, not aria-current. These are toggle buttons for a setting;
+     aria-current means "the current item in a set" and belongs on the nav
+     links that share this .ti-seg__btn class, which is where the confusion
+     came from. aria-current="false" is also discouraged outright — the spec
+     says omit it rather than assert it — whereas aria-pressed="false" is the
+     correct way to say "this toggle is off". */
   function paintDensity() {
     var cur = root.getAttribute('data-density') || 'compact';
     var btns = document.querySelectorAll('[data-density-set]');
     for (var i = 0; i < btns.length; i++) {
       var on = btns[i].getAttribute('data-density-set') === cur;
-      btns[i].setAttribute('aria-current', on ? 'true' : 'false');
+      btns[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+      btns[i].removeAttribute('aria-current');
     }
   }
   document.addEventListener('click', function (e) {

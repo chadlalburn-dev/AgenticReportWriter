@@ -92,12 +92,22 @@
         </p>
         <p class="ti-empty__body">
           {%- if filter_q %}
-          <a href="/runs">Clear the filter</a> to see every run.
+          <a href="{{ clear_url }}">Clear the filter</a> to see every run.
           {%- else %}
-          Pick a compound from <a href="/">Compounds</a> and draft the report with
-          the most evidence behind it.
+          Nothing has been drafted on this machine yet. Pick a report type and
+          the setup screen will show which sources resolve before you commit.
           {%- endif %}
         </p>
+        {#- A button, not a link buried in the sentence. The two other empty
+            states for this same situation — the compounds home and a compound
+            with no runs — both offer a primary action, and this one asked the
+            reader to find "Compounds" mid-paragraph. Same situation, same
+            affordance. -#}
+        {%- if not filter_q %}
+        <p class="ti-empty__body">
+          <a class="ti-btn-primary" href="/templates">Choose a report type</a>
+        </p>
+        {%- endif %}
       </div>
     {%- endif %}
   </div>

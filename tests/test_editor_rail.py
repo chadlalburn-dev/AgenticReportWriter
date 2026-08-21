@@ -74,9 +74,16 @@ def test_the_rail_matches_the_draft_pages_offset():
         r"/\*.*?\*/", "", (STATIC / "titanium.css").read_text(encoding="utf-8"),
         flags=re.DOTALL,
     )
-    outline = re.search(r"\.ti-outline\s*\{([^}]*)\}", titanium)
-    assert outline, ".ti-outline rule missing"
-    draft_top = re.search(r"top:\s*(\d+)px", outline.group(1))
+    # The rule that PINS, not the first one named .ti-outline. The print block
+    # also has a `.ti-outline { display: none }` and matching that instead is
+    # how this test started failing the moment print styles were added.
+    sticky = [
+        m.group(1)
+        for m in re.finditer(r"\.ti-outline\s*\{([^}]*)\}", titanium)
+        if "position: sticky" in m.group(1)
+    ]
+    assert sticky, ".ti-outline has no sticky rule"
+    draft_top = re.search(r"top:\s*(\d+)px", sticky[0])
     bridge = re.sub(
         r"/\*.*?\*/", "", BRIDGE.read_text(encoding="utf-8"), flags=re.DOTALL
     )

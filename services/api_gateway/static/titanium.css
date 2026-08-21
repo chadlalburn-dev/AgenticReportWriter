@@ -69,7 +69,12 @@
   --ti-ink:          #191C1E;  /* primary text   13.6:1 on panel             */
   --ti-sec:          #3A4247;  /* secondary      8.94:1 on panel             */
   --ti-mut:          #4C555B;  /* tertiary/links 6.65 panel / 5.57 field     */
-  --ti-dim:          #5D666C;  /* lightest legal 5.12:1 on panel             */
+  --ti-dim:          #5D666C;  /* 5.12:1 on PANEL — and 4.29 on the field,   */
+                               /* which fails. Panel-only by construction:   */
+                               /* it is the lightest grey that is legal       */
+                               /* there. Text sitting on --ti-field takes     */
+                               /* --ti-mut (5.57 field), the lightest legal   */
+                               /* grey for THAT surface.                     */
 
   --ti-line:         #C9CFD3;  /* panel border — hairline only, never text   */
   --ti-line-ctl:     #C4CACE;  /* control border                             */
@@ -81,7 +86,14 @@
   --ti-accent-from:  #D24C29;
   --ti-accent-to:    #B83718;
   --ti-accent-dark:  #8F2A11;  /* 7.31 panel / 6.13 field — safe everywhere  */
-  --ti-ok:           #3F7A34;  /* connected status dot                       */
+  --ti-ok:           #3F7A34;  /* status DOT only: 3.80 field / 4.53 panel.  */
+                               /* Clears the 3:1 a non-text indicator needs  */
+                               /* (WCAG 1.4.11) and nothing more — do not    */
+                               /* set text in it on the page background.     */
+  --ti-ok-dark:      #376C2D;  /* 4.59 field / 5.48 panel — safe everywhere. */
+                               /* The text green. Same hue, four lightness   */
+                               /* steps down, mirroring how --ti-accent-dark */
+                               /* relates to --ti-accent.                    */
 
   /* Space — base unit 2px, working scale below. Every spacing value in the
      build comes from this scale. */
@@ -155,12 +167,23 @@
   --ti-row-pad-y: 6px;
   --ti-report-pad-y: 10px;
   --ti-run-pad-y: 9px;
+  /* Measured height of a .ti-lrow at this density, for the placeholder that
+     content-visibility hands to rows it has not laid out yet. Lives beside the
+     padding it depends on, so the two cannot drift apart again.
+
+     Measured with containment switched OFF. That detail matters: reading
+     getBoundingClientRect on an off-screen content-visibility row returns the
+     intrinsic-size PLACEHOLDER, not the row, so measuring normally just reads
+     back whatever this value already says. The first correction here was 65px
+     for exactly that reason. */
+  --ti-lrow-h: 61px;
 }
 
 [data-density='comfortable'] {
   --ti-row-pad-y: 10px;
   --ti-report-pad-y: 14px;
   --ti-run-pad-y: 13px;
+  --ti-lrow-h: 69px;
 }
 
 /* --- Base ---------------------------------------------------------------- */
@@ -181,7 +204,7 @@
 
 /* Links use --ti-mut, not the accent. See accessibility rule 2.
    Wrapped in :where() so this rule carries ZERO specificity: any component
-   class below (.ti-btn-primary, .ti-chip, .ti-crow, .ti-brand) then wins
+   class below (.ti-btn-primary, .ti-chip, .ti-brand) then wins
    without needing !important or a specificity arms race. Written as a plain
    `.ti a` this rule is (0,1,1) — element+class — which silently beat every
    single-class component rule and painted the primary button's label
@@ -685,7 +708,13 @@
   background: rgba(255, 255, 255, 0.75);
   color: var(--ti-ink);
 }
-.ti-seg__btn[aria-current='true'] {
+/* Two attributes because this class serves two kinds of control, and they take
+   different ARIA: `aria-current` for the navigation links (which of a set am I
+   on) and `aria-pressed` for the density toggle (is this setting on). Styling
+   only aria-current is what would have silently dropped the active pill off the
+   density buttons when they were corrected to aria-pressed. */
+.ti-seg__btn[aria-current='true'],
+.ti-seg__btn[aria-pressed='true'] {
   background: #FFFFFF;
   color: var(--ti-ink);
   box-shadow: 0 1px 2px rgba(25, 28, 30, 0.16), inset 0 0 0 1px var(--ti-line-ctl);
@@ -985,7 +1014,9 @@
   text-transform: uppercase;
   white-space: nowrap;
 }
-.ti-state--ok      { color: var(--ti-ok); }
+/* Text, so --ti-ok-dark: --ti-ok is the dot green and reads at 3.80 on the
+   page background, under the 4.5 this 10px label needs. */
+.ti-state--ok      { color: var(--ti-ok-dark); }
 .ti-state--bad     { color: var(--ti-accent-dark); }
 .ti-state--busy    { color: var(--ti-mut); }
 .ti-state--neutral { color: var(--ti-dim); }
@@ -1290,7 +1321,7 @@
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--ti-dim);
+  color: var(--ti-mut);
 }
 
 /* The human-review notice. Non-dismissible by design: it is part of the
@@ -1670,8 +1701,6 @@
 
 /* Compounds as plain text rows, 56px, NOT cards.
    140px mono ID column, name, owner, right-aligned run count + date. */
-.ti-crow:last-child { border-bottom: 0; }
-.ti-crow:hover { background: rgba(255, 255, 255, 0.55); color: var(--ti-ink); }
 
 /* --- Density toggle ---------------------------------------------------- */
 
@@ -1719,8 +1748,6 @@
   .ti-header { grid-template-columns: max-content minmax(0, 1fr); }
   .ti-nav { display: none; }
   .ti-identity__id { font-size: 26px; line-height: 30px; }
-  .ti-crow { grid-template-columns: 110px minmax(0, 1fr); }
-  .ti-crow__meta { display: none; }
 }
 
 /* --- Print ------------------------------------------------------------- */
@@ -1730,6 +1757,48 @@
   .ti-header, .ti-foot, .ti-seg, .ti-density { display: none; }
   .ti-panel { box-shadow: none; border-color: #999; }
   .ti-band { background: none; box-shadow: none; }
+
+  /* A retrieved table is the evidence a citation points at, and on screen it
+     lives in an overflow-x scroller — one of them is 3010px wide inside a
+     712px column. Paper has no scrollbar, so printing clipped it to the first
+     quarter and said nothing. Let the box grow and let the cells wrap: a
+     reflowed table is harder to read than a scrolled one and infinitely
+     better than a silently truncated one. */
+  .ti-retrieved__scroll { overflow: visible; background: none; }
+  .ti-table { font-size: 9px; }
+  .ti-table th,
+  .ti-table td { white-space: normal; word-break: break-word; padding: 2px 4px; }
+
+  /* The provenance gutter is the point of the draft, and it is drawn with
+     border-left — which browsers keep when they strip backgrounds. Stated
+     anyway so a future background-based treatment cannot silently vanish on
+     paper. */
+  .ti-para__body,
+  .ti-para__body--backed,
+  .ti-unsupported,
+  .ti-cite,
+  .ti-dot,
+  .ti-state { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+
+  /* The AI-generated notice travels with the document. It is the one thing on
+     this page that must never be optional, on screen or on paper. */
+  .ti-notice { display: block !important; border: 1px solid #999; }
+
+  /* Do not split a section from its heading, or a row across two sheets. */
+  .ti-section-head { break-after: avoid; page-break-after: avoid; }
+  .ti-retrieved,
+  .ti-para,
+  .ti-brow,
+  .ti-table tr { break-inside: avoid; page-break-inside: avoid; }
+
+  /* The outline is a navigation aid for a scrolling window; on paper the
+     document's own headings do that job. */
+  .ti-outline { display: none; }
+  .ti-docgrid { display: block; }
+
+  /* A citation marker is a link on screen and a number on paper. Print the
+     resolved source next to it so a printed draft is still traceable. */
+  .ti-retrieved__head { font-size: 8px; }
 }
 
 
@@ -1768,6 +1837,27 @@
   vertical-align: -0.125em;
 }
 .ti-state .ti-icon { width: 11px; height: 11px; }
+/* The one animation in the app, and the only one that carries information.
+   ------------------------------------------------------------------------
+   The spinner glyph is a three-quarter arc and it was completely static, so a
+   run in progress showed something shaped exactly like a loading indicator,
+   not moving. That does not read as calm — it reads as hung, which is the one
+   impression the per-section progress list exists to prevent.
+
+   Motion in this app is otherwise deliberately near-static, so this is scoped
+   as tightly as it can be: only the spinner glyph, only inside a busy status
+   chip, one slow rotation, and gone entirely for anyone who asks for reduced
+   motion. Wrapped in no-preference rather than relying on the reduce block,
+   because the reduce block narrows `transition-property` and would not have
+   stopped a keyframe animation. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes ti-spin { to { transform: rotate(360deg); } }
+  .ti-state--busy .ti-icon {
+    animation: ti-spin 1.4s linear infinite;
+    transform-origin: 50% 50%;
+  }
+}
+
 .ti-lrow__arrow .ti-icon,
 .ti-rrow__arrow .ti-icon { width: 14px; height: 14px; }
 
@@ -1778,9 +1868,16 @@
    are realised. Applied to list rows only — not to the draft, where
    find-in-page across the whole report matters more than the paint saving. */
 
+/* The placeholder has to match the row, or it causes the jump it prevents.
+   It was a hard-coded 44px against rows that measure 65px compact and 73px
+   comfortable — 32-40% short, which over the 200 rows this route can return is
+   four to six thousand pixels of scrollbar drift as they realise. `auto` means
+   the browser reuses the real size once a row has been laid out, so this value
+   only governs the first pass; on a 200-row first load that is the whole point.
+   Now driven by the density token, next to the padding that determines it. */
 .ti-lrow {
   content-visibility: auto;
-  contain-intrinsic-size: auto 44px;
+  contain-intrinsic-size: auto var(--ti-lrow-h);
 }
 
 /* --- Engine disclosure -------------------------------------------------
@@ -2016,7 +2113,7 @@
   font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--ti-dim);
+  color: var(--ti-mut);
 }
 .ti-outline__list { list-style: none; margin: 0; padding: 0; }
 .ti-outline__item--l3 { padding-left: var(--ti-12); }
@@ -2066,7 +2163,7 @@
   font-family: var(--ti-mono);
   font-size: 10px;
   letter-spacing: 0.04em;
-  color: var(--ti-dim);
+  color: var(--ti-mut);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

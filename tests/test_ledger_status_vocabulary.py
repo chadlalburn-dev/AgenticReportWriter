@@ -204,12 +204,19 @@ def test_the_resolved_dot_uses_the_systems_own_ok_colour(client: TestClient):
         assert found, f"{selector} sets no {prop}"
         return found.group(1).strip()
 
-    assert value(".ti-dot--on", "background") == value(".ti-state--ok", "color"), (
-        "the resolved dot and the ok chip disagree about what ok looks like"
-    )
-    assert "accent" not in value(".ti-dot--on", "background"), (
-        "the resolved state must not wear the accent"
-    )
+    dot = value(".ti-dot--on", "background")
+    text = value(".ti-state--ok", "color")
+    # Deliberately NOT the same token. A dot is a non-text indicator and needs
+    # 3:1 (WCAG 1.4.11); 10px status text needs 4.5:1, and the dot green is 3.80
+    # on the page background. So they are two greens from one family: --ti-ok
+    # and --ti-ok-dark. tests/test_contrast.py owns the ratios.
+    assert dot == "var(--ti-ok)", dot
+    assert text == "var(--ti-ok-dark)", text
+    for used in (dot, text):
+        assert "accent" not in used, (
+            "the resolved state must not wear the accent — that is the failure "
+            "colour, and reading it as one is the bug this file exists for"
+        )
 
 
 def test_absence_is_shown_as_absence_not_as_alarm(client: TestClient):

@@ -89,9 +89,17 @@
    per line. Same correction as .ti-para__body. */
 .ti .rg-body    { font-size: 14px; line-height: 21px; color: var(--ti-ink); max-width: var(--ti-measure); }
 .ti .rg-body-sm { font-size: 13px; line-height: 20px; color: var(--ti-sec); max-width: var(--ti-measure); }
-.ti .rg-caption { font-size: 11px; line-height: 16px; color: var(--ti-dim);
+/* --ti-mut, not --ti-dim: captions appear on the page background as well as
+   inside panels, and --ti-dim is only legal on a panel (4.29 on the field).
+   --ti-mut is 5.57 there. */
+.ti .rg-caption { font-size: 11px; line-height: 16px; color: var(--ti-mut);
                   max-width: var(--ti-measure); }
-.ti .rg-subtle  { color: var(--ti-dim); }
+/* --ti-mut. This is a utility applied both inside panels and on the page
+   background, and --ti-dim is legal only on a panel (4.29 on the field, against
+   the 4.5 that text needs). --ti-mut is the system's tertiary colour and is
+   documented safe on both surfaces at 5.57/6.65, which is what a class that
+   can land anywhere requires. */
+.ti .rg-subtle  { color: var(--ti-mut); }
 .ti .rg-mono    { font-family: var(--ti-mono); font-size: 11px; }
 .ti .rg-link    { color: var(--ti-mut); }
 
@@ -273,12 +281,15 @@
 
 /* --- Breadcrumb ------------------------------------------------------- */
 
+/* The breadcrumb sits directly on the page background, above any panel, so it
+   takes the field-safe grey. --ti-dim measured 4.29 here against the 4.5 that
+   10px text needs. */
 .ti .rg-crumb {
   display: flex; flex-wrap: wrap; gap: var(--ti-6); align-items: center;
   margin: 0; padding: 0; list-style: none;
   font-family: var(--ti-mono);
   font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
-  color: var(--ti-dim);
+  color: var(--ti-mut);
 }
 .ti .rg-crumb__item + .rg-crumb__item::before { content: '/'; padding-right: var(--ti-6); color: var(--ti-tick-ring); }
 
