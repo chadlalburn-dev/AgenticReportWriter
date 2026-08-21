@@ -1,0 +1,94 @@
+{% extends "titanium_base.html" %}
+{#- ---------------------------------------------------------------------- -#}
+{#- Compounds list — the front door.                                        -#}
+{#-                                                                        -#}
+{#- A list of compounds, scoped My / All. "All" is every compound anyone    -#}
+{#- has run a report against, which is the point of the split: evidence     -#}
+{#- work becomes discoverable across the team instead of each person        -#}
+{#- re-deriving what has already been evidenced.                           -#}
+{#-                                                                        -#}
+{#- The report-type gallery MUST NOT be the front door: it governed six     -#}
+{#- report cards with six controls and asked the user to pick a report type -#}
+{#- before the app knew which compound they cared about. It lives at        -#}
+{#- /templates as a secondary browse surface.                              -#}
+{#- ---------------------------------------------------------------------- -#}
+
+{% block page_title %}Compounds — Report Generator{% endblock %}
+
+{% block content %}
+<div class="ti-home">
+
+  <form action="/" method="get" role="search">
+    <label class="ti-home__search" for="ti-home-q">
+      <span class="ti-search__glyph" aria-hidden="true">&#8981;</span>
+      <span class="ti-sr">Search compound, target or run</span>
+      <input class="ti-search__input" id="ti-home-q" name="q" type="search"
+             value="{{ q|default('') }}" autocomplete="off" spellcheck="false"
+             placeholder="Compound ID, target name or run reference" autofocus>
+    </label>
+  </form>
+
+  {%- if no_match %}
+  <p class="ti-footnote" style="margin-top:var(--ti-16)">
+    Nothing matches <span class="ti-code">{{ q }}</span>.
+    {%- if compounds %} Pick a compound below, or check the identifier.{% endif %}
+  </p>
+  {%- endif %}
+
+  <div class="ti-sec-head" style="margin-top:var(--ti-32)">
+    <h2 class="ti-h2" id="ti-compounds-head">
+      {{ 'My compounds' if scope == 'mine' else 'All compounds' }}
+    </h2>
+    {#- Same segmented control the compound page uses for binding filters —
+        reusing the established component, not inventing a second one.
+        Real links, so scoping works with scripting off. -#}
+    <div class="ti-seg" role="group" aria-labelledby="ti-compounds-head">
+      <a class="ti-seg__btn" href="/?scope=mine"
+         {% if scope == 'mine' %}aria-current="true"{% endif %}>mine {{ counts.mine }}</a>
+      <a class="ti-seg__btn" href="/?scope=all"
+         {% if scope == 'all' %}aria-current="true"{% endif %}>all {{ counts.all }}</a>
+    </div>
+  </div>
+
+  {%- if compounds %}
+  <div>
+    {%- for c in compounds %}
+    <a class="ti-crow" href="{{ c.url }}">
+      <span class="ti-crow__id">{{ c.compound_id }}</span>
+      <span class="ti-crow__name">{{ c.name }}</span>
+      <span class="ti-crow__owner">{{ c.owners_text }}</span>
+      <span class="ti-crow__meta">{{ c.meta_text }}</span>
+    </a>
+    {%- endfor %}
+  </div>
+  {%- elif scope == 'mine' %}
+  {#- Designed zero-state: "mine" is empty but the team's work is not. -#}
+  <div class="ti-panel">
+    <div class="ti-empty">
+      <p class="ti-empty__title">You have not run a report yet</p>
+      <p class="ti-empty__body">
+        Runs you start are attributed to
+        <span class="ti-code">{{ user.display_name }}</span> and appear here.
+        {%- if counts.all %}
+        Meanwhile <a href="/?scope=all">{{ counts.all }} compound{{ '' if counts.all == 1 else 's' }}</a>
+        across the team already {{ 'has' if counts.all == 1 else 'have' }} evidence behind
+        {{ 'it' if counts.all == 1 else 'them' }}.
+        {%- endif %}
+      </p>
+    </div>
+  </div>
+  {%- else %}
+  <div class="ti-panel">
+    <div class="ti-empty">
+      <p class="ti-empty__title">No compounds yet</p>
+      <p class="ti-empty__body">
+        A compound appears here once a report has been run against it, or when
+        the sample corpus is present. Start from the
+        <a href="/templates">template library</a> to make the first run.
+      </p>
+    </div>
+  </div>
+  {%- endif %}
+
+</div>
+{% endblock %}

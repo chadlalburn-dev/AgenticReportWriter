@@ -841,7 +841,7 @@ def test_create_writes_a_file_the_loader_reads_back_and_shows_it_in_the_gallery(
     assert template.tags == {"domain": ["pre_clinical"], "compliance": ["non_gxp"]}
     assert [s.title for s in template.all_sections()] == ["Overview", "Method"]
 
-    assert "probe_template" in card_keys_in_order(client.get("/").text)
+    assert "probe_template" in card_keys_in_order(client.get("/templates").text)
 
 
 def test_a_duplicate_key_is_refused_and_the_original_is_untouched(
@@ -1007,7 +1007,7 @@ def test_delete_removes_it_from_disk_and_from_the_gallery(client: TestClient, st
     assert response.status_code == 303
     assert response.headers["location"] == "/?deleted=probe_template"
     assert not path.exists()
-    assert "probe_template" not in card_keys_in_order(client.get("/").text)
+    assert "probe_template" not in card_keys_in_order(client.get("/templates").text)
     assert client.get("/templates/probe_template/edit").status_code == 404
 
 
@@ -1025,7 +1025,7 @@ def test_delete_is_recoverable_because_the_file_is_moved_not_erased(
     response = client.post("/templates/probe_template/undelete", follow_redirects=False)
     assert response.status_code == 303
     assert (store.templates_dir / "probe_template.md").read_text(encoding="utf-8") == before
-    assert "probe_template" in card_keys_in_order(client.get("/").text)
+    assert "probe_template" in card_keys_in_order(client.get("/templates").text)
 
 
 def test_a_submitted_section_pointing_at_a_missing_source_is_refused_not_trimmed(
@@ -1197,12 +1197,12 @@ def test_the_gallery_page_renders_the_group_headings(populated) -> None:
     Checked across two facets because the labels live on two: the broad bucket
     is on `domain`, the scientific sub-areas are on `discipline`.
     """
-    headings = group_headings(populated.get("/?group=domain").text)
+    headings = group_headings(populated.get("/templates?group=domain").text)
     assert "Discovery" in headings
     assert "Pre-Clinical" in headings
     assert "Clinical" in headings
 
-    headings = group_headings(populated.get("/?group=discipline").text)
+    headings = group_headings(populated.get("/templates?group=discipline").text)
     assert "DMPK / ADME" in headings
     assert "Nonclinical Safety" in headings
 
@@ -1230,7 +1230,7 @@ def test_sort_by_recently_updated_puts_the_newest_first(client: TestClient, stor
 
 
 def test_sort_survives_the_round_trip_through_the_rendered_page(populated) -> None:
-    page = populated.get("/?group=none&sort=sections").text
+    page = populated.get("/templates?group=none&sort=sections").text
     assert card_keys_in_order(page)[:1] == ["delta_dmpk"]
 
 
@@ -1286,7 +1286,7 @@ def test_the_free_text_search_narrows_too(populated) -> None:
 
 
 def test_no_match_shows_the_empty_state_not_a_blank_page(populated) -> None:
-    response = populated.get("/?tag=domain:pre_clinical&tag=compliance:gxp")
+    response = populated.get("/templates?tag=domain:pre_clinical&tag=compliance:gxp")
 
     assert response.status_code == 200
     body = strip_tags(response.text)
@@ -1296,7 +1296,7 @@ def test_no_match_shows_the_empty_state_not_a_blank_page(populated) -> None:
 
 
 def test_a_stale_bookmark_widens_instead_of_erroring(populated) -> None:
-    response = populated.get("/?tag=domain:no_such_value&tag=no_such_facet:x&group=nonsense")
+    response = populated.get("/templates?tag=domain:no_such_value&tag=no_such_facet:x&group=nonsense")
     assert response.status_code == 200
     assert len(card_keys_in_order(response.text)) == 4
 
@@ -1309,7 +1309,7 @@ def test_a_stale_bookmark_widens_instead_of_erroring(populated) -> None:
 
 def test_the_query_parameters_round_trip_into_the_rendered_controls(populated) -> None:
     page = populated.get(
-        "/?group=compliance&sort=sections&tag=domain:clinical&q=Alpha"
+        "/templates?group=compliance&sort=sections&tag=domain:clinical&q=Alpha"
     ).text
 
     group_select = re.search(r'name="group".*?</select>', page, re.S).group(0)
@@ -1382,7 +1382,7 @@ def test_a_template_with_no_tags_still_renders_in_the_gallery(
     # A tagged neighbour, so "untagged sorts last" has something to sort after.
     create(client, "tagged_probe", **{"tags__domain": "pre_clinical"})
 
-    response = client.get("/?group=domain")
+    response = client.get("/templates?group=domain")
     assert response.status_code == 200
     assert "untagged_probe" in card_keys_in_order(response.text)
 

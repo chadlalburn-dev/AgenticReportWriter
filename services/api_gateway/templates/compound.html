@@ -1,0 +1,229 @@
+{% extends "titanium_base.html" %}
+{#- ---------------------------------------------------------------------- -#}
+{#- Compound page — the centre of the product.                              -#}
+{#-                                                                        -#}
+{#- One job: tell the user what this compound can currently evidence, and   -#}
+{#- let them start the report that best fits.                              -#}
+{#-                                                                        -#}
+{#- Report type is a parameter of the compound, not a peer of it.          -#}
+{#- ---------------------------------------------------------------------- -#}
+
+{% block page_title %}{{ view.compound_id }} — Report Generator{% endblock %}
+
+{% block band %}
+<div class="ti-band">
+  {#- Identity, subtitle and metadata share ONE BASELINE rather than
+      stacking — that is most of the vertical saving vs. the original. -#}
+  <div class="ti-identity">
+    <h1 class="ti-identity__id">{{ view.compound_id }}</h1>
+    {%- if view.subtitle %}
+    {#- Short form on the baseline; full chemical class on hover. -#}
+    <p class="ti-identity__sub"
+       {% if view.subtitle_full and view.subtitle_full != view.subtitle %}title="{{ view.subtitle_full }}"{% endif %}>{{ view.subtitle }}</p>
+    {%- endif %}
+    {%- if view.meta_items %}
+    <div class="ti-identity__meta">
+      {%- for item in view.meta_items %}<span>{{ item }}</span>{% endfor %}
+    </div>
+    {%- endif %}
+  </div>
+
+  {#- Coverage and the action a user would take about it are deliberately
+      adjacent. -#}
+  <div class="ti-band__right">
+    <div class="ti-coverage">
+      <span class="ti-coverage__count">{{ view.bindings_ready }}</span>
+      <span class="ti-coverage__label">{{ view.coverage_label }}</span>
+    </div>
+
+    {#- One tick per binding, in binding order. Decorative reinforcement of
+        the count beside it, which is why aria-hidden. -#}
+    <div class="ti-ticks" aria-hidden="true">
+      {%- for b in view.bindings %}
+      <span class="ti-tick {{ 'ti-tick--on' if b.resolved else 'ti-tick--off' }}"></span>
+      {%- endfor %}
+    </div>
+
+    {%- if view.primary_report %}
+    <a class="ti-btn-primary" href="{{ view.primary_report.url }}">
+      Draft {{ view.primary_report.name }}
+    </a>
+    {%- endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="ti-main">
+
+  {# ---------------- Left: evidence bindings ---------------- #}
+  <section class="ti-col">
+    <div class="ti-sec-head">
+      <h2 class="ti-h2" id="ti-bindings-head">Evidence bindings</h2>
+      {#- Real links, not buttons: the filter works with scripting off. -#}
+      <div class="ti-seg" role="group" aria-labelledby="ti-bindings-head">
+        <a class="ti-seg__btn" href="?filter=all"
+           {% if binding_filter == 'all' %}aria-current="true"{% endif %}>all {{ view.bindings_total }}</a>
+        <a class="ti-seg__btn" href="?filter=ready"
+           {% if binding_filter == 'ready' %}aria-current="true"{% endif %}>ready {{ view.bindings_ready }}</a>
+        <a class="ti-seg__btn" href="?filter=gaps"
+           {% if binding_filter == 'gaps' %}aria-current="true"{% endif %}>gaps {{ view.gaps_count }}</a>
+      </div>
+    </div>
+
+    <div class="ti-panel">
+      <div class="ti-thead" role="row">
+        <span></span>
+        <span role="columnheader">binding &middot; resolves to</span>
+        <span role="columnheader">returns</span>
+        <span role="columnheader">used by</span>
+      </div>
+
+      {%- if visible_bindings %}
+        {%- for b in visible_bindings %}
+        <div class="ti-brow" role="row">
+          <span class="ti-dot {{ 'ti-dot--on' if b.resolved else 'ti-dot--off' }}"
+                aria-hidden="true"></span>
+          <div style="min-width:0">
+            <p class="ti-brow__name">{{ b.binding_id }}</p>
+            <p class="ti-brow__detail {{ 'ti-brow__detail--on' if b.resolved else 'ti-brow__detail--off' }}"
+               title="{{ b.resolve_target }}">{{ b.resolve_target }}</p>
+          </div>
+          {#- Unresolved reads at FULL strength — accent-dark at weight 500,
+              never faded. The gaps are what the user opens this page to
+              find. -#}
+          <span class="ti-brow__returns {{ 'ti-brow__returns--on' if b.resolved else 'ti-brow__returns--off' }}">
+            {{ b.returns_text }}<span class="ti-sr">{{ ' — resolves' if b.resolved else ' — does not resolve' }}</span>
+          </span>
+          <span class="ti-brow__used">{{ b.used_by_text }}</span>
+        </div>
+        {%- endfor %}
+      {%- else %}
+        <div class="ti-empty">
+          <p class="ti-empty__title">Nothing in this view</p>
+          <p class="ti-empty__body">
+            {%- if binding_filter == 'gaps' %}
+            Every binding this compound touches resolves. Nothing to fix.
+            {%- elif binding_filter == 'ready' %}
+            No binding resolves yet. Register the queries listed under
+            <a href="?filter=gaps">gaps</a> to start closing this out.
+            {%- else %}
+            No report template declares a data binding, so there is nothing to
+            resolve. Add a source to a template to see it here.
+            {%- endif %}
+          </p>
+        </div>
+      {%- endif %}
+    </div>
+
+    {#- THE single place a missing-source warning appears. The original UI
+        stated the same warnings three times in three components (a per-source
+        amber block, a "what will be missing" table, and an amber summary
+        panel). Do not reintroduce duplicates. -#}
+    {%- if view.missing_query_count %}
+    <p class="ti-footnote">
+      {{ view.missing_query_count }}
+      {{ 'query is' if view.missing_query_count == 1 else 'queries are' }}
+      absent from the registry. Add a YAML file for each under
+      <span class="ti-code">{{ queries_dir }}</span> and
+      {{ 'it resolves' if view.missing_query_count == 1 else 'they resolve' }}
+      on the next run. Missing bindings never block a run — they become stated
+      gaps in the draft.
+    </p>
+    {%- elif view.gaps_count %}
+    <p class="ti-footnote">
+      {{ view.gaps_count }}
+      {{ 'binding does' if view.gaps_count == 1 else 'bindings do' }}
+      not resolve. Missing bindings never block a run — they become stated gaps
+      in the draft.
+    </p>
+    {%- endif %}
+  </section>
+
+  {# ---------------- Right column ---------------- #}
+  <div class="ti-col ti-col--right">
+
+    {# --- Draft a report: ranked by coverage, lead row takes accent --- #}
+    <section>
+      <h2 class="ti-h2" style="margin-bottom:var(--ti-8)">Draft a report</h2>
+      <div class="ti-panel">
+        {%- if view.reports %}
+          {%- for r in view.reports %}
+          <a class="ti-rrow {{ 'ti-rrow--lead' if r.lead else '' }}" href="{{ r.url }}">
+            <div style="min-width:0">
+              <p class="ti-rrow__name">{{ r.name }}</p>
+              <p class="ti-rrow__kicker">{{ r.kicker }}</p>
+            </div>
+            <div class="ti-rrow__meter">
+              <span class="ti-rrow__ratio">{{ r.ratio_text }}</span>
+              <span class="ti-sr">sources ready</span>
+              <div class="ti-track" aria-hidden="true">
+                {%- for on in r.tick_flags %}
+                <span class="ti-track__seg {{ 'ti-track__seg--on' if on else '' }}"></span>
+                {%- endfor %}
+              </div>
+            </div>
+            <span class="ti-rrow__arrow" aria-hidden="true">&rarr;</span>
+          </a>
+          {%- endfor %}
+        {%- else %}
+          <div class="ti-empty">
+            <p class="ti-empty__title">No runnable report templates</p>
+            <p class="ti-empty__body">
+              Add a template under <span class="ti-code">report-templates/</span>
+              or <a href="/templates">browse the template library</a>.
+            </p>
+          </div>
+        {%- endif %}
+      </div>
+    </section>
+
+    {# --- Recent runs --- #}
+    <section>
+      <div class="ti-sec-head">
+        <h2 class="ti-h2">Recent runs</h2>
+        {%- if view.run_count %}
+        <a class="ti-sec-head__link" href="/runs">all {{ view.run_count }}</a>
+        {%- endif %}
+      </div>
+      <div class="ti-panel">
+        {%- if view.runs %}
+          {%- for run in view.runs %}
+          <a class="ti-qrow" href="{{ run.url }}">
+            <span class="ti-qrow__name">{{ run.report_name }}</span>
+            <span class="ti-qrow__evidenced">{{ run.evidenced_text }}</span>
+            <span class="ti-qrow__when">{{ run.when_text }}</span>
+          </a>
+          {%- endfor %}
+        {%- else %}
+          <div class="ti-empty">
+            <p class="ti-empty__title">No runs yet for {{ view.compound_id }}</p>
+            <p class="ti-empty__body">
+              {%- if view.primary_report %}
+              Start with
+              <a href="{{ view.primary_report.url }}">{{ view.primary_report.name }}</a>
+              — it has the most evidence behind it right now.
+              {%- else %}
+              Add a report template to get started.
+              {%- endif %}
+            </p>
+          </div>
+        {%- endif %}
+      </div>
+    </section>
+
+    {# --- Related --- #}
+    {%- if view.related %}
+    <section>
+      <h2 class="ti-h2" style="margin-bottom:var(--ti-8)">Related</h2>
+      <div class="ti-chips">
+        {%- for chip in view.related %}
+        <a class="ti-chip" href="{{ chip.url }}">{{ chip.label }}</a>
+        {%- endfor %}
+      </div>
+    </section>
+    {%- endif %}
+
+  </div>
+</div>
+{% endblock %}

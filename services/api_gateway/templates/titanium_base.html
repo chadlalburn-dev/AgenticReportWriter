@@ -1,0 +1,148 @@
+{#- ---------------------------------------------------------------------- -#}
+{#- Titanium shell — the compound-first surface.                            -#}
+{#-                                                                        -#}
+{#- Deliberately separate from base.html: this is a different visual        -#}
+{#- language (see static/titanium.css header) and GSK brand compliance is   -#}
+{#- explicitly not required here. base.html + gsk.css still govern the      -#}
+{#- legacy gallery / run / editor pages, so both can coexist during the     -#}
+{#- migration.                                                             -#}
+{#-                                                                        -#}
+{#- No off-origin <link> or <script>. Fonts are self-hosted woff2 because   -#}
+{#- this app runs locally against local data and must work with no network. -#}
+{#- ---------------------------------------------------------------------- -#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="referrer" content="no-referrer">
+<title>{% block page_title %}Report Generator{% endblock %}</title>
+<link rel="preload" href="/static/fonts/chivo-latin-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/chivo-mono-latin-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/titanium.css">
+<link rel="icon" href="data:,">
+{#- Density is a real user preference (persisted). Applied before first paint
+    so the page never flashes at the wrong row height. -#}
+<script>
+  (function () {
+    try {
+      var d = localStorage.getItem('ti-density');
+      if (d === 'comfortable' || d === 'compact') {
+        document.documentElement.setAttribute('data-density', d);
+      }
+    } catch (e) { /* private mode — compact default is fine */ }
+  })();
+</script>
+<noscript><style>[data-js-only]{display:none !important}</style></noscript>
+</head>
+<body class="ti">
+<a class="ti-skip" href="#ti-main">Skip to content</a>
+
+<header class="ti-header">
+  <a class="ti-brand" href="/">
+    <span class="ti-brand__mark" aria-hidden="true"></span>
+    <span class="ti-brand__word">Report&nbsp;Gen</span>
+  </a>
+
+  {#- Search is present on every screen: compound switching never requires
+      going home. `/` focuses it — the <kbd> advertises that. -#}
+  <form class="ti-search-form" action="/" method="get" role="search"
+        style="display:contents">
+    <label class="ti-search" for="ti-q">
+      <span class="ti-search__glyph" aria-hidden="true">&#8981;</span>
+      <span class="ti-sr">Jump to compound, target or run</span>
+      <input class="ti-search__input" id="ti-q" name="q" type="search"
+             value="{{ q|default('') }}" autocomplete="off" spellcheck="false"
+             placeholder="Jump to compound, target or run">
+      <kbd class="ti-search__kbd" aria-hidden="true">/</kbd>
+    </label>
+  </form>
+
+  <nav class="ti-nav" aria-label="Primary">
+    <a class="ti-nav__link" href="/"
+       {% if nav_active|default('') == 'compounds' %}aria-current="page"{% endif %}>Compounds</a>
+    <a class="ti-nav__link" href="/runs"
+       {% if nav_active|default('') == 'runs' %}aria-current="page"{% endif %}>Runs</a>
+    <a class="ti-nav__link" href="/templates"
+       {% if nav_active|default('') == 'templates' %}aria-current="page"{% endif %}>Templates</a>
+  </nav>
+
+  <div class="ti-status">
+    <span>local data</span>
+    <span class="ti-status__dot" aria-hidden="true"></span>
+    <span class="ti-sr">connected</span>
+    {%- if user is defined and user.is_known %}
+    {#- Attribution, not authentication: this states who runs will be
+        credited to. There is no login because there is no secret to check —
+        identity comes from the platform (IAP/SSO) in a real deployment and
+        from the OS user locally. See services/api_gateway/identity.py. -#}
+    <span class="ti-user" title="Runs you start are attributed to {{ user.user_id }} (identity source: {{ user.source }})">
+      <span class="ti-user__badge" aria-hidden="true">{{ user.initials }}</span>
+      <span class="ti-user__name">{{ user.display_name }}</span>
+    </span>
+    {%- endif %}
+  </div>
+</header>
+
+{% block band %}{% endblock %}
+
+<main id="ti-main" tabindex="-1">
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="ti-foot">
+  <span>Report Generator &middot; v{{ app_version|default('0.2.0') }}</span>
+  <span>discovery research &middot; non-GxP</span>
+  <span>drafts are for human review</span>
+  <span class="ti-density" data-js-only>
+    <button class="ti-seg__btn" type="button" data-density-set="compact">compact</button>
+    <button class="ti-seg__btn" type="button" data-density-set="comfortable">comfortable</button>
+  </span>
+</footer>
+
+<script>
+/* Titanium shell behaviour. Progressive enhancement only — every flow on this
+   surface works with scripting off (search is a real GET form, filters are real
+   links, report rows are real links). */
+(function () {
+  'use strict';
+
+  /* `/` focuses search, as the <kbd> advertises. Ignored while typing. */
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+    var t = e.target;
+    var tag = t && t.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+        (t && t.isContentEditable)) return;
+    var box = document.getElementById('ti-q');
+    if (!box) return;
+    e.preventDefault();
+    box.focus();
+    box.select();
+  });
+
+  /* Density preference, persisted per user. */
+  var root = document.documentElement;
+  function paintDensity() {
+    var cur = root.getAttribute('data-density') || 'compact';
+    var btns = document.querySelectorAll('[data-density-set]');
+    for (var i = 0; i < btns.length; i++) {
+      var on = btns[i].getAttribute('data-density-set') === cur;
+      btns[i].setAttribute('aria-current', on ? 'true' : 'false');
+    }
+  }
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('[data-density-set]');
+    if (!btn) return;
+    var next = btn.getAttribute('data-density-set');
+    root.setAttribute('data-density', next);
+    try { localStorage.setItem('ti-density', next); } catch (err) {}
+    paintDensity();
+  });
+  paintDensity();
+})();
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

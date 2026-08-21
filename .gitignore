@@ -113,3 +113,7 @@ chroma/
 *.tfvars
 !*.tfvars.example
 .terraform.lock.hcl
+
+# Design-export working artifacts (not app code)
+design-export/
+design-export.zip

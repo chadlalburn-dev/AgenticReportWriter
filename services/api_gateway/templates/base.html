@@ -352,8 +352,11 @@
     <div class="rg-container rg-row rg-row--between">
       <a class="rg-topbar__brand" href="/">Report Generator Agent</a>
       <nav class="rg-topbar__nav" aria-label="Primary">
-        <a class="rg-topbar__link" href="/"{% if nav_active|default('') == 'gallery' %} aria-current="page"{% endif %}>Report types</a>
+        {#- Compounds is the front door now; the report-type gallery moved to
+            /templates as a secondary browse surface. -#}
+        <a class="rg-topbar__link" href="/"{% if nav_active|default('') == 'compounds' %} aria-current="page"{% endif %}>Compounds</a>
         <a class="rg-topbar__link" href="/runs"{% if nav_active|default('') == 'runs' %} aria-current="page"{% endif %}>Runs</a>
+        <a class="rg-topbar__link" href="/templates"{% if nav_active|default('') == 'gallery' %} aria-current="page"{% endif %}>Report types</a>
       </nav>
     </div>
   </header>

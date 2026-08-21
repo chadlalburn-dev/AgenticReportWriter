@@ -1,0 +1,999 @@
+/* ============================================================================
+   Titanium — compound-first UI for the Report Generator Agent
+   ----------------------------------------------------------------------------
+   Implements design_handoff_compound_page (see docs/design/). This is a
+   DELIBERATE departure from gsk.css: GSK brand compliance is explicitly not
+   required for this surface, and the palette/typefaces below are specified by
+   the handoff. gsk.css still governs the legacy gallery/run/editor pages.
+
+   Accessibility rules from the handoff are load-bearing, not advisory. Each was
+   found by measurement after being wrong in an earlier revision:
+
+     1. --ti-dim (#5D666C) is the LIGHTEST value allowed to carry text or a
+        state-bearing indicator. --ti-line / --ti-rule are hairlines only
+        (1.45:1 on panel) and must never carry text. DO NOT ADD A FOURTH GREY.
+     2. Accent as text is safe on --ti-panel only, and only just (4.55:1, no
+        margin). On --ti-field it measures 3.81:1 and FAILS. Accent-coloured
+        text on the field must use --ti-accent-dark (#8F2A11) instead. Links are
+        --ti-mut, not accent: --ti-mut passes on both surfaces (5.57 field /
+        6.65 panel) and cannot be broken by changing the accent.
+     3. Unresolved bindings read at FULL strength. They are distinguished by
+        treatment (hollow dot, "not reg." in accent-dark at weight 500), never
+        by fading. The gaps are what the user opens this page to find.
+     4. Non-text state indicators need 3:1 (WCAG 1.4.11). The hollow dot uses a
+        2px --ti-dim border. Sub-pixel borders floor at DPR 1 — a 1.5px border
+        computes to 1px — so specify 2px where the weight matters.
+     5. Verify contrast against the RESOLVED ANCESTOR background, not the
+        nearest element with a background declared.
+   ========================================================================= */
+
+/* --- Self-hosted fonts -----------------------------------------------------
+   Chivo and Chivo Mono are both variable fonts; one latin-subset file per
+   family covers 300-600. Self-hosted rather than CDN-linked because this app
+   runs locally against local data and must work with no network.            */
+
+@font-face {
+  font-family: 'Chivo';
+  src: url('/static/fonts/chivo-latin-var.woff2') format('woff2-variations'),
+       url('/static/fonts/chivo-latin-var.woff2') format('woff2');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Chivo Mono';
+  src: url('/static/fonts/chivo-mono-latin-var.woff2') format('woff2-variations'),
+       url('/static/fonts/chivo-mono-latin-var.woff2') format('woff2');
+  font-weight: 400 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* --- Tokens --------------------------------------------------------------- */
+
+:root {
+  /* Colour */
+  --ti-field:        #D9DDE0;  /* page background                            */
+  --ti-panel:        #EDF0F1;  /* raised panel surface                       */
+  --ti-panel-hover:  #F6F8F8;  /* row hover                                  */
+  --ti-head-from:    #F3F5F6;
+  --ti-head-to:      #E9ECEE;
+  --ti-band-from:    #E7EBEC;
+  --ti-band-to:      #DFE3E6;
+  --ti-thead-from:   #E9ECEE;
+  --ti-thead-to:     #E1E5E7;
+
+  --ti-ink:          #191C1E;  /* primary text   13.6:1 on panel             */
+  --ti-sec:          #3A4247;  /* secondary      8.94:1 on panel             */
+  --ti-mut:          #4C555B;  /* tertiary/links 6.65 panel / 5.57 field     */
+  --ti-dim:          #5D666C;  /* lightest legal 5.12:1 on panel             */
+
+  --ti-line:         #C9CFD3;  /* panel border — hairline only, never text   */
+  --ti-line-ctl:     #C4CACE;  /* control border                             */
+  --ti-rule:         #E3E7E9;  /* row divider  — hairline only, never text   */
+  --ti-tick-empty:   #CDD3D7;
+  --ti-tick-ring:    #A9B0B5;
+
+  --ti-accent:       #C43D1C;  /* 4.55:1 on panel ONLY. Never text on field. */
+  --ti-accent-from:  #D24C29;
+  --ti-accent-to:    #B83718;
+  --ti-accent-dark:  #8F2A11;  /* 7.31 panel / 6.13 field — safe everywhere  */
+  --ti-ok:           #3F7A34;  /* connected status dot                       */
+
+  /* Space — base unit 2px, working scale below. Every spacing value in the
+     build comes from this scale. */
+  --ti-2: 2px;   --ti-4: 4px;   --ti-6: 6px;   --ti-8: 8px;
+  --ti-10: 10px; --ti-12: 12px; --ti-14: 14px; --ti-16: 16px;
+  --ti-18: 18px; --ti-20: 20px; --ti-32: 32px;
+
+  /* Radius — pills are half of element height, computed not guessed */
+  --ti-r-focus: 4px;
+  --ti-r-kbd:   5px;
+  --ti-r-panel: 12px;
+
+  /* Shadow — a tight 1-2px contact shadow plus a wide soft spread, with a
+     white inset top edge so panels read as raised metal, not outlined boxes */
+  --ti-sh-panel:
+    0 1px 2px rgba(25, 28, 30, 0.06),
+    0 6px 18px -8px rgba(25, 28, 30, 0.28),
+    inset 0 1px 0 #FFFFFF;
+  --ti-sh-header:
+    inset 0 1px 0 #FFFFFF,
+    0 1px 0 var(--ti-line-ctl),
+    0 4px 14px -6px rgba(25, 28, 30, 0.22);
+  --ti-sh-band:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 1px 0 var(--ti-line);
+  --ti-sh-ctl-raised:
+    0 1px 2px rgba(25, 28, 30, 0.14),
+    inset 0 0 0 1px var(--ti-line-ctl);
+  --ti-sh-ctl-inset:
+    inset 0 1px 2px rgba(25, 28, 30, 0.10);
+  --ti-sh-primary:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 2px 6px -1px rgba(150, 40, 15, 0.45);
+  --ti-sh-primary-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 4px 12px -2px rgba(150, 40, 15, 0.55);
+  --ti-sh-dot-halo:
+    0 0 0 3px rgba(196, 61, 28, 0.16),
+    0 1px 2px rgba(150, 40, 15, 0.40);
+  --ti-sh-chip:
+    0 1px 2px rgba(25, 28, 30, 0.10),
+    inset 0 1px 0 #FFFFFF;
+
+  /* Motion — one duration, one easing */
+  --ti-dur: 140ms;
+  --ti-ease: cubic-bezier(.2, .6, .2, 1);
+
+  /* Type */
+  --ti-sans: 'Chivo', system-ui, -apple-system, 'Segoe UI', Arial, sans-serif;
+  --ti-mono: 'Chivo Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+
+  /* Density — row padding. Default compact; [data-density] flips it. */
+  --ti-row-pad-y: 6px;
+  --ti-report-pad-y: 10px;
+  --ti-run-pad-y: 9px;
+}
+
+[data-density='comfortable'] {
+  --ti-row-pad-y: 10px;
+  --ti-report-pad-y: 14px;
+  --ti-run-pad-y: 13px;
+}
+
+/* --- Base ---------------------------------------------------------------- */
+
+.ti {
+  min-height: 100vh;
+  background: var(--ti-field);
+  color: var(--ti-ink);
+  font-family: var(--ti-sans);
+  font-size: 14px;
+  line-height: 20px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.ti *,
+.ti *::before,
+.ti *::after { box-sizing: border-box; }
+
+/* Links use --ti-mut, not the accent. See accessibility rule 2.
+   Wrapped in :where() so this rule carries ZERO specificity: any component
+   class below (.ti-btn-primary, .ti-chip, .ti-crow, .ti-brand) then wins
+   without needing !important or a specificity arms race. Written as a plain
+   `.ti a` this rule is (0,1,1) — element+class — which silently beat every
+   single-class component rule and painted the primary button's label
+   --ti-mut grey on the accent gradient. */
+:where(.ti) :where(a) {
+  color: var(--ti-mut);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+:where(.ti) :where(a:hover) { color: var(--ti-ink); }
+
+.ti ::selection { background: var(--ti-accent); color: #FFFFFF; }
+
+.ti :focus-visible,
+.ti-focus-host :focus-visible {
+  outline: 2px solid var(--ti-accent);
+  outline-offset: 2px;
+  border-radius: var(--ti-r-focus);
+}
+
+/* One transition rule. Properties per handoff; border-color uses ease-out. */
+.ti button,
+.ti a,
+.ti input,
+.ti label {
+  transition:
+    background var(--ti-dur) var(--ti-ease),
+    box-shadow var(--ti-dur) var(--ti-ease),
+    border-color var(--ti-dur) ease-out,
+    transform var(--ti-dur) var(--ti-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ti *, .ti *::before, .ti *::after { transition: none !important; }
+}
+
+.ti-skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  padding: var(--ti-8) var(--ti-14);
+  background: #FFFFFF;
+  color: var(--ti-ink);
+  font: 500 13px/20px var(--ti-sans);
+  box-shadow: var(--ti-sh-ctl-raised);
+  border-radius: 0 0 var(--ti-r-panel) 0;
+}
+.ti-skip:focus { left: 0; }
+
+.ti-sr {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- Header (56px, sticky) ---------------------------------------------- */
+/* CRITICAL SIZING RULE: the search track is minmax(0,440px) and the nav track
+   is max-content (nav also carries min-width:max-content; white-space:nowrap).
+   This makes grid size the nav to its content FIRST and lets search absorb any
+   shortfall. An earlier version used minmax(240px,440px) for search and
+   minmax(0,1fr) for nav; search greedily took its 440px maximum and the nav
+   overflowed its track and painted on top of the status indicator.
+   DO NOT REVERSE THIS PRIORITY. */
+
+.ti-header {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 440px) max-content max-content;
+  gap: var(--ti-20);
+  align-items: center;
+  height: 56px;
+  padding: 0 var(--ti-20);
+  background: linear-gradient(var(--ti-head-from), var(--ti-head-to));
+  box-shadow: var(--ti-sh-header);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+.ti-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--ti-10);
+  /* The handoff sets a >=26px floor on every interactive element. The brand
+     lockup's own content is 20px tall, so the link needs the floor
+     explicitly — measured at 20px before this. */
+  min-height: 26px;
+  text-decoration: none;
+  color: var(--ti-ink);
+}
+.ti-brand:hover { color: var(--ti-ink); }
+.ti-brand__mark {
+  display: block;
+  width: 10px; height: 10px;
+  background: var(--ti-accent);
+}
+.ti-brand__word {
+  font-family: var(--ti-mono);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* Search — a <label> wrapping the input so the whole pill is a hit target */
+.ti-search {
+  display: flex;
+  align-items: center;
+  gap: var(--ti-8);
+  height: 34px;
+  padding: 0 var(--ti-12);
+  background: #FFFFFF;
+  border: 1px solid var(--ti-line-ctl);
+  border-radius: 17px;              /* half of 34px height */
+  box-shadow: var(--ti-sh-ctl-inset);
+  min-width: 0;
+}
+.ti-search:hover { border-color: #8D969C; }
+.ti-search__glyph {
+  font-family: var(--ti-mono);
+  font-size: 12px;
+  color: var(--ti-mut);
+}
+.ti-search__input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  font: 400 13px/20px var(--ti-sans);
+  color: var(--ti-ink);
+}
+.ti-search__input::placeholder { color: var(--ti-mut); }
+.ti-search__kbd {
+  font-family: var(--ti-mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  background: var(--ti-head-from);
+  border: 1px solid var(--ti-line-ctl);
+  border-radius: var(--ti-r-kbd);
+  box-shadow: 0 1px 0 var(--ti-line-ctl);
+  color: var(--ti-mut);
+}
+
+.ti-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--ti-2);
+  justify-self: start;
+  min-width: max-content;
+  white-space: nowrap;
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.ti-nav__link {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--ti-12);
+  border-radius: 14px;              /* half of 28px height */
+  color: var(--ti-mut);
+  text-decoration: none;
+}
+.ti-nav__link:hover {
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--ti-ink);
+}
+.ti-nav__link[aria-current='page'] {
+  background: #FFFFFF;
+  color: var(--ti-ink);
+  box-shadow: var(--ti-sh-ctl-raised);
+}
+
+.ti-status {
+  display: flex;
+  align-items: center;
+  gap: var(--ti-12);
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  color: var(--ti-mut);
+}
+.ti-status__dot {
+  display: block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--ti-ok);
+}
+
+/* Who runs are attributed to. Not a login control — there is nothing to sign
+   in or out of (see identity.py). Kept quiet: it is provenance, not an
+   action. */
+.ti-user {
+  display: flex;
+  align-items: center;
+  gap: var(--ti-8);
+  padding-left: var(--ti-12);
+  border-left: 1px solid var(--ti-line-ctl);
+  min-height: 26px;
+}
+.ti-user__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px; height: 22px;
+  border-radius: 11px;              /* half of 22px */
+  background: #FFFFFF;
+  box-shadow: var(--ti-sh-ctl-raised);
+  font-family: var(--ti-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ti-ink);
+}
+.ti-user__name {
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  color: var(--ti-mut);
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Identity band (~68px) --------------------------------------------- */
+
+.ti-band {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--ti-32);
+  align-items: center;
+  padding: var(--ti-18) var(--ti-20);
+  background: linear-gradient(var(--ti-band-from), var(--ti-band-to));
+  box-shadow: var(--ti-sh-band);
+}
+
+/* Identity, subtitle and metadata sit on ONE BASELINE rather than stacking —
+   this is most of the vertical saving versus the original. */
+.ti-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ti-16);
+  min-width: 0;
+}
+.ti-identity__id {
+  margin: 0;
+  font-weight: 600;
+  font-size: 32px;
+  line-height: 36px;
+  letter-spacing: -0.03em;
+}
+.ti-identity__sub {
+  margin: 0;
+  font-weight: 300;
+  font-size: 17px;
+  line-height: 24px;
+  color: var(--ti-sec);
+}
+.ti-identity__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ti-14);
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--ti-mut);
+}
+
+/* Coverage and the action a user would take about it are deliberately adjacent */
+.ti-band__right {
+  display: flex;
+  align-items: center;
+  gap: var(--ti-20);
+}
+.ti-coverage {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ti-8);
+}
+.ti-coverage__count {
+  font-family: var(--ti-mono);
+  font-weight: 600;
+  font-size: 20px;
+  line-height: 24px;
+  color: var(--ti-ink);
+}
+.ti-coverage__label {
+  font-family: var(--ti-mono);
+  font-size: 12px;
+  color: var(--ti-mut);
+}
+
+/* One tick per binding, in binding order.
+   The design specifies 12x7px ticks, which reads correctly up to ~12
+   bindings. Real compounds here carry 29 (the union of bindings across six
+   templates), and 29 fixed ticks is a 406px ruler that stops being glanceable
+   and forces the identity band from 68px to 144px.
+   Fix keeps the design's semantics (one tick per binding) and its footprint by
+   capping the track and letting segments shrink — the same fixed-track,
+   flexing-segment pattern the design already uses for the report rows'
+   72px meter. At <=12 bindings the ticks render at their specified 12px. */
+.ti-ticks {
+  display: flex;
+  gap: var(--ti-2);
+  max-width: 168px;   /* 12 x 12px + 11 x 2px gap */
+}
+.ti-tick {
+  flex: 0 1 12px;
+  min-width: 3px;
+  height: 7px;
+  border-radius: var(--ti-r-focus);
+}
+.ti-tick--on {
+  background: var(--ti-accent);
+  box-shadow: 0 1px 2px rgba(150, 40, 15, 0.35);
+}
+/* 1.5px floors to 1px at DPR 1 — inset ring at 1.5px is acceptable here
+   because it is decorative reinforcement of the count, not the sole
+   indicator; the count and the row-level dots carry the state. */
+.ti-tick--off {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--ti-tick-ring);
+}
+
+.ti-btn-primary {
+  min-height: 36px;
+  padding: 0 var(--ti-18);
+  border: 0;
+  border-radius: 18px;              /* half of 36px min-height */
+  background: linear-gradient(var(--ti-accent-from), var(--ti-accent-to));
+  color: #FFFFFF;
+  cursor: pointer;
+  font: 600 13px/20px var(--ti-sans);
+  box-shadow: var(--ti-sh-primary);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.ti-btn-primary:hover {
+  color: #FFFFFF;
+  box-shadow: var(--ti-sh-primary-hover);
+  transform: translateY(-1px);
+}
+.ti-btn-primary:active { transform: translateY(0); }
+
+/* --- Main (two columns) ------------------------------------------------- */
+
+.ti-main {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(300px, 5fr);
+  gap: var(--ti-20);
+  padding: var(--ti-20);
+  align-items: start;
+}
+.ti-col { min-width: 0; }
+.ti-col--right {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ti-20);
+}
+
+.ti-sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ti-16);
+  margin-bottom: var(--ti-8);
+}
+.ti-h2 {
+  margin: 0;
+  font-family: var(--ti-mono);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ti-mut);
+}
+.ti-sec-head__link {
+  font-family: var(--ti-mono);
+  font-size: 11px;
+}
+
+/* Segmented filter */
+.ti-seg {
+  display: flex;
+  gap: var(--ti-2);
+  font-family: var(--ti-mono);
+  font-size: 11px;
+}
+.ti-seg__btn {
+  min-height: 26px;
+  padding: 0 var(--ti-10);
+  border: 0;
+  border-radius: 13px;              /* half of 26px min-height */
+  background: none;
+  color: var(--ti-mut);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+.ti-seg__btn:hover {
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--ti-ink);
+}
+.ti-seg__btn[aria-current='true'] {
+  background: #FFFFFF;
+  color: var(--ti-ink);
+  box-shadow: 0 1px 2px rgba(25, 28, 30, 0.16), inset 0 0 0 1px var(--ti-line-ctl);
+}
+
+/* --- Panel (one component, shared by all three panels on the page) ------ */
+
+.ti-panel {
+  background: var(--ti-panel);
+  border: 1px solid var(--ti-line);
+  border-radius: var(--ti-r-panel);
+  overflow: hidden;
+  box-shadow: var(--ti-sh-panel);
+}
+
+.ti-thead {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 76px 80px;
+  gap: var(--ti-12);
+  align-items: center;
+  padding: var(--ti-6) var(--ti-12);
+  background: linear-gradient(var(--ti-thead-from), var(--ti-thead-to));
+  border-bottom: 1px solid var(--ti-line);
+  font-family: var(--ti-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ti-mut);
+}
+
+/* --- Binding rows ------------------------------------------------------- */
+
+.ti-brow {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 76px 80px;
+  gap: var(--ti-12);
+  align-items: center;
+  padding: var(--ti-row-pad-y) var(--ti-12);
+  border-bottom: 1px solid var(--ti-rule);
+  background: var(--ti-panel);
+  transition: background var(--ti-dur) var(--ti-ease);
+}
+.ti-brow:last-child { border-bottom: 0; }
+.ti-brow:hover { background: var(--ti-panel-hover); }
+
+.ti-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.ti-dot--on {
+  background: var(--ti-accent);
+  box-shadow: var(--ti-sh-dot-halo);
+}
+/* 2px, not 1.5px: sub-pixel borders floor at DPR 1 and this border IS the
+   state indicator, so it must clear 3:1 (WCAG 1.4.11). */
+.ti-dot--off {
+  background: transparent;
+  border: 2px solid var(--ti-dim);
+}
+
+/* Two lines BY NECESSITY, not preference. An earlier five-column single-line
+   version gave the resolve-target column 48px against 150-288px of content, so
+   every value clipped to ~7 characters. Do not flatten back to one line. */
+.ti-brow__name {
+  margin: 0;
+  font-family: var(--ti-mono);
+  font-weight: 500;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ti-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ti-brow__detail {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ti-brow__detail--on  { color: var(--ti-sec); }
+.ti-brow__detail--off { color: var(--ti-dim); }
+
+.ti-brow__returns {
+  font-family: var(--ti-mono);
+  font-size: 11px;
+}
+.ti-brow__returns--on {
+  color: var(--ti-ink);
+  font-weight: 400;
+}
+/* Full strength, never faded — see accessibility rule 3 */
+.ti-brow__returns--off {
+  color: var(--ti-accent-dark);
+  font-weight: 500;
+}
+
+.ti-brow__used {
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  color: var(--ti-mut);
+  white-space: nowrap;
+}
+
+/* The ONLY place a missing-source warning appears. The original UI stated the
+   same warnings three times in three components. Do not reintroduce. */
+.ti-footnote {
+  margin: var(--ti-10) 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--ti-sec);
+  max-width: 88ch;
+  text-wrap: pretty;
+}
+.ti-footnote code,
+.ti-code {
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  background: none;
+  padding: 0;
+}
+
+/* --- Report rows ------------------------------------------------------- */
+
+.ti-rrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 16px;
+  gap: var(--ti-12);
+  align-items: center;
+  width: 100%;
+  padding: var(--ti-report-pad-y) var(--ti-12);
+  border: 0;
+  border-bottom: 1px solid var(--ti-rule);
+  background: var(--ti-panel);
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+  transition: background var(--ti-dur) var(--ti-ease);
+}
+.ti-rrow:last-child { border-bottom: 0; }
+.ti-rrow:hover { background: var(--ti-panel-hover); }
+
+.ti-rrow__name {
+  margin: 0 0 2px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--ti-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ti-rrow__kicker {
+  margin: 0;
+  font-family: var(--ti-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ti-dim);
+}
+.ti-rrow__meter {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--ti-4);
+}
+.ti-rrow__ratio {
+  font-family: var(--ti-mono);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--ti-mut);
+}
+.ti-rrow--lead .ti-rrow__ratio { color: var(--ti-accent); }
+
+.ti-track {
+  display: flex;
+  gap: var(--ti-2);
+  width: 72px;
+}
+.ti-track__seg {
+  flex: 1;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--ti-tick-empty);
+  box-shadow: inset 0 1px 1px rgba(25, 28, 30, 0.10);
+}
+.ti-track__seg--on {
+  background: var(--ti-mut);
+  box-shadow: 0 1px 1px rgba(25, 28, 30, 0.20);
+}
+.ti-rrow--lead .ti-track__seg--on { background: var(--ti-accent); }
+
+.ti-rrow__arrow {
+  font-family: var(--ti-mono);
+  font-size: 12px;
+  color: var(--ti-dim);
+}
+.ti-rrow--lead .ti-rrow__arrow { color: var(--ti-accent); }
+
+/* --- Run rows ---------------------------------------------------------- */
+
+.ti-qrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px 84px;
+  gap: var(--ti-12);
+  align-items: center;
+  width: 100%;
+  padding: var(--ti-run-pad-y) var(--ti-12);
+  border: 0;
+  border-bottom: 1px solid var(--ti-rule);
+  background: var(--ti-panel);
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+  transition: background var(--ti-dur) var(--ti-ease);
+}
+.ti-qrow:last-child { border-bottom: 0; }
+.ti-qrow:hover { background: var(--ti-panel-hover); }
+.ti-qrow__name {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ti-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ti-qrow__evidenced {
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  color: var(--ti-ink);
+}
+.ti-qrow__when {
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  color: var(--ti-mut);
+  justify-self: end;
+}
+
+/* --- Chips ------------------------------------------------------------- */
+
+.ti-chips { display: flex; flex-wrap: wrap; gap: var(--ti-6); }
+.ti-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 var(--ti-14);
+  background: var(--ti-panel);
+  border: 1px solid var(--ti-line);
+  border-radius: 15px;              /* half of 30px min-height */
+  box-shadow: var(--ti-sh-chip);
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  text-decoration: none;
+  color: var(--ti-ink);
+}
+.ti-chip:hover { background: var(--ti-panel-hover); color: var(--ti-ink); }
+
+/* --- Empty state ------------------------------------------------------- */
+
+.ti-empty {
+  padding: var(--ti-32) var(--ti-20);
+  text-align: center;
+}
+.ti-empty__title {
+  margin: 0 0 var(--ti-8);
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--ti-ink);
+}
+.ti-empty__body {
+  margin: 0 auto;
+  max-width: 60ch;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--ti-sec);
+}
+
+/* --- Home / search screen --------------------------------------------- */
+
+.ti-home {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 72px var(--ti-20) var(--ti-32);
+}
+.ti-home__lede {
+  margin: 0 0 var(--ti-20);
+  font-weight: 300;
+  font-size: 17px;
+  line-height: 24px;
+  color: var(--ti-sec);
+  max-width: 60ch;
+}
+/* One large search field, nothing else above it */
+.ti-home__search {
+  display: flex;
+  align-items: center;
+  gap: var(--ti-12);
+  height: 52px;
+  padding: 0 var(--ti-18);
+  background: #FFFFFF;
+  border: 1px solid var(--ti-line-ctl);
+  border-radius: 26px;              /* half of 52px height */
+  box-shadow: var(--ti-sh-ctl-inset);
+}
+.ti-home__search:hover { border-color: #8D969C; }
+.ti-home__search .ti-search__glyph { font-size: 16px; }
+.ti-home__search .ti-search__input { font: 400 16px/24px var(--ti-sans); }
+
+/* Compounds as plain text rows, 56px, NOT cards.
+   140px mono ID column, name, owner, right-aligned run count + date. */
+.ti-crow {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr) auto auto;
+  gap: var(--ti-16);
+  align-items: center;
+  height: 56px;
+  padding: 0 var(--ti-4);
+  border-bottom: 1px solid var(--ti-line);
+  text-decoration: none;
+  color: var(--ti-ink);
+}
+.ti-crow:last-child { border-bottom: 0; }
+.ti-crow:hover { background: rgba(255, 255, 255, 0.55); color: var(--ti-ink); }
+.ti-crow__id {
+  font-family: var(--ti-mono);
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--ti-ink);
+}
+.ti-crow__name {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ti-sec);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ti-crow__owner {
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  color: var(--ti-mut);
+  justify-self: end;
+  white-space: nowrap;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ti-crow__meta {
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  color: var(--ti-mut);
+  justify-self: end;
+  white-space: nowrap;
+  min-width: 15ch;
+  text-align: right;
+}
+
+/* --- Density toggle ---------------------------------------------------- */
+
+.ti-density {
+  display: flex;
+  align-items: center;
+  gap: var(--ti-8);
+}
+
+/* --- Footer ------------------------------------------------------------ */
+
+.ti-foot {
+  padding: var(--ti-20);
+  font-family: var(--ti-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ti-mut);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ti-14);
+  align-items: center;
+}
+
+/* --- Responsive -------------------------------------------------------- */
+/* Designed for 1440px+. Verified to ~900px: the search field absorbs header
+   shortfall and binding text ellipsises. Below ~900px the two-column main
+   stacks, left column first. No mobile design exists. */
+
+@media (max-width: 900px) {
+  .ti-main { grid-template-columns: minmax(0, 1fr); }
+  .ti-band {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--ti-14);
+  }
+  .ti-band__right { flex-wrap: wrap; }
+  .ti-header {
+    grid-template-columns: max-content minmax(0, 1fr) max-content;
+    gap: var(--ti-12);
+  }
+  .ti-status { display: none; }
+}
+
+@media (max-width: 620px) {
+  .ti-header { grid-template-columns: max-content minmax(0, 1fr); }
+  .ti-nav { display: none; }
+  .ti-identity__id { font-size: 26px; line-height: 30px; }
+  .ti-crow { grid-template-columns: 110px minmax(0, 1fr); }
+  .ti-crow__meta { display: none; }
+}
+
+/* --- Print ------------------------------------------------------------- */
+
+@media print {
+  .ti { background: #FFFFFF; }
+  .ti-header, .ti-foot, .ti-seg, .ti-density { display: none; }
+  .ti-panel { box-shadow: none; border-color: #999; }
+  .ti-band { background: none; box-shadow: none; }
+}

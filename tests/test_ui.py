@@ -196,7 +196,7 @@ def test_gallery_lists_every_runnable_template_by_title(
     runnable, _ = store.list_templates()
     assert runnable, "expected the authored report templates to be discoverable"
 
-    response = client.get("/")
+    response = client.get("/templates")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
 
@@ -213,7 +213,7 @@ def test_gallery_flags_non_template_markdown_as_unavailable(
     _, unavailable = store.list_templates()
     assert {c.key for c in unavailable} >= {"README", "SKILL.template"}
 
-    body = client.get("/").text
+    body = client.get("/templates").text
     for card in unavailable:
         assert str(escape(card.key)) in body
 
@@ -519,9 +519,24 @@ def test_static_assets_are_served(
 
 
 def test_pages_reference_the_local_static_assets(client: TestClient) -> None:
-    body = client.get("/").text
-    assert "/static/gsk.css" in body
-    assert "/static/app.js" in body
+    """No off-origin <link> or <script> on either shell.
+
+    The app now has two: the legacy gsk.css shell (gallery / run / editor) and
+    the Titanium shell (home / compound page). Both must stay local-only —
+    this app runs offline against local data.
+    """
+    legacy = client.get("/templates").text
+    assert "/static/gsk.css" in legacy
+    assert "/static/app.js" in legacy
+
+    titanium = client.get("/").text
+    assert "/static/titanium.css" in titanium
+    assert "/static/fonts/chivo-latin-var.woff2" in titanium
+
+    for body in (legacy, titanium):
+        assert "https://fonts.googleapis.com" not in body
+        assert "https://fonts.gstatic.com" not in body
+        assert "//cdn." not in body
 
 
 # ---------------------------------------------------------------------------

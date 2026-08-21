@@ -34,6 +34,8 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import TemplateNotFound
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from services.api_gateway import compounds as compounds_module
+from services.api_gateway import identity as identity_module
 from services.api_gateway import runs as runs_module
 from services.api_gateway.runs import RunNotTerminal, get_store
 
@@ -70,6 +72,9 @@ def _render(
     payload: dict[str, Any] = {
         "nav_active": nav_active,
         "app_version": APP_VERSION,
+        # Every page can name `user`. Attribution only — see identity.py for
+        # why this is not authentication.
+        "user": identity_module.resolve_user(request.headers),
     }
     payload.update(context)
     return TEMPLATES.TemplateResponse(request, name, payload, status_code=status_code)
@@ -298,9 +303,101 @@ def _blocker_field_errors(preflight: Any) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/", response_class=HTMLResponse, name="gallery", include_in_schema=False)
+@router.get("/", response_class=HTMLResponse, name="home", include_in_schema=False)
+def home(request: Request) -> HTMLResponse:
+    """Compound-first front door (Titanium redesign).
+
+    The report-type gallery is NOT the front door: it asked the user to pick a
+    report type before the app knew which compound they cared about, and
+    governed six cards with six controls. It now lives at `/templates` as a
+    secondary browse surface, reachable from nav.
+
+    `?q=` does double duty — it is the header search field on every screen. A
+    hit redirects (303) to that compound's page so the URL a user lands on is
+    the compound's own, not a search result. A miss re-renders here with a
+    note rather than guessing.
+    """
+    store = get_store()
+    q = (request.query_params.get("q") or "").strip()
+    matched = compounds_module.resolve_query(q, store) if q else None
+    if matched:
+        return _see_other(f"/compound/{quote(matched)}")
+
+    user = identity_module.resolve_user(request.headers)
+    counts = compounds_module.compound_scope_counts(store, current_user=user.user_id)
+    scope = (request.query_params.get("scope") or "").strip().lower()
+    if scope not in ("mine", "all"):
+        # Default to the scope that will not be empty: a first-time user with
+        # no runs should land on the team's work, not a zero-state.
+        scope = "mine" if counts["mine"] else "all"
+
+    return _render(
+        request,
+        "home.html",
+        {
+            "q": q,
+            "no_match": bool(q),
+            "scope": scope,
+            "counts": counts,
+            "compounds": compounds_module.compound_cards(
+                store, current_user=user.user_id, scope=scope
+            ),
+        },
+        nav_active="compounds",
+    )
+
+
+@router.get(
+    "/compound/{compound_id}",
+    response_class=HTMLResponse,
+    name="compound_page",
+    include_in_schema=False,
+)
+def compound_page(request: Request, compound_id: str) -> HTMLResponse:
+    """The compound page — the centre of the product.
+
+    One job: tell the user what this compound can currently evidence, and let
+    them start the report that best fits. Source readiness is a property of
+    "what do we know about this compound", knowable before a report type is
+    chosen — which is why it is this page's main content rather than a block
+    buried inside run setup.
+    """
+    store = get_store()
+    view = compounds_module.build_compound_view(compound_id, store=store)
+    wanted = (request.query_params.get("filter") or "all").strip().lower()
+    if wanted not in ("all", "ready", "gaps"):
+        wanted = "all"
+    if wanted == "ready":
+        visible = [b for b in view.bindings if b.resolved]
+    elif wanted == "gaps":
+        visible = [b for b in view.bindings if not b.resolved]
+    else:
+        visible = list(view.bindings)
+    return _render(
+        request,
+        "compound.html",
+        {
+            "view": view,
+            "binding_filter": wanted,
+            "visible_bindings": visible,
+            "queries_dir": compounds_module.QUERIES_REL,
+        },
+        nav_active="compounds",
+    )
+
+
+@router.get(
+    "/templates",
+    response_class=HTMLResponse,
+    name="gallery",
+    include_in_schema=False,
+)
 def gallery(request: Request) -> HTMLResponse:
     """The report-type gallery, grouped / sorted / filtered SERVER-SIDE.
+
+    Moved off `/` by the Titanium redesign — it is a secondary browse surface
+    now, not the front door. The route keeps the name `gallery` so every
+    existing `url_for('gallery')` in the legacy templates resolves here.
 
     Query params (contract §4.1): `group`, `sort`, repeatable `tag`, `q`, and
     the three redirect flags. Every one of them is canonicalised in
@@ -844,7 +941,10 @@ async def create_run(request: Request) -> Response:
     if not field_errors:
         try:
             record = store.create(
-                template_key, cleaned, evidence_folder or None
+                template_key,
+                cleaned,
+                evidence_folder or None,
+                owner=identity_module.resolve_user(request.headers).user_id,
             )
         except ValueError as exc:
             report = store.preflight(template_key, cleaned, evidence_folder or None)
@@ -1067,7 +1167,12 @@ async def api_create_run(request: Request) -> JSONResponse:
             status_code=404, detail=f"No report template named {template_key!r}."
         )
     try:
-        record = store.create(template_key, inputs, evidence_folder)
+        record = store.create(
+            template_key,
+            inputs,
+            evidence_folder,
+            owner=identity_module.resolve_user(request.headers).user_id,
+        )
     except ValueError as exc:
         raise StarletteHTTPException(status_code=422, detail=str(exc))
 

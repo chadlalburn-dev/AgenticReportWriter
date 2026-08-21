@@ -668,6 +668,7 @@ class RunSummary(_Dict):
     n_bindings_resolved: int
     n_bindings_deferred: int
     coverage_text: str
+    owner: str = ""
 
 
 @dataclass
@@ -690,6 +691,9 @@ class RunRecord(_Dict):
     model_version: str = "stub"
     prompt_version: str = ""
     compliance_mode: str = "rd"
+    # Attribution for the "My compounds / All compounds" split. Defaulted so
+    # run.json files written before this field existed still rehydrate.
+    owner: str = ""
     n_documents: int = 0
     n_chunks: int = 0
     n_citations: int = 0
@@ -2139,6 +2143,7 @@ class RunStore:
         key: str,
         inputs: dict[str, str],
         evidence_folder: str | None = None,
+        owner: str = "",
     ) -> RunRecord:
         card = self.get_template(key)
         if not card.ok:
@@ -2193,6 +2198,7 @@ class RunStore:
             preflight=list(report.issues),
             prompt_version=PROMPT_VERSION,
             compliance_mode="rd",
+            owner=owner,
         )
 
         with self._lock:
@@ -2628,6 +2634,7 @@ class RunStore:
             coverage_text=f"{n_cited}/{n_sections} sections cited"
             if n_sections
             else "no sections",
+            owner=record.owner,
         )
 
     # -- internals: the worker --------------------------------------------
@@ -2980,6 +2987,7 @@ def _record_from_dict(payload: dict[str, Any]) -> RunRecord:
         else None
     )
     return RunRecord(
+        owner=str(payload.get("owner", "") or ""),
         run_id=str(payload["run_id"]),
         template_key=str(payload.get("template_key", "")),
         template_title=str(payload.get("template_title", "")),

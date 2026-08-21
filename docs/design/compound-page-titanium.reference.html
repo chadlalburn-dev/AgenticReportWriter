@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@300;400;500;600;700&family=Chivo+Mono:wght@400;500;600&display=swap">
+<style>
+  body { margin:0; background:#D9DDE0; }
+  /* Links use MUT, not the accent: 5.57:1 on field #D9DDE0 and 6.65:1 on panel #EDF0F1.
+     The accent clears 4.5:1 only on the panel (4.55, no margin) and is user-tweakable,
+     so it must never colour text that sits on the field. */
+  a { color:#4C555B; text-decoration:underline; text-underline-offset:2px; text-decoration-thickness:1px; }
+  a:hover { color:#191C1E; }
+  ::selection { background:#C43D1C; color:#FFFFFF; }
+  *:focus-visible { outline:2px solid #C43D1C; outline-offset:2px; border-radius:4px; }
+  button, a, input, label { transition:background 140ms cubic-bezier(.2,.6,.2,1), box-shadow 140ms cubic-bezier(.2,.6,.2,1), border-color 140ms ease-out, transform 140ms cubic-bezier(.2,.6,.2,1); }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+</style>
+</helmet>
+
+<div style="min-height:100vh;background:#D9DDE0;color:#191C1E;font-family:'Chivo',sans-serif;font-size:14px;line-height:20px;-webkit-font-smoothing:antialiased">
+
+  <header style="display:grid;grid-template-columns:max-content minmax(0,440px) max-content max-content;gap:20px;align-items:center;height:56px;padding:0 20px;background:linear-gradient(#F3F5F6,#E9ECEE);box-shadow:inset 0 1px 0 #FFFFFF, 0 1px 0 #C4CACE, 0 4px 14px -6px rgba(25,28,30,0.22);position:sticky;top:0;z-index:30">
+    <div style="display:flex;align-items:center;gap:10px">
+      <span style="display:block;width:10px;height:10px;background:#C43D1C"></span>
+      <span style="font-family:'Chivo Mono',monospace;font-weight:600;font-size:11px;letter-spacing:0.14em;text-transform:uppercase">Report Gen</span>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;background:#FFFFFF;border:1px solid #C4CACE;border-radius:17px;box-shadow:inset 0 1px 2px rgba(25,28,30,0.10)" style-hover="border-color:#8D969C">
+      <span style="font-family:'Chivo Mono',monospace;font-size:12px;color:#4C555B">⌕</span>
+      <input value="{{ q }}" onChange="{{ onQ }}" placeholder="Jump to compound, target or run" style="flex:1;min-width:0;border:0;outline:0;background:none;font:400 13px/20px 'Chivo',sans-serif;color:#191C1E" />
+      <kbd style="font-family:'Chivo Mono',monospace;font-size:10px;padding:2px 6px;background:#F3F5F6;border:1px solid #C4CACE;border-radius:5px;box-shadow:0 1px 0 #C4CACE;color:#4C555B">/</kbd>
+    </label>
+    <nav style="display:flex;align-items:center;gap:2px;justify-self:start;min-width:max-content;white-space:nowrap;font-family:'Chivo Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase">
+      <a href="#" style="display:flex;align-items:center;height:28px;padding:0 12px;border-radius:14px;background:#FFFFFF;color:#191C1E;text-decoration:none;box-shadow:0 1px 2px rgba(25,28,30,0.14), inset 0 0 0 1px #C4CACE">Compounds</a>
+      <a href="#" style="display:flex;align-items:center;height:28px;padding:0 12px;border-radius:14px;color:#4C555B;text-decoration:none" style-hover="background:rgba(255,255,255,0.7)">Runs</a>
+      <a href="#" style="display:flex;align-items:center;height:28px;padding:0 12px;border-radius:14px;color:#4C555B;text-decoration:none" style-hover="background:rgba(255,255,255,0.7)">Templates</a>
+    </nav>
+    <div style="display:flex;align-items:center;gap:12px;font-family:'Chivo Mono',monospace;font-size:11px;color:#4C555B">
+      <span>local data</span>
+      <span style="display:block;width:6px;height:6px;border-radius:50%;background:#3F7A34"></span>
+    </div>
+  </header>
+
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:32px;align-items:center;padding:18px 20px;background:linear-gradient(#E7EBEC,#DFE3E6);box-shadow:inset 0 1px 0 rgba(255,255,255,0.7), 0 1px 0 #C9CFD3">
+    <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:16px;min-width:0">
+      <h1 style="margin:0;font-weight:600;font-size:32px;line-height:36px;letter-spacing:-0.03em">XYZ-001</h1>
+      <p style="margin:0;font-weight:300;font-size:17px;line-height:24px;color:#3A4247">Kinase Z inhibitor</p>
+      <div style="display:flex;flex-wrap:wrap;gap:14px;font-family:'Chivo Mono',monospace;font-size:11px;line-height:16px;color:#4C555B">
+        <span>PSS</span><span>small molecule</span><span>13 docs</span><span>3 runs</span><span>last 19 Aug</span>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:20px">
+      <div style="display:flex;align-items:baseline;gap:8px">
+        <span style="font-family:'Chivo Mono',monospace;font-weight:600;font-size:20px;line-height:24px;color:#191C1E">4</span>
+        <span style="font-family:'Chivo Mono',monospace;font-size:12px;color:#4C555B">of 8 bindings resolve</span>
+      </div>
+      <div style="display:flex;gap:2px">
+        <sc-for list="{{ bindTicks }}" as="t" hint-placeholder-count="8">
+          <span style="{{ t.style }}"></span>
+        </sc-for>
+      </div>
+      <button style="min-height:36px;padding:0 18px;border:0;border-radius:18px;background:linear-gradient(#D24C29,#B83718);color:#FFFFFF;cursor:pointer;font:600 13px/20px 'Chivo',sans-serif;box-shadow:inset 0 1px 0 rgba(255,255,255,0.28), 0 2px 6px -1px rgba(150,40,15,0.45)" style-hover="box-shadow:inset 0 1px 0 rgba(255,255,255,0.34), 0 4px 12px -2px rgba(150,40,15,0.55);transform:translateY(-1px)" style-active="transform:translateY(0)">Draft Target Assessment</button>
+    </div>
+  </div>
+
+  <main style="display:grid;grid-template-columns:minmax(0,7fr) minmax(300px,5fr);gap:20px;padding:20px;align-items:start">
+
+    <section style="min-width:0">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:8px">
+        <h2 style="margin:0;font-family:'Chivo Mono',monospace;font-weight:600;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#4C555B">Evidence bindings</h2>
+        <div style="display:flex;gap:2px;font-family:'Chivo Mono',monospace;font-size:11px">
+          <button style="min-height:26px;padding:0 10px;border:0;border-radius:13px;background:#FFFFFF;color:#191C1E;cursor:pointer;font:inherit;box-shadow:0 1px 2px rgba(25,28,30,0.16), inset 0 0 0 1px #C4CACE">all 8</button>
+          <button style="min-height:26px;padding:0 10px;border:0;border-radius:13px;background:none;color:#4C555B;cursor:pointer;font:inherit" style-hover="background:rgba(255,255,255,0.75)">ready 4</button>
+          <button style="min-height:26px;padding:0 10px;border:0;border-radius:13px;background:none;color:#4C555B;cursor:pointer;font:inherit" style-hover="background:rgba(255,255,255,0.75)">gaps 4</button>
+        </div>
+      </div>
+
+      <div style="background:#EDF0F1;border:1px solid #C9CFD3;border-radius:12px;overflow:hidden;box-shadow:0 1px 2px rgba(25,28,30,0.06), 0 6px 18px -8px rgba(25,28,30,0.28), inset 0 1px 0 #FFFFFF">
+        <div style="display:grid;grid-template-columns:20px minmax(0,1fr) 76px 80px;gap:12px;align-items:center;padding:6px 12px;background:linear-gradient(#E9ECEE,#E1E5E7);border-bottom:1px solid #C9CFD3;font-family:'Chivo Mono',monospace;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:#4C555B">
+          <span></span><span>binding · resolves to</span><span>returns</span><span>used by</span>
+        </div>
+        <sc-for list="{{ bindings }}" as="b" hint-placeholder-count="8">
+          <div style="{{ b.row }}" style-hover="background:#F6F8F8">
+            <span style="{{ b.dot }}"></span>
+            <div style="min-width:0">
+              <p style="{{ b.name }}">{{ b.label }}</p>
+              <p style="{{ b.detail }}">{{ b.target }}</p>
+            </div>
+            <span style="{{ b.returns }}">{{ b.count }}</span>
+            <span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#4C555B;white-space:nowrap">{{ b.usedBy }}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <p style="margin:10px 0 0;font-size:12px;line-height:18px;color:#3A4247;max-width:88ch;text-wrap:pretty">Four queries are absent from the registry. Add a YAML file for each under <span style="font-family:'Chivo Mono',monospace;font-size:11px">samples/synthetic_compound/queries/</span> and they resolve on the next run. Missing bindings never block a run — they become stated gaps in the draft.</p>
+    </section>
+
+    <div style="min-width:0;display:flex;flex-direction:column;gap:20px">
+
+      <section>
+        <h2 style="margin:0 0 8px;font-family:'Chivo Mono',monospace;font-weight:600;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#4C555B">Draft a report</h2>
+        <div style="background:#EDF0F1;border:1px solid #C9CFD3;border-radius:12px;overflow:hidden;box-shadow:0 1px 2px rgba(25,28,30,0.06), 0 6px 18px -8px rgba(25,28,30,0.28), inset 0 1px 0 #FFFFFF">
+          <sc-for list="{{ reports }}" as="r" hint-placeholder-count="4">
+            <button onClick="{{ r.pick }}" style="{{ r.row }}" style-hover="background:#F6F8F8">
+              <div style="min-width:0">
+                <p style="{{ r.title }}">{{ r.name }}</p>
+                <p style="margin:0;font-family:'Chivo Mono',monospace;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#5D666C">{{ r.kicker }}</p>
+              </div>
+              <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+                <span style="{{ r.ratio }}">{{ r.ready }}</span>
+                <div style="display:flex;gap:2px;width:72px">
+                  <sc-for list="{{ r.ticks }}" as="t" hint-placeholder-count="5">
+                    <span style="{{ t.style }}"></span>
+                  </sc-for>
+                </div>
+              </div>
+              <span style="{{ r.arrow }}">→</span>
+            </button>
+          </sc-for>
+        </div>
+      </section>
+
+      <section>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-bottom:8px">
+          <h2 style="margin:0;font-family:'Chivo Mono',monospace;font-weight:600;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#4C555B">Recent runs</h2>
+          <a href="#" style="font-family:'Chivo Mono',monospace;font-size:11px">all 3</a>
+        </div>
+        <div style="background:#EDF0F1;border:1px solid #C9CFD3;border-radius:12px;overflow:hidden;box-shadow:0 1px 2px rgba(25,28,30,0.06), 0 6px 18px -8px rgba(25,28,30,0.28), inset 0 1px 0 #FFFFFF">
+          <sc-for list="{{ runs }}" as="run" hint-placeholder-count="3">
+            <button style="{{ run.row }}" style-hover="background:#F6F8F8">
+              <span style="font-size:13px;line-height:18px;color:#191C1E;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ run.name }}</span>
+              <span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#191C1E">{{ run.evidenced }}</span>
+              <span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#4C555B;justify-self:end">{{ run.when }}</span>
+            </button>
+          </sc-for>
+        </div>
+      </section>
+
+      <section>
+        <h2 style="margin:0 0 8px;font-family:'Chivo Mono',monospace;font-weight:600;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#4C555B">Related</h2>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <a href="#" style="display:inline-flex;align-items:center;min-height:30px;padding:0 14px;background:#EDF0F1;border:1px solid #C9CFD3;border-radius:15px;font-family:'Chivo Mono',monospace;font-size:11px;text-decoration:none;color:#191C1E;box-shadow:0 1px 2px rgba(25,28,30,0.10), inset 0 1px 0 #FFFFFF">XYZ-014</a>
+          <a href="#" style="display:inline-flex;align-items:center;min-height:30px;padding:0 14px;background:#EDF0F1;border:1px solid #C9CFD3;border-radius:15px;font-family:'Chivo Mono',monospace;font-size:11px;text-decoration:none;color:#191C1E;box-shadow:0 1px 2px rgba(25,28,30,0.10), inset 0 1px 0 #FFFFFF">XYZ-022</a>
+          <a href="#" style="display:inline-flex;align-items:center;min-height:30px;padding:0 14px;background:#EDF0F1;border:1px solid #C9CFD3;border-radius:15px;font-family:'Chivo Mono',monospace;font-size:11px;text-decoration:none;color:#191C1E;box-shadow:0 1px 2px rgba(25,28,30,0.10), inset 0 1px 0 #FFFFFF">Kinase Z · target</a>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;compact&quot;,&quot;comfortable&quot;],&quot;default&quot;:&quot;compact&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Layout&quot;},&quot;accent&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#C43D1C&quot;,&quot;options&quot;:[&quot;#C43D1C&quot;,&quot;#1B3FCC&quot;,&quot;#3F7A34&quot;,&quot;#191C1E&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Identity&quot;}}">
+// Greys, measured on PANEL #EDF0F1: SEC 8.94:1 · MUT 6.65:1 · DIM 5.12:1 · LINE 1.45:1.
+// DIM is the lightest value allowed to carry text or a state-bearing indicator.
+// LINE is a hairline only — at 1.45:1 it must never carry text. Do not add a fourth grey.
+// Accent clears 4.5:1 on PANEL only (4.55, no margin) and is tweakable: never accent text on FIELD.
+const INK='#191C1E', SEC='#3A4247', MUT='#4C555B', DIM='#5D666C', LINE='#C4CACE', PANEL='#EDF0F1';
+
+const BINDINGS = [
+  { label:'target_rationale',   target:'Confluence · space PSS · target rationale pages', count:'2 pages',     usedBy:'3 reports', ok:true },
+  { label:'project_background', target:'Confluence · space PSS · programme background',   count:'1 page',      usedBy:'4 reports', ok:true },
+  { label:'chembl_mechanism',   target:'ChEMBL · mechanism of action, bound target',      count:'1 row',       usedBy:'2 reports', ok:true },
+  { label:'prior_reports',      target:'Evidence folder · nonclinical, prior_report',     count:'6 docs',      usedBy:'4 reports', ok:true },
+  { label:'potency',            target:'preclinical_assays.assay_potency_selectivity_v1', count:'not reg.',    usedBy:'2 reports', ok:false },
+  { label:'dmpk',               target:'dmpk.dmpk_summary_v1',                            count:'not reg.',    usedBy:'3 reports', ok:false },
+  { label:'pivotal_tox',        target:'nonclinical_safety.pivotal_tox_summary_v2',       count:'not reg.',    usedBy:'2 reports', ok:false },
+  { label:'developability',     target:'cmc.developability_metrics_v1',                   count:'not reg.',    usedBy:'1 report',  ok:false }
+];
+
+const REPORTS = [
+  { kicker:'Discovery',  name:'Target Assessment / Validation',       ready:4, of:5, lead:true },
+  { kicker:'Milestone',  name:'Candidate Selection Dossier',          ready:4, of:8 },
+  { kicker:'Discipline', name:'DMPK / ADME Summary',                  ready:1, of:4 },
+  { kicker:'Regulatory', name:'Investigator’s Brochure — nonclinical', ready:1, of:5 }
+];
+
+const RUNS = [
+  { name:'Target Assessment / Validation', evidenced:'12/14', when:'19 Aug 11:21' },
+  { name:'Candidate Selection Dossier',    evidenced:'9/21',  when:'14 Aug 09:04' },
+  { name:'DMPK / ADME Summary',            evidenced:'3/18',  when:'02 Aug 16:38' }
+];
+
+class Component extends DCLogic {
+  state = { q: '' };
+
+  renderVals() {
+    const accent = this.props.accent || '#C43D1C';
+    const compact = (this.props.density || 'compact') === 'compact';
+    const pad = compact ? '6px 12px' : '10px 12px';
+
+    return {
+      q: this.state.q,
+      onQ: (e) => this.setState({ q: e.target.value }),
+
+      bindTicks: BINDINGS.map(b => ({
+        style: {
+          width: '12px', height: '7px', borderRadius: '4px',
+          background: b.ok ? accent : 'transparent',
+          boxShadow: b.ok ? '0 1px 2px rgba(150,40,15,0.35)' : 'inset 0 0 0 1.5px #A9B0B5'
+        }
+      })),
+
+      bindings: BINDINGS.map(b => ({
+        label: b.label, target: b.target, count: b.count, usedBy: b.usedBy,
+        row: {
+          display: 'grid',
+          gridTemplateColumns: '20px minmax(0,1fr) 76px 80px',
+          gap: '12px',
+          alignItems: 'center',
+          padding: pad,
+          borderBottom: '1px solid #E3E7E9',
+          background: PANEL,
+          transition: 'background 140ms cubic-bezier(.2,.6,.2,1)'
+        },
+        dot: {
+          width: '9px', height: '9px', borderRadius: '50%',
+          background: b.ok ? accent : 'transparent',
+          border: b.ok ? 'none' : '2px solid ' + DIM,
+          boxShadow: b.ok ? '0 0 0 3px rgba(196,61,28,0.16), 0 1px 2px rgba(150,40,15,0.40)' : 'none',
+          boxSizing: 'border-box'
+        },
+        name: {
+          margin: 0,
+          fontFamily: "'Chivo Mono', monospace", fontWeight: 500, fontSize: '12px', lineHeight: '17px',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          color: INK
+        },
+        detail: {
+          margin: 0,
+          fontSize: '11px', lineHeight: '16px', color: b.ok ? SEC : DIM,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+        },
+        returns: {
+          fontFamily: "'Chivo Mono', monospace", fontSize: '11px',
+          color: b.ok ? INK : '#8F2A11',
+          fontWeight: b.ok ? 400 : 500
+        }
+      })),
+
+      reports: REPORTS.map(r => ({
+        kicker: r.kicker, name: r.name, ready: r.ready + '/' + r.of,
+        pick: () => {},
+        row: {
+          display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto 16px',
+          gap: '12px', alignItems: 'center', width: '100%',
+          padding: compact ? '10px 12px' : '14px 12px',
+          border: 0, borderBottom: '1px solid #E3E7E9',
+          background: PANEL, cursor: 'pointer', textAlign: 'left',
+          transition: 'background 140ms cubic-bezier(.2,.6,.2,1)'
+        },
+        title: {
+          margin: '0 0 2px', fontSize: '13px', lineHeight: '18px', fontWeight: 500, color: INK,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+        },
+        ratio: {
+          fontFamily: "'Chivo Mono', monospace", fontWeight: 600, fontSize: '12px',
+          color: r.lead ? accent : MUT
+        },
+        arrow: { fontFamily: "'Chivo Mono', monospace", fontSize: '12px', color: r.lead ? accent : DIM },
+        ticks: Array.from({ length: r.of }, (_, i) => ({
+          style: {
+            flex: 1, height: '5px', borderRadius: '3px',
+            background: i < r.ready ? (r.lead ? accent : '#4C555B') : '#CDD3D7',
+            boxShadow: i < r.ready ? '0 1px 1px rgba(25,28,30,0.20)' : 'inset 0 1px 1px rgba(25,28,30,0.10)'
+          }
+        }))
+      })),
+
+      runs: RUNS.map(r => ({
+        name: r.name, evidenced: r.evidenced, when: r.when,
+        row: {
+          display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 52px 84px',
+          gap: '12px', alignItems: 'center', width: '100%',
+          padding: compact ? '9px 12px' : '13px 12px',
+          border: 0, borderBottom: '1px solid #E3E7E9',
+          background: PANEL, cursor: 'pointer', textAlign: 'left',
+          transition: 'background 140ms cubic-bezier(.2,.6,.2,1)'
+        }
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

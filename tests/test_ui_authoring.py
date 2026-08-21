@@ -157,7 +157,7 @@ def test_create_writes_a_file_the_loader_can_read_back(client, store):
 
 def test_a_created_template_shows_up_in_its_group_in_the_gallery(client):
     submit(client, "/templates", draft_form())
-    html = client.get("/?group=domain").text
+    html = client.get("/templates?group=domain").text
     section = re.search(
         r'id="g-domain-dmpk".*?(?=<h3 class="rg-h3" id="g-|</main)', html, re.S
     )
@@ -167,9 +167,9 @@ def test_a_created_template_shows_up_in_its_group_in_the_gallery(client):
 
 def test_a_created_template_is_reachable_by_each_of_its_tags(client):
     submit(client, "/templates", draft_form())
-    assert "/new/probe_template" in client.get("/?tag=domain:dmpk").text
-    assert "/new/probe_template" in client.get("/?tag=compliance:non_gxp").text
-    assert "/new/probe_template" not in client.get("/?tag=domain:clinical").text
+    assert "/new/probe_template" in client.get("/templates?tag=domain:dmpk").text
+    assert "/new/probe_template" in client.get("/templates?tag=compliance:non_gxp").text
+    assert "/new/probe_template" not in client.get("/templates?tag=domain:clinical").text
 
 
 # ---------------------------------------------------------------------------
@@ -210,12 +210,12 @@ def test_delete_moves_the_file_to_trash_and_undelete_puts_it_back(client, store)
     response = client.post("/templates/probe_template/delete", follow_redirects=False)
     assert response.status_code == 303
     assert not path.exists()
-    assert "/new/probe_template" not in client.get("/").text
+    assert "/new/probe_template" not in client.get("/templates").text
 
     response = client.post("/templates/probe_template/undelete", follow_redirects=False)
     assert response.status_code == 303
     assert path.exists()
-    assert "/new/probe_template" in client.get("/").text
+    assert "/new/probe_template" in client.get("/templates").text
 
 
 def test_a_stale_base_sha_is_a_conflict_not_a_silent_overwrite(client, store):
@@ -338,7 +338,7 @@ def test_gxp_changes_nothing_about_a_template_card_except_its_tags(client, store
 
 def test_the_gxp_chip_is_visually_identical_to_every_other_tag_chip(client):
     submit(client, "/templates", draft_form("probe_gxp", **{"tags__compliance": "gxp"}))
-    html = client.get("/?group=none").text
+    html = client.get("/templates?group=none").text
     card = re.search(
         r"<li[^>]*>(?:(?!</li>).)*?/new/probe_gxp\"(?:(?!</li>).)*?</li>", html, re.S
     ).group(0)
