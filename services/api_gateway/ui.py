@@ -876,6 +876,14 @@ def template_raw(request: Request, template_key: str) -> Response:
     )
 
 
+def _runs_url(*, q: str, group: bool) -> str:
+    """A /runs URL that keeps whichever state the caller is not changing."""
+    params = [("q", q)] if q else []
+    if group:
+        params.append(("group", "1"))
+    return "/runs?" + urlencode(params) if params else "/runs"
+
+
 @router.get("/runs", response_class=HTMLResponse, name="run_list", include_in_schema=False)
 def run_list(request: Request) -> HTMLResponse:
     store = get_store()
@@ -913,6 +921,17 @@ def run_list(request: Request) -> HTMLResponse:
             "runs": summaries,
             "filter_q": filter_q,
             "group_by_compound": group,
+            # The two grouping links used to be the literals "/runs" and
+            # "/runs?group=1", so switching grouping silently threw away the
+            # search. The form already carried `group` the other way, which is
+            # what let the asymmetry survive — one direction was handled and
+            # nobody clicked the other. Built with urlencode so a query holding
+            # an "&" or a space survives the round trip.
+            "newest_url": _runs_url(q=filter_q, group=False),
+            "grouped_url": _runs_url(q=filter_q, group=True),
+            # "clear" drops the query and keeps the grouping — that is what
+            # clearing a search means, not resetting the whole view.
+            "clear_url": _runs_url(q="", group=group),
         },
         nav_active="runs",
     )

@@ -17,9 +17,11 @@
   <div class="ti-sec-head">
     <h2 class="ti-h2" id="ti-runs-head">Runs</h2>
     <div class="ti-seg" role="group" aria-labelledby="ti-runs-head">
-      <a class="ti-seg__btn" href="/runs"
+      {#- These carry the current search. Hard-coded "/runs" and "/runs?group=1"
+          meant switching the grouping discarded whatever you had typed. -#}
+      <a class="ti-seg__btn" href="{{ newest_url }}"
          {% if not group_by_compound %}aria-current="true"{% endif %}>newest {{ runs|length }}</a>
-      <a class="ti-seg__btn" href="/runs?group=1"
+      <a class="ti-seg__btn" href="{{ grouped_url }}"
          {% if group_by_compound %}aria-current="true"{% endif %}>by compound</a>
     </div>
   </div>
@@ -34,7 +36,7 @@
              placeholder="Filter by report, compound or state…">
     </label>
     {%- if filter_q %}
-    <a class="ti-seg__btn" href="/runs{{ '?group=1' if group_by_compound else '' }}">clear</a>
+    <a class="ti-seg__btn" href="{{ clear_url }}">clear</a>
     {%- endif %}
   </form>
 

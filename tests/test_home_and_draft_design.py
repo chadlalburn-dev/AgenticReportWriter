@@ -242,20 +242,22 @@ def test_the_scroll_cue_needs_no_javascript(client: TestClient):
 # --- measure and layout ----------------------------------------------------
 
 
-def test_prose_line_length_is_capped_in_measured_characters(client: TestClient):
-    """`ch` is the width of the "0" glyph, not of an average letter.
+def test_report_prose_is_capped_by_the_shared_measure(client: TestClient):
+    """`ch` is the width of the "0" glyph, not of an average letter, so `72ch`
+    rendered 94 characters per line here — past the 45-75 the eye tracks.
 
-    In this sans, `72ch` rendered 94 characters per line — past the 45-75 the
-    eye tracks without losing its place. The cap is stated in ch because CSS
-    has no character unit, but the number was chosen by measuring.
+    This used to assert a literal number on this one class, and that framing was
+    the problem: fixing .ti-para__body alone taught nothing about .ti-footnote
+    (88ch, 96 characters) or .ti-field__msg (no cap at all, 115). The cap now
+    lives in --ti-measure and tests/test_measure_token.py owns the invariant for
+    every prose class. What is checked here is only that report prose — the most
+    important text in the app — is wired to it.
     """
     css = client.get("/static/titanium.css").text
     block = re.search(r"\.ti-para__body\s*\{([^}]*)\}", css)
-    assert block
-    cap = re.search(r"max-width:\s*(\d+)ch", block.group(1))
-    assert cap, "report prose has no line-length cap"
-    assert int(cap.group(1)) <= 60, (
-        f"{cap.group(1)}ch renders well over 75 characters in this font"
+    assert block, "report prose has no rule"
+    assert "max-width: var(--ti-measure)" in block.group(1), (
+        "report prose is not capped by the shared measure"
     )
 
 

@@ -37,11 +37,31 @@
 .ti .rg-editor { display: block; }
 .ti .rg-cols { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--ti-20); align-items: start; }
 .ti .rg-cols__main { min-width: 0; }
-.ti .rg-cols__rail { min-width: 0; }
-.ti .rg-rail-sticky { position: sticky; top: 64px; }
+/* Sticky on the GRID ITEM, not on its child.
+   ------------------------------------------------------------------------
+   `position: sticky` was on .rg-rail-sticky — the div inside the rail — and it
+   never stuck. A sticky box can only travel inside its containing block, and
+   that div's containing block is .rg-cols__rail, which `align-items: start`
+   sizes to its content: 424px of rail inside a 424px parent is zero travel.
+
+   So on a 9149px editor the Save button scrolled off after the first screen and
+   stayed gone for the next seven — and it is the ONLY save control on the page;
+   the foot cluster holds "Check without saving" and "Cancel".
+
+   Moving it up one level fixes it because a sticky GRID ITEM resolves against
+   its grid area, which spans the full row height whatever align-items says.
+   This is the pattern .ti-outline already uses on the draft page, where it
+   demonstrably works. */
+.ti .rg-cols__rail { min-width: 0; position: sticky; top: 64px; align-self: start; }
+.ti .rg-rail-sticky { position: static; }
 @media (max-width: 980px) {
   .ti .rg-cols { grid-template-columns: minmax(0, 1fr); }
-  .ti .rg-rail-sticky { position: static; }
+  /* Stacked, the rail has nothing to stick to — and in DOM order it comes
+     after the form, so leaving it there put the only Save control at the foot
+     of a 9593px page. Reordered above the form, which is what .ti-outline does
+     at this same breakpoint on the draft page: status first, then detail. */
+  .ti .rg-cols__rail { position: static; grid-row: 1; margin-bottom: var(--ti-16); }
+  .ti .rg-cols__main { grid-row: 2; }
 }
 
 .ti .rg-stack-8  > * + * { margin-top: var(--ti-8); }
@@ -67,9 +87,10 @@
 /* 58ch, not 72ch: `ch` is the width of the "0" glyph, which in this sans is
    much wider than the average letter, so 72ch was rendering ~94 characters
    per line. Same correction as .ti-para__body. */
-.ti .rg-body    { font-size: 14px; line-height: 21px; color: var(--ti-ink); max-width: 58ch; }
-.ti .rg-body-sm { font-size: 13px; line-height: 20px; color: var(--ti-sec); max-width: 58ch; }
-.ti .rg-caption { font-size: 11px; line-height: 16px; color: var(--ti-dim); }
+.ti .rg-body    { font-size: 14px; line-height: 21px; color: var(--ti-ink); max-width: var(--ti-measure); }
+.ti .rg-body-sm { font-size: 13px; line-height: 20px; color: var(--ti-sec); max-width: var(--ti-measure); }
+.ti .rg-caption { font-size: 11px; line-height: 16px; color: var(--ti-dim);
+                  max-width: var(--ti-measure); }
 .ti .rg-subtle  { color: var(--ti-dim); }
 .ti .rg-mono    { font-family: var(--ti-mono); font-size: 11px; }
 .ti .rg-link    { color: var(--ti-mut); }
@@ -235,7 +256,7 @@
   display: flex; gap: var(--ti-8); align-items: flex-start;
   padding: var(--ti-8) 0; border-bottom: 1px solid var(--ti-rule);
   font-size: 12px; line-height: 18px; color: var(--ti-sec);
-  max-width: 58ch;
+  max-width: var(--ti-measure);
 }
 .ti .rg-issues__row:last-child { border-bottom: 0; }
 
@@ -283,4 +304,4 @@
 
 /* Sits directly above .rg-issues__row and reads as one block with it, so
    it takes the same measure rather than running the panel's full width. */
-.ti .rg-card__sub { max-width: 58ch; }
+.ti .rg-card__sub { max-width: var(--ti-measure); }

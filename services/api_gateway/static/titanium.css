@@ -85,6 +85,20 @@
 
   /* Space — base unit 2px, working scale below. Every spacing value in the
      build comes from this scale. */
+  /* The measure: the cap on any line of running prose, everywhere.
+     ~74 real characters, which is the top of the 45-75 the eye tracks without
+     losing its place. Stated in `ch` because CSS has no character unit, and 58
+     rather than 74 because `ch` is the width of the "0" glyph — far wider than
+     the average letter in Chivo.
+
+     One token rather than a per-class number, because per-class numbers is how
+     this went wrong: .ti-para__body was corrected to 58ch while .ti-footnote
+     sat at 88ch (96 real characters), .ti-page__lede and .ti-notice at 72ch
+     (85), and .ti-field__msg and .rg-caption at no cap at all (115 and 124).
+     `ch` in a custom property resolves against the element that USES it, so
+     this one value holds at 11px and at 14px alike. */
+  --ti-measure: 58ch;
+
   --ti-2: 2px;   --ti-4: 4px;   --ti-6: 6px;   --ti-8: 8px;
   --ti-10: 10px; --ti-12: 12px; --ti-14: 14px; --ti-16: 16px;
   --ti-18: 18px; --ti-20: 20px; --ti-32: 32px;
@@ -345,6 +359,15 @@
   font-size: 12px;
   color: var(--ti-mut);
 }
+/* `outline: 0` is right on the input and wrong on its own.
+   ------------------------------------------------------------------------
+   The input is borderless inside a pill, so its own outline would draw a
+   rectangle inside a 17px radius and look broken. But nothing compensated —
+   there was no :focus-within anywhere in the sheet — so tabbing to the search,
+   the most-used control in the app and present on every page, produced no
+   indication at all. WCAG 2.4.7 on the primary control.
+
+   The ring goes on the pill instead, below. */
 .ti-search__input {
   flex: 1;
   min-width: 0;
@@ -353,6 +376,23 @@
   background: none;
   font: 400 13px/20px var(--ti-sans);
   color: var(--ti-ink);
+}
+
+/* :focus-within, not :has(:focus-visible). A text field is the one control
+   where showing focus on a mouse click is correct rather than noisy — it is
+   what every browser does natively for an input, and it is what `outline: 0`
+   took away.
+
+   The outline matches the app-wide ring (2px accent, 2px offset) so keyboard
+   focus looks the same here as everywhere else. What is NOT inherited is the
+   global rule's `border-radius: var(--ti-r-focus)`: at 4px it would square off
+   a pill whose radius is half its height. The outline follows the element's
+   own radius, so leaving it alone is what keeps the ring round. */
+.ti-search:focus-within,
+.ti-home__search:focus-within {
+  outline: 2px solid var(--ti-accent);
+  outline-offset: 2px;
+  border-color: var(--ti-line-ctl);
 }
 .ti-search__input::placeholder { color: var(--ti-mut); }
 .ti-search__kbd {
@@ -802,7 +842,7 @@
   font-size: 12px;
   line-height: 18px;
   color: var(--ti-sec);
-  max-width: 88ch;
+  max-width: var(--ti-measure);
   text-wrap: pretty;
 }
 .ti-footnote code,
@@ -1040,7 +1080,7 @@
   font-size: 13px;
   line-height: 20px;
   color: var(--ti-sec);
-  max-width: 72ch;
+  max-width: var(--ti-measure);
   text-wrap: pretty;
 }
 
@@ -1130,7 +1170,7 @@
      without losing its place. 58ch measures ~76 real characters here, the top
      of that range: narrower would leave the prose looking thin beside the
      772px data tables it sits among. */
-  max-width: 58ch;
+  max-width: var(--ti-measure);
   text-wrap: pretty;
 }
 .ti-para__body--backed { border-left-color: var(--ti-accent); }
@@ -1267,7 +1307,7 @@
   font-size: 13px;
   line-height: 20px;
   color: var(--ti-sec);
-  max-width: 72ch;
+  max-width: var(--ti-measure);
 }
 .ti-notice strong { color: var(--ti-ink); font-weight: 500; }
 
@@ -1544,6 +1584,7 @@
   font-size: 11px;
   line-height: 16px;
   color: var(--ti-sec);
+  max-width: var(--ti-measure);
 }
 .ti-field__msg--error { color: var(--ti-accent-dark); font-weight: 500; }
 
@@ -1939,7 +1980,7 @@
   box-shadow: var(--ti-sh-chip);
   font-family: var(--ti-mono); font-size: 11px; color: var(--ti-mut);
 }
-.ti-step__body { font-size: 13px; line-height: 20px; color: var(--ti-sec); max-width: 68ch; }
+.ti-step__body { font-size: 13px; line-height: 20px; color: var(--ti-sec); max-width: var(--ti-measure); }
 .ti-step__body strong { color: var(--ti-ink); font-weight: 500; }
 .ti-onboard__cta { display: flex; flex-wrap: wrap; gap: var(--ti-14); align-items: center; }
 .ti-onboard__note { font-size: 12px; color: var(--ti-dim); }
@@ -2052,7 +2093,7 @@
      does not sit flush against the box. */
   margin: 0 0 var(--ti-20);
   background: var(--ti-surface);
-  max-width: 62ch;
+  max-width: var(--ti-measure);
 }
 
 /* Titanium has no amber. The system already says "attention" with the rust
@@ -2253,7 +2294,7 @@
   line-height: 1.55;
   color: var(--ti-mut);
   text-wrap: pretty;
-  max-width: 62ch;
+  max-width: var(--ti-measure);
 }
 
 /* Why a section failed or is being retried. Spans the full row width beneath
@@ -2269,7 +2310,7 @@
   line-height: 1.5;
   color: var(--ti-mut);
   text-wrap: pretty;
-  max-width: 62ch;
+  max-width: var(--ti-measure);
 }
 .ti-progress__why li { margin: 0; }
 .ti-progress__why li + li { margin-top: var(--ti-2); }
@@ -2326,7 +2367,7 @@
    its icon and its position, and a filled alert would be the loudest thing in
    the app appearing on its least important screen.
    --------------------------------------------------------------------------- */
-.ti-errpage { max-width: 58ch; padding-top: var(--ti-20); }
+.ti-errpage { max-width: var(--ti-measure); padding-top: var(--ti-20); }
 
 .ti-errpage__code {
   margin: 0 0 var(--ti-8);
