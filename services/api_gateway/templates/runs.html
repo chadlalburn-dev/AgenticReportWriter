@@ -53,8 +53,12 @@
       {%- for r in runs %}
       <a class="ti-lrow ti-lrow--run" href="/runs/{{ r.run_id }}">
         <div style="min-width:0">
-          <p class="ti-lrow__title">{{ r.template_title }}</p>
-          <p class="ti-lrow__sub" translate="no">
+          <p class="ti-lrow__title" title="{{ r.template_title }}">{{ r.template_title }}</p>
+          {#- The title names the compound only. The placeholder-prose chip
+              inside this line is its own element with its own tooltip, so
+              repeating it here would say the same thing twice on hover. -#}
+          <p class="ti-lrow__sub" translate="no"
+             title="{{ r.primary_input or 'no compound' }}">
             {{ r.primary_input or 'no compound' }}
             {#- Marked only when the prose is placeholder. The store can now
                 hold a mix — some runs drafted by the local Claude CLI, some by

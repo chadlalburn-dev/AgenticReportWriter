@@ -30,8 +30,8 @@
    {% if c.tag_tokens %}data-tags="{{ c.tag_tokens | join(' ') }}"{% endif %}
    aria-label="{{ c.title }} — set up a run{% if c.tag_aria %}. Tagged {{ c.tag_aria }}{% endif %}">
   <div style="min-width:0">
-    <p class="ti-lrow__title">{{ c.title }}</p>
-    <p class="ti-lrow__sub">{{ c.owner or 'unowned' }} &middot; v{{ c.version }}</p>
+    <p class="ti-lrow__title" title="{{ c.title }}">{{ c.title }}</p>
+    <p class="ti-lrow__sub" title="{{ c.owner or 'unowned' }} — v{{ c.version }}">{{ c.owner or 'unowned' }} &middot; v{{ c.version }}</p>
     {%- if c.chips %}
     <div class="ti-tags">
       {%- for chip in c.chips %}

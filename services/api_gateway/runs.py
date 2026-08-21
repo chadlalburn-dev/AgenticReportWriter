@@ -820,6 +820,14 @@ class SectionView(_Dict):
     level: int
     heading_tag: str
     critique_status: str
+    #: The same fact in English, and required rather than defaulted so a new
+    #: construction site cannot forget it. `critique_status` is an internal
+    #: Literal ("pending" / "passed" / "failed_after_retries") and it was being
+    #: printed straight into the section meta line, so a nonclinical safety
+    #: summary told a reader "failed_after_retries" beside a section with no
+    #: citations, while every other string on that page is written prose. The
+    #: raw value stays for tests and the audit trail; this is what renders.
+    critique_label: str
     critique_notes: list[str]
     notes_short: list[str]
     paragraphs: list[ParagraphView]
@@ -1022,6 +1030,17 @@ def _offset_human(value: str | datetime | None, start: str | datetime | None) ->
     if seconds < 600:
         return f"+{seconds:.0f}s"
     return f"+{seconds / 60:.0f}m"
+
+
+#: Internal critique states, in the words a reader should see. "pending" and
+#: "passed" map to nothing on purpose: the meta line only mentions the state
+#: when it is worth mentioning, and "passed" beside a citation count would be
+#: noise on every section that worked.
+CRITIQUE_LABEL: dict[str, str] = {
+    "failed_after_retries": "checks failed after a retry",
+    "pending": "",
+    "passed": "",
+}
 
 
 def _human_ts(value: str | datetime | None) -> str:
@@ -4237,6 +4256,7 @@ def _build_draft_view(
                 level=level,
                 heading_tag=f"h{min(max(level, 2), 4)}",
                 critique_status=critique_status,
+                critique_label=CRITIQUE_LABEL.get(critique_status, ""),
                 critique_notes=critique_notes,
                 notes_short=[_truncate(n, 240) for n in critique_notes],
                 paragraphs=paragraphs,

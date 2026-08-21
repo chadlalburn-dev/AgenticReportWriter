@@ -10,6 +10,13 @@ at and both found by measuring rather than looking:
     panel clipped them mid-word — no ellipsis, reading as a rendering fault.
   * A truncated binding id with no `title` is simply gone. The detail lines
     always had one; the identifier — the more important token — did not.
+
+A third came later, from the same root, on the list rows. `.ti-lrow__title` and
+`.ti-lrow__sub` truncate at 420px — 14 lines in the run log alone — and carried
+no title either. One of those lines is the target of a "Citation captured"
+event: a 36-character id, which is the correlation key for that provenance
+record and unrecoverable once the ellipsis takes it. Nothing was visibly wrong
+at desktop width, which is why the sweep is by class rather than by page.
 """
 
 from __future__ import annotations
@@ -24,9 +31,25 @@ from services.api_gateway.main import app
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "services" / "api_gateway" / "templates"
 
-#: Classes that promise an ellipsis. Anything wearing one must be a block box
-#: and must be capped to its container, or the promise is not kept.
-ELLIPSIS_CLASSES = ("ti-brow__name", "ti-brow__detail")
+#: Every class that promises an ellipsis. All of these must keep the full value
+#: recoverable, because truncated text with no `title` is simply gone — and one
+#: of them carries a 36-character citation id, the correlation key for a
+#: provenance record.
+ELLIPSIS_CLASSES = (
+    "ti-brow__name",
+    "ti-brow__detail",
+    "ti-lrow__title",
+    "ti-lrow__sub",
+)
+
+#: The subset that additionally needs an explicit `display: block`, because the
+#: class lands on a `<span>` somewhere. On an inline box max-width, overflow and
+#: text-overflow are all ignored, so the ellipsis silently does nothing.
+#:
+#: Deliberately narrower than ELLIPSIS_CLASSES: every `.ti-lrow__*` usage is a
+#: `<p>`, which is already a block box, and demanding the declaration there
+#: would be stating a rule the markup already guarantees.
+NEEDS_EXPLICIT_BLOCK = ("ti-brow__name", "ti-brow__detail")
 
 
 @pytest.fixture(scope="module")
@@ -54,7 +77,7 @@ def _rule(css: str, selector: str) -> str:
     return chr(10).join(found)
 
 
-@pytest.mark.parametrize("cls", ELLIPSIS_CLASSES)
+@pytest.mark.parametrize("cls", NEEDS_EXPLICIT_BLOCK)
 def test_an_ellipsis_promise_needs_a_block_box(css: str, cls: str):
     """max-width, overflow and text-overflow are all no-ops on an inline box."""
     body = _rule(css, f".{cls}")

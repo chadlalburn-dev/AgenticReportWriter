@@ -226,7 +226,11 @@
           <p class="ti-section-head__meta">
             {{ s.n_citations }} citation{{ '' if s.n_citations == 1 else 's' }}
             {%- if s.n_uncited_numbers %} &middot; {{ s.n_uncited_numbers }} uncited number{{ '' if s.n_uncited_numbers == 1 else 's' }}{% endif %}
-            {%- if s.critique_status and s.critique_status != 'passed' %} &middot; {{ s.critique_status }}{% endif %}
+            {#- The written label, never the raw Literal. This printed
+                "failed_after_retries" into a nonclinical safety summary, beside
+                a section with no citations, while every other string on the
+                page is prose. -#}
+            {%- if s.critique_label %} &middot; {{ s.critique_label }}{% endif %}
           </p>
         </div>
 
@@ -451,8 +455,12 @@
       {%- for e in draft.events %}
       <div class="ti-lrow ti-lrow--run" style="cursor:default">
         <div style="min-width:0">
-          <p class="ti-lrow__title">{{ e.action_label }}</p>
-          <p class="ti-lrow__sub">{{ e.target }}</p>
+          {#- Titles because both lines truncate on a narrow window, and the
+              target of a "Citation captured" event is a 36-character id —
+              the correlation key for this record, and unrecoverable once
+              the ellipsis takes it. -#}
+          <p class="ti-lrow__title" title="{{ e.action_label }}">{{ e.action_label }}</p>
+          <p class="ti-lrow__sub" title="{{ e.target }}">{{ e.target }}</p>
         </div>
         <span class="ti-lrow__num">{{ e.group }}</span>
         {#- Elapsed since the first event. On the stub engine every row said the
