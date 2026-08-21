@@ -1,4 +1,5 @@
 {% extends "titanium_base.html" %}
+{% import "_icons.html" as ic %}
 {#- ---------------------------------------------------------------------- -#}
 {#- Run / draft — Titanium.                                                 -#}
 {#-                                                                        -#}
@@ -39,17 +40,19 @@
       <h1 class="ti-identity__id" style="font-size:24px;line-height:28px">{{ run.template_title }}</h1>
       <div class="ti-identity__meta" style="margin-top:var(--ti-4)">
         {%- if run.primary_input %}
-        <span><a href="/compound/{{ run.primary_input }}">{{ run.primary_input }}</a></span>
+        <span><a href="/compound/{{ run.primary_input }}" translate="no">{{ run.primary_input }}</a></span>
         {%- endif %}
         <span>{{ run.created_human }}</span>
-        <span class="ti-code">{{ run.run_id }}</span>
+        <span class="ti-code" translate="no">{{ run.run_id }}</span>
       </div>
     </div>
     {%- set st = run.status_state %}
     <span class="ti-state ti-state--{{ 'ok' if st == 'ok' else ('bad' if st in ('error','bad') else ('busy' if not run.terminal else 'neutral')) }}">
-      <span class="ti-state__glyph" aria-hidden="true">
-        {%- if st == 'ok' %}&#9679;{% elif st in ('error','bad') %}&#9632;{% elif not run.terminal %}&#9678;{% else %}&#9675;{% endif %}
-      </span>{{ run.status_label }}
+      {%- if st == 'ok' %}{{ ic.icon('dot') }}
+      {%- elif st in ('error','bad') %}{{ ic.icon('square') }}
+      {%- elif not run.terminal %}{{ ic.icon('spinner') }}
+      {%- else %}{{ ic.icon('ring') }}{% endif -%}
+      {{ run.status_label }}
     </span>
   </div>
 
@@ -289,7 +292,7 @@
       <div class="ti-brow" role="row">
         <span class="ti-dot {{ 'ti-dot--on' if ready else 'ti-dot--off' }}" aria-hidden="true"></span>
         <div style="min-width:0">
-          <p class="ti-brow__name">{{ r.binding_id }}</p>
+          <p class="ti-brow__name" translate="no">{{ r.binding_id }}</p>
           <p class="ti-brow__detail {{ 'ti-brow__detail--on' if ready else 'ti-brow__detail--off' }}"
              title="{{ r.label }} — {{ r.detail }}">{{ r.label }}</p>
           {%- if r.fix_hint %}<p class="ti-field__msg">{{ r.fix_hint }}</p>{% endif %}

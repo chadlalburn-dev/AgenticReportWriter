@@ -1,0 +1,245 @@
+/* ============================================================================
+   Template editor — Titanium bridge
+   ----------------------------------------------------------------------------
+   The editor is 1000 lines of form markup whose repeating-row machinery
+   (`editor.js`) hooks off `data-*` attributes, NOT css classes. So the cheap
+   and safe way to bring it into the Titanium world is to restyle the classes
+   it already emits, rather than rewrite every line and risk breaking the
+   add/remove/reorder behaviour.
+
+   That means this sheet styles `rg-*` selectors using Titanium tokens. It is a
+   deliberate, contained exception and the reason is worth stating plainly: a
+   hand rewrite of the editor is a separate job with its own test surface, and
+   an admin authoring route does not justify that risk to get visual parity.
+
+   Load order matters — this file must come AFTER titanium.css, and the editor
+   must NOT load gsk.css. Anything not covered here inherits the Titanium base,
+   which is why the editor now reads as one app with the rest.
+   ========================================================================= */
+
+/* --- Layout ------------------------------------------------------------ */
+
+.ti .rg-container { max-width: 1100px; margin: 0 auto; padding: var(--ti-20); }
+.ti .rg-editor { display: block; }
+.ti .rg-cols { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--ti-20); align-items: start; }
+.ti .rg-cols__main { min-width: 0; }
+.ti .rg-cols__rail { min-width: 0; }
+.ti .rg-rail-sticky { position: sticky; top: 64px; }
+@media (max-width: 980px) {
+  .ti .rg-cols { grid-template-columns: minmax(0, 1fr); }
+  .ti .rg-rail-sticky { position: static; }
+}
+
+.ti .rg-stack-8  > * + * { margin-top: var(--ti-8); }
+.ti .rg-stack-16 > * + * { margin-top: var(--ti-16); }
+.ti .rg-stack-24 > * + * { margin-top: var(--ti-20); }
+.ti .rg-row { display: flex; flex-wrap: wrap; gap: var(--ti-12); align-items: center; }
+.ti .rg-hr { height: 1px; margin: var(--ti-16) 0; border: 0; background: var(--ti-rule); }
+
+/* --- Type -------------------------------------------------------------- */
+
+.ti .rg-title {
+  margin: 0 0 var(--ti-4);
+  font-size: 22px; line-height: 28px; font-weight: 500;
+  letter-spacing: -0.02em; color: var(--ti-ink);
+  text-wrap: balance;
+}
+.ti .rg-h3 {
+  margin: 0 0 var(--ti-8);
+  font-family: var(--ti-mono);
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  font-weight: 400; color: var(--ti-mut);
+}
+.ti .rg-body    { font-size: 14px; line-height: 21px; color: var(--ti-ink); max-width: 72ch; }
+.ti .rg-body-sm { font-size: 13px; line-height: 20px; color: var(--ti-sec); max-width: 72ch; }
+.ti .rg-caption { font-size: 11px; line-height: 16px; color: var(--ti-dim); }
+.ti .rg-subtle  { color: var(--ti-dim); }
+.ti .rg-mono    { font-family: var(--ti-mono); font-size: 11px; }
+.ti .rg-link    { color: var(--ti-mut); }
+
+/* Visually hidden — keep it reachable by assistive tech. */
+.ti .rg-vh {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
+/* --- Panels / cards ---------------------------------------------------- */
+
+.ti .rg-card,
+.ti .rg-preview,
+.ti .rg-details {
+  background: var(--ti-panel);
+  border: 1px solid var(--ti-line);
+  border-radius: var(--ti-r-panel);
+  box-shadow: var(--ti-sh-panel);
+  padding: var(--ti-16);
+}
+.ti .rg-details > summary {
+  cursor: pointer;
+  font-family: var(--ti-mono);
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ti-mut);
+}
+.ti .rg-details > summary:hover { color: var(--ti-ink); }
+
+/* --- Fields ------------------------------------------------------------ */
+
+.ti .rg-field { margin: 0; }
+.ti .rg-field__label {
+  display: block; margin-bottom: var(--ti-6);
+  font-family: var(--ti-mono);
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ti-mut);
+}
+.ti .rg-field__req { color: var(--ti-accent-dark); }
+.ti .rg-field__hint {
+  margin: var(--ti-4) 0 0;
+  font-size: 11px; line-height: 16px; color: var(--ti-dim);
+  max-width: 72ch;
+}
+.ti .rg-field__error {
+  margin: var(--ti-4) 0 0;
+  font-size: 11px; line-height: 16px;
+  color: var(--ti-accent-dark); font-weight: 500;
+}
+
+.ti .rg-input,
+.ti .rg-select,
+.ti .rg-textarea {
+  display: block; width: 100%;
+  min-height: 34px; padding: var(--ti-6) var(--ti-12);
+  background: #FFFFFF;
+  border: 1px solid var(--ti-line-ctl);
+  border-radius: var(--ti-r-input);
+  box-shadow: var(--ti-sh-ctl-inset);
+  font: 400 13px/20px var(--ti-sans);
+  color: var(--ti-ink);
+}
+.ti .rg-textarea { min-height: 88px; resize: vertical; }
+.ti .rg-textarea--mono { font-family: var(--ti-mono); font-size: 12px; }
+.ti .rg-input:hover,
+.ti .rg-select:hover,
+.ti .rg-textarea:hover { border-color: #8D969C; }
+.ti .rg-input--error,
+.ti .rg-input--error:hover { border-color: var(--ti-accent-dark); }
+/* Native select needs its colours stated explicitly or Windows dark mode
+   paints it white-on-white. */
+.ti .rg-select { cursor: pointer; background-color: #FFFFFF; color: var(--ti-ink); }
+
+.ti .rg-checkgroup { display: flex; flex-wrap: wrap; gap: var(--ti-8); }
+.ti .rg-checkgroup__item {
+  display: inline-flex; align-items: center; gap: var(--ti-6);
+  font-size: 12px; color: var(--ti-sec);
+}
+.ti .rg-facet { margin: 0; padding: 0; border: 0; min-width: 0; }
+
+/* --- Buttons ----------------------------------------------------------- */
+
+.ti .rg-btn {
+  display: inline-flex; align-items: center; gap: var(--ti-6);
+  height: 30px; padding: 0 var(--ti-14);
+  background: linear-gradient(var(--ti-head-from), var(--ti-head-to));
+  border: 1px solid var(--ti-line-ctl);
+  border-radius: 15px;
+  box-shadow: var(--ti-sh-ctl-raised);
+  font-family: var(--ti-mono);
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ti-ink); text-decoration: none; cursor: pointer;
+  transition: background-color var(--ti-dur) var(--ti-ease),
+              box-shadow var(--ti-dur) var(--ti-ease),
+              transform 120ms var(--ti-ease);
+}
+.ti .rg-btn:hover { background: linear-gradient(#F7F9F9, #EDF0F1); color: var(--ti-ink); }
+.ti .rg-btn:active { transform: scale(0.97); }
+
+.ti .rg-btn--primary {
+  background: linear-gradient(var(--ti-accent-from), var(--ti-accent-to));
+  border-color: var(--ti-accent-to);
+  box-shadow: var(--ti-sh-primary);
+  color: #FFFFFF;
+}
+.ti .rg-btn--primary:hover {
+  background: linear-gradient(var(--ti-accent-from), var(--ti-accent-to));
+  box-shadow: var(--ti-sh-primary-hover);
+  color: #FFFFFF;
+}
+.ti .rg-btn--danger { color: var(--ti-accent-dark); border-color: var(--ti-accent-dark); }
+.ti .rg-btn__icon { display: inline-flex; }
+
+.ti .rg-editor__actions {
+  display: flex; flex-wrap: wrap; gap: var(--ti-12); align-items: center;
+  padding-top: var(--ti-16); border-top: 1px solid var(--ti-rule);
+}
+
+/* --- Repeating rows (inputs / sources / sections) ---------------------- */
+
+.ti .rg-erow {
+  padding: var(--ti-12);
+  background: var(--ti-panel);
+  border: 1px solid var(--ti-line);
+  border-radius: var(--ti-r-panel);
+  box-shadow: var(--ti-sh-chip);
+}
+.ti .rg-erow + .rg-erow { margin-top: var(--ti-8); }
+.ti .rg-erow--invalid { border-color: var(--ti-accent-dark); }
+.ti .rg-erow__legend {
+  font-family: var(--ti-mono);
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ti-dim); padding: 0 0 var(--ti-8);
+}
+.ti .rg-erow__grid {
+  display: grid; gap: var(--ti-12);
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  align-items: start;
+}
+.ti .rg-erow__vary { min-width: 0; }
+.ti .rg-erow__acts { display: flex; gap: var(--ti-6); align-items: center; margin-top: var(--ti-10); }
+
+/* --- Issues rail ------------------------------------------------------- */
+
+.ti .rg-issues { margin: 0; padding: 0; list-style: none; }
+.ti .rg-issues__row {
+  display: flex; gap: var(--ti-8); align-items: flex-start;
+  padding: var(--ti-8) 0; border-bottom: 1px solid var(--ti-rule);
+  font-size: 12px; line-height: 18px; color: var(--ti-sec);
+}
+.ti .rg-issues__row:last-child { border-bottom: 0; }
+
+/* --- Icons (from the gsk ui.icon macro) -------------------------------- */
+
+.ti .rg-icon,
+.ti [class*='rg-icon--'] { width: 14px; height: 14px; flex: none; vertical-align: -0.15em; }
+.ti .rg-icon--sm { width: 12px; height: 12px; }
+.ti .rg-icon--ok    { color: var(--ti-ok); }
+.ti .rg-icon--warn  { color: var(--ti-accent-dark); }
+.ti .rg-icon--error { color: var(--ti-accent-dark); }
+.ti .rg-icon--rot-up   { transform: rotate(180deg); }
+.ti .rg-icon--rot-down { transform: none; }
+
+/* --- Breadcrumb ------------------------------------------------------- */
+
+.ti .rg-crumb {
+  display: flex; flex-wrap: wrap; gap: var(--ti-6); align-items: center;
+  margin: 0; padding: 0; list-style: none;
+  font-family: var(--ti-mono);
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ti-dim);
+}
+.ti .rg-crumb__item + .rg-crumb__item::before { content: '/'; padding-right: var(--ti-6); color: var(--ti-tick-ring); }
+
+/* --- Banners (gsk ui.banner macro) ------------------------------------ */
+
+.ti .rg-banner {
+  display: flex; gap: var(--ti-10); align-items: flex-start;
+  padding: var(--ti-12) var(--ti-14);
+  background: var(--ti-panel);
+  border: 1px solid var(--ti-line);
+  border-left: 1px solid var(--ti-accent);
+  border-radius: var(--ti-r-panel);
+  font-size: 13px; line-height: 20px; color: var(--ti-sec);
+  max-width: 84ch;
+}
+.ti .rg-banner--warn  { border-left-color: var(--ti-accent-dark); }
+.ti .rg-banner--error { border-left-color: var(--ti-accent-dark); }
+.ti .rg-banner--ok    { border-left-color: var(--ti-ok); }

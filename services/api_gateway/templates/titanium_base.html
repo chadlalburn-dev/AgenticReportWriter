@@ -1,11 +1,15 @@
+{% import "_icons.html" as ic %}
 {#- ---------------------------------------------------------------------- -#}
 {#- Titanium shell — the compound-first surface.                            -#}
 {#-                                                                        -#}
 {#- Deliberately separate from base.html: this is a different visual        -#}
 {#- language (see static/titanium.css header) and GSK brand compliance is   -#}
-{#- explicitly not required here. base.html + gsk.css still govern the      -#}
-{#- legacy gallery / run / editor pages, so both can coexist during the     -#}
-{#- migration.                                                             -#}
+{#- explicitly not required here.                                          -#}
+{#-                                                                        -#}
+{#- This is now the ONLY shell. Every route renders through it, including   -#}
+{#- the template editor, which rides on top with a bridge stylesheet.       -#}
+{#- base.html survives only as the source of the editor's macros; nothing   -#}
+{#- extends it and no page loads gsk.css any more.                          -#}
 {#-                                                                        -#}
 {#- No off-origin <link> or <script>. Fonts are self-hosted woff2 because   -#}
 {#- this app runs locally against local data and must work with no network. -#}
@@ -21,6 +25,7 @@
 <link rel="preload" href="/static/fonts/chivo-latin-var.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/chivo-mono-latin-var.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/titanium.css">
+{% block head_extra %}{% endblock %}
 <link rel="icon" href="data:,">
 {#- Density is a real user preference (persisted). Applied before first paint
     so the page never flashes at the wrong row height. -#}
@@ -50,11 +55,11 @@
   <form class="ti-search-form" action="/" method="get" role="search"
         style="display:contents">
     <label class="ti-search" for="ti-q">
-      <span class="ti-search__glyph" aria-hidden="true">&#8981;</span>
+      <span class="ti-search__glyph">{{ ic.icon('search') }}</span>
       <span class="ti-sr">Jump to compound, target or run</span>
       <input class="ti-search__input" id="ti-q" name="q" type="search"
              value="{{ q|default('') }}" autocomplete="off" spellcheck="false"
-             placeholder="Jump to compound, target or run">
+             placeholder="Jump to compound, target or run…">
       <kbd class="ti-search__kbd" aria-hidden="true">/</kbd>
     </label>
   </form>

@@ -1,0 +1,30 @@
+{#- ----------------------------------------------------------------------- -#}
+{#- Icon set — authored SVG, one consistent stroke and weight.               -#}
+{#-                                                                         -#}
+{#- These replace the Unicode glyphs the first Titanium pass used (● ■ ◎ ○   -#}
+{#- ⌕ → ). Glyphs standing in for an icon system is a craft failure: they    -#}
+{#- render in whatever the font decides, their weights disagree with each    -#}
+{#- other and with the type, and their optical sizes are inconsistent. Every -#}
+{#- icon below is drawn on a 16-unit grid at stroke 1.6 so they sit together.-#}
+{#-                                                                         -#}
+{#- All are aria-hidden: each is paired with a text label in the markup, so  -#}
+{#- announcing them would duplicate. Never use one as the only label.        -#}
+{#- ----------------------------------------------------------------------- -#}
+
+{% macro icon(name, cls='') -%}
+{%- set paths = {
+  'search':   '<circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/>',
+  'arrow':    '<path d="M3 8h9M9 5l3 3-3 3"/>',
+  'check':    '<path d="M3 8.5 6 11.5 13 4.5"/>',
+  'dot':      '<circle cx="8" cy="8" r="3.2" fill="currentColor" stroke="none"/>',
+  'ring':     '<circle cx="8" cy="8" r="3.6"/>',
+  'square':   '<rect x="4.6" y="4.6" width="6.8" height="6.8" rx="1" fill="currentColor" stroke="none"/>',
+  'spinner':  '<path d="M8 2.2a5.8 5.8 0 1 1-5.8 5.8" />',
+  'warn':     '<path d="M8 3.2 14 13H2z"/><path d="M8 6.8v2.6M8 11.1h.01"/>',
+  'gap':      '<path d="M3 8h3M10 8h3"/><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"/>',
+} -%}
+<svg class="ti-icon {{ cls }}" viewBox="0 0 16 16" width="16" height="16"
+     fill="none" stroke="currentColor" stroke-width="1.6"
+     stroke-linecap="round" stroke-linejoin="round"
+     aria-hidden="true" focusable="false">{{ paths.get(name, '') | safe }}</svg>
+{%- endmacro %}

@@ -528,25 +528,39 @@ def test_static_assets_are_served(
 
 
 def test_pages_reference_the_local_static_assets(client: TestClient) -> None:
-    """No off-origin <link> or <script> on either shell.
+    """No off-origin <link> or <script> anywhere. This app runs offline against
+    local data, so a single CDN reference would break it on a locked-down
+    machine.
 
-    The app has two: the legacy gsk.css shell — now only the template editor —
-    and the Titanium shell (home, compound, runs, templates, run detail, run
-    setup). Both must stay local-only: this app runs offline against local
-    data.
+    There is now ONE shell. The legacy gsk.css shell is gone — the template
+    editor was the last page on it and now renders on Titanium with a bridge
+    stylesheet, so every route below is Titanium.
     """
-    legacy = client.get("/templates/new").text
-    assert "/static/gsk.css" in legacy
-    assert "/static/app.js" in legacy
+    pages = {
+        "home": "/",
+        "runs": "/runs",
+        "templates": "/templates",
+        "editor": "/templates/new",
+        "run setup": "/new/" + RUN_TEMPLATE,
+    }
+    bodies = {}
+    for name, url in pages.items():
+        response = client.get(url)
+        assert response.status_code == 200, name
+        bodies[name] = response.text
+        assert "/static/titanium.css" in response.text, name
+        assert "gsk.css" not in response.text, f"{name} still on the legacy shell"
 
-    titanium = client.get("/").text
-    assert "/static/titanium.css" in titanium
-    assert "/static/fonts/chivo-latin-var.woff2" in titanium
+    # the self-hosted face, not a Google Fonts link
+    assert "/static/fonts/chivo-latin-var.woff2" in bodies["home"]
+    # the editor's bridge sheet rides on top of Titanium
+    assert "/static/editor-titanium.css" in bodies["editor"]
 
-    for body in (legacy, titanium):
-        assert "https://fonts.googleapis.com" not in body
-        assert "https://fonts.gstatic.com" not in body
-        assert "//cdn." not in body
+    for name, body in bodies.items():
+        assert "https://fonts.googleapis.com" not in body, name
+        assert "https://fonts.gstatic.com" not in body, name
+        assert "//cdn." not in body, name
+        assert "https://unpkg.com" not in body, name
 
 
 # ---------------------------------------------------------------------------

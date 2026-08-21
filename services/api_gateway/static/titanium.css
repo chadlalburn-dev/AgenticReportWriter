@@ -199,9 +199,58 @@
     transform var(--ti-dur) var(--ti-ease);
 }
 
+/* Reduced motion means FEWER and GENTLER, not zero. Colour and opacity
+   transitions aid comprehension and cause no vestibular problem, so they stay;
+   only transform-based movement is removed. Killing every transition made
+   hover feedback snap, which read as broken rather than as respectful. */
 @media (prefers-reduced-motion: reduce) {
-  .ti *, .ti *::before, .ti *::after { transition: none !important; }
+  .ti *, .ti *::before, .ti *::after {
+    transition-property: background-color, color, border-color, opacity, box-shadow;
+  }
+  .ti *:active { transform: none !important; }
 }
+
+/* --- Browser surfaces --------------------------------------------------
+   The parts we did not draw still carry the design: the caret, the
+   scrollbars, text selection, focus rings, underline offset, and the
+   numerals in tabular data all ship with browser defaults that belong to no
+   design system. Theming them is the cheapest signal that a page was built
+   rather than assembled. */
+
+.ti { caret-color: var(--ti-accent); }
+
+/* Tabular figures everywhere a number sits in a column or gets compared to
+   the number above it. Chivo Mono is already monospaced, but the sans face
+   is not — ratios and counts rendered in sans were shifting by a pixel or
+   two per row and the column read as ragged. */
+.ti {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* Scrollbars, themed from the palette. Firefox first, then WebKit. */
+.ti { scrollbar-color: var(--ti-tick-ring) transparent; scrollbar-width: thin; }
+.ti ::-webkit-scrollbar { width: 11px; height: 11px; }
+.ti ::-webkit-scrollbar-track { background: transparent; }
+.ti ::-webkit-scrollbar-thumb {
+  background: var(--ti-tick-ring);
+  border: 3px solid var(--ti-field);   /* inset the thumb off the track edge */
+  border-radius: 6px;
+}
+.ti ::-webkit-scrollbar-thumb:hover { background: var(--ti-dim); }
+.ti ::-webkit-scrollbar-corner { background: transparent; }
+
+/* Touch: kill the 300ms double-tap delay and make the tap flash ours. */
+.ti {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(196, 61, 28, 0.12);
+}
+
+/* Anchored records must clear the sticky header when jumped to. Without this
+   a citation marker scrolls its record UNDER the 44px header — which broke
+   the one interaction this product exists for. */
+.ti :target,
+.ti [id^='cite-'] { scroll-margin-top: 56px; }
 
 .ti-skip {
   position: absolute;
@@ -512,12 +561,16 @@
   align-items: center;
   white-space: nowrap;
 }
-.ti-btn-primary:hover {
-  color: #FFFFFF;
-  box-shadow: var(--ti-sh-primary-hover);
-  transform: translateY(-1px);
+/* The only transform-based hover in the sheet. Touch devices fire :hover on
+   tap, so an unqualified lift sticks after the finger leaves. Colour-only
+   hovers elsewhere are harmless on touch and stay ungated. */
+@media (hover: hover) and (pointer: fine) {
+  .ti-btn-primary:hover {
+    color: #FFFFFF;
+    box-shadow: var(--ti-sh-primary-hover);
+    transform: translateY(-1px);
+  }
 }
-.ti-btn-primary:active { transform: translateY(0); }
 
 /* --- Main (two columns) ------------------------------------------------- */
 
@@ -928,7 +981,8 @@
   font-size: 13px;
   line-height: 20px;
   color: var(--ti-sec);
-  max-width: 84ch;
+  max-width: 72ch;
+  text-wrap: pretty;
 }
 
 /* Toolbar: a search box plus optional toggles, in the header's control
@@ -1010,6 +1064,10 @@
   line-height: 22px;
   color: var(--ti-ink);
   min-width: 0;
+  /* Report prose is read, not scanned. Unbounded it ran ~110ch on a 1060px
+     page, well past the 65-75ch the eye can track without losing the line. */
+  max-width: 72ch;
+  text-wrap: pretty;
 }
 .ti-para__body--backed { border-left-color: var(--ti-accent); }
 
@@ -1079,6 +1137,7 @@
   line-height: 24px;
   font-weight: 500;
   color: var(--ti-ink);
+  text-wrap: balance;
 }
 .ti-section-head__meta {
   margin: 2px 0 0;
@@ -1098,12 +1157,12 @@
   padding: var(--ti-10) var(--ti-14);
   background: var(--ti-panel);
   border: 1px solid var(--ti-line);
-  border-left: 3px solid var(--ti-accent);
-  border-radius: 0 var(--ti-r-panel) var(--ti-r-panel) 0;
+  border-left: 1px solid var(--ti-accent);
+  border-radius: var(--ti-r-panel);
   font-size: 13px;
   line-height: 20px;
   color: var(--ti-sec);
-  max-width: 84ch;
+  max-width: 72ch;
 }
 .ti-notice strong { color: var(--ti-ink); font-weight: 500; }
 
@@ -1112,8 +1171,8 @@
   margin: var(--ti-10) 0 0;
   padding: var(--ti-10) var(--ti-12);
   background: var(--ti-panel);
-  border-left: 2px solid var(--ti-accent-dark);
-  border-radius: 0 var(--ti-r-input) var(--ti-r-input) 0;
+  border-left: 1px solid var(--ti-accent-dark);
+  border-radius: var(--ti-r-input);
 }
 .ti-orphans__note {
   margin: 0 0 var(--ti-6);
@@ -1561,4 +1620,56 @@
   .ti-header, .ti-foot, .ti-seg, .ti-density { display: none; }
   .ti-panel { box-shadow: none; border-color: #999; }
   .ti-band { background: none; box-shadow: none; }
+}
+
+
+/* --- Press feedback ----------------------------------------------------
+   A pressable element acknowledges the press; without it the interface feels
+   like it did not hear you. Subtle (0.97) and fast (120ms) — confirmation,
+   not a visible animation.
+
+   Buttons only. Rows are navigation, not actions, and scaling a full-width
+   table row reads as noise rather than as feedback. */
+
+.ti-btn-primary,
+.ti-btn-ghost,
+.ti-seg__btn {
+  transition: background-color var(--ti-dur) var(--ti-ease),
+              box-shadow var(--ti-dur) var(--ti-ease),
+              color var(--ti-dur) var(--ti-ease),
+              transform 120ms var(--ti-ease);
+}
+.ti-btn-primary:active,
+.ti-btn-ghost:active,
+.ti-seg__btn:active { transform: scale(0.97); }
+
+
+/* --- Icons -------------------------------------------------------------
+   Authored SVG on a 16-unit grid at stroke 1.6, replacing the Unicode glyphs
+   the first pass used. A glyph renders at whatever weight and optical size
+   its font decides; drawn icons sit with the type instead of fighting it.
+   Size follows the text it accompanies. */
+
+.ti-icon {
+  display: inline-block;
+  flex: none;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.125em;
+}
+.ti-icon--sm { width: 12px; height: 12px; }
+.ti-state .ti-icon { width: 11px; height: 11px; }
+.ti-lrow__arrow .ti-icon,
+.ti-rrow__arrow .ti-icon { width: 14px; height: 14px; }
+
+/* --- Long lists --------------------------------------------------------
+   The run history returns up to 200 rows. content-visibility skips layout
+   and paint for rows outside the viewport; contain-intrinsic-size gives the
+   skipped rows a placeholder height so the scrollbar does not jump as they
+   are realised. Applied to list rows only — not to the draft, where
+   find-in-page across the whole report matters more than the paint saving. */
+
+.ti-lrow {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
 }

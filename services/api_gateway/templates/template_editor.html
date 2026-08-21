@@ -1,5 +1,6 @@
 {% import "base.html" as ui without context %}
-{% extends "base.html" %}
+{% extends "titanium_base.html" %}
+{% block head_extra %}<link rel="stylesheet" href="/static/editor-titanium.css">{% endblock %}
 
 {#- INTEGRATION NOTE (load-bearing, do not remove):
     base.html defines a macro named `banner`. Once the parent's root render
@@ -174,7 +175,7 @@
 
 {% block page_title %}{{ page_title }} · Report Generator{% endblock %}
 
-{% block breadcrumb %}
+{% block band %}
 <nav class="rg-crumb" aria-label="Breadcrumb">
   <a class="rg-crumb__item rg-link" href="{{ url_for('gallery') }}">Report types</a>
   <span class="rg-crumb__item" aria-current="page">{{ page_title }}</span>

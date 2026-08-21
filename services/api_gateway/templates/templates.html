@@ -1,4 +1,5 @@
 {% extends "titanium_base.html" %}
+{% import "_icons.html" as ic %}
 {#- ---------------------------------------------------------------------- -#}
 {#- Template library — Titanium.                                            -#}
 {#-                                                                        -#}
@@ -52,7 +53,7 @@
     </div>
   </div>
   <span class="ti-lrow__num">{{ c.n_sections }}</span>
-  <span class="ti-lrow__arrow" aria-hidden="true">&rarr;</span>
+  <span class="ti-lrow__arrow">{{ ic.icon('arrow') }}</span>
 </a>
 {% endmacro %}
 
@@ -94,7 +95,7 @@
   <form action="/templates" method="get">
     <div class="ti-toolbar" role="search">
       <label class="ti-search" for="ti-tpl-q">
-        <span class="ti-search__glyph" aria-hidden="true">&#8981;</span>
+        <span class="ti-search__glyph">{{ ic.icon('search') }}</span>
         <span class="ti-sr">Search report types</span>
         <input class="ti-search__input" id="ti-tpl-q" name="q" type="search"
                value="{{ q }}" autocomplete="off"

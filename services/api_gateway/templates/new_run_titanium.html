@@ -1,4 +1,5 @@
 {% extends "titanium_base.html" %}
+{% import "_icons.html" as ic %}
 {#- ---------------------------------------------------------------------- -#}
 {#- Run setup — Titanium.                                                   -#}
 {#-                                                                        -#}
@@ -60,10 +61,15 @@
           {#- The error is bound to the input with aria-describedby so a screen
               reader reads the reason, not just "invalid". The id is the
               contract `e-{binding_id}`. -#}
+          {#- autofocus lands the caret on the FIRST field that failed, so a
+              422 re-render does not dump the user back at the top of the page
+              with no idea where the problem is. Only ever one, and only when
+              something actually failed. -#}
           <input class="ti-field__input {{ 'is-error' if field_errors.get(f.binding_id) }}"
                  id="f-{{ f.binding_id }}" name="{{ f.binding_id }}" type="text"
                  value="{{ values.get(f.binding_id, '') }}"
                  {% if f.required %}required{% endif %}
+                 {%- if field_errors and f.binding_id == (fields | selectattr('binding_id', 'in', field_errors) | map(attribute='binding_id') | first) %} autofocus{% endif %}
                  {%- if field_errors.get(f.binding_id) %}
                  aria-invalid="true" aria-describedby="e-{{ f.binding_id }}"
                  {%- endif %}
@@ -105,7 +111,7 @@
         <div class="ti-brow" role="row">
           <span class="ti-dot {{ 'ti-dot--on' if ready else 'ti-dot--off' }}" aria-hidden="true"></span>
           <div style="min-width:0">
-            <p class="ti-brow__name">{{ s.binding_id }}</p>
+            <p class="ti-brow__name" translate="no">{{ s.binding_id }}</p>
             <p class="ti-brow__detail {{ 'ti-brow__detail--on' if ready else 'ti-brow__detail--off' }}"
                title="{{ s.label }} — {{ s.detail }}">{{ s.label }}</p>
           </div>
@@ -131,12 +137,16 @@
     </section>
 
     <div style="display:flex;gap:var(--ti-12);align-items:center">
+      {#- Never disabled. Gaps become stated gaps in the draft, which is how
+          the engine already behaves, so blocking the button would remove a
+          judgement the scientist is entitled to make. The reason sits beside
+          it and is wired to the button for screen readers. -#}
       <button class="ti-btn-primary" type="submit"
-              {% if preflight.blocked %}disabled{% endif %}>Draft this report</button>
+              {% if preflight.blocked %}aria-describedby="ti-blocked"{% endif %}>Draft this report</button>
       <a class="ti-seg__btn" href="/">Cancel</a>
       {%- if preflight.blocked %}
-      <span class="ti-state ti-state--bad">
-        <span class="ti-state__glyph" aria-hidden="true">&#9632;</span>{{ preflight.headline }}
+      <span class="ti-state ti-state--bad" id="ti-blocked">
+        {{ ic.icon('warn') }}{{ preflight.headline }}
       </span>
       {%- endif %}
     </div>
