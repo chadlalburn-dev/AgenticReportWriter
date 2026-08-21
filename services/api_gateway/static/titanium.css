@@ -2542,3 +2542,15 @@
   outline: none;
   box-shadow: -6px 0 0 -4px var(--ti-accent);
 }
+
+/* Elapsed-since-start column on the run log. Tabular figures so the decimal
+   points line up down the column — the whole reason to show it is comparing one
+   step against another, and ragged numerals defeat that. Muted because it is a
+   measure, not a label. */
+.ti-log__offset {
+  font-family: var(--ti-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ti-mut);
+  white-space: nowrap;
+}

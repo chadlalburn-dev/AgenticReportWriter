@@ -889,7 +889,25 @@ class LedgerRow(_Dict):
 
 @dataclass
 class EventView(_Dict):
+    """One row of the run log, which is the provenance record.
+
+    Three time fields, because they answer different questions and one string
+    cannot. `ts_human` is minute precision and is what the run lists use, where
+    seconds would be noise. The log is different: a run finishes inside a
+    minute, so all 46 events rendered the identical string "21 Aug 2026, 16:29"
+    — the date repeated 46 times carrying nothing, while the seconds that
+    distinguish the steps were truncated away. On a page whose lede promises
+    "every step this run took, in order", how long each step took is the thing
+    a reader came for.
+    """
+
     ts_human: str
+    #: Wall clock with seconds, for the log. No date — that belongs once at the
+    #: top of the page, not on every row.
+    ts_precise: str
+    #: Elapsed since the first event, e.g. "+0.4s". The column that actually
+    #: says where the run spent its time.
+    offset_human: str
     action: str
     action_label: str
     target: str
@@ -964,6 +982,46 @@ def _parse_iso(value: str | None) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _clock_ts(value: str | datetime | None) -> str:
+    """Wall clock with seconds and no date, for the run log.
+
+    Separate from `_human_ts` rather than a parameter on it: the run lists want
+    minute precision and a date, the log wants the opposite, and one function
+    trying to be both is how the log ended up showing the same string 46 times.
+    """
+    dt = _parse_iso(value) if isinstance(value, str) else value
+    if dt is None:
+        return "—"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone().strftime("%H:%M:%S")
+
+
+def _offset_human(value: str | datetime | None, start: str | datetime | None) -> str:
+    """Elapsed since the run's first event, e.g. "+0.4s".
+
+    Sub-second because that is the scale these steps run at: a stub section
+    completes in milliseconds and a real model call in seconds, and the whole
+    point of showing this column is telling those two apart.
+    """
+    dt = _parse_iso(value) if isinstance(value, str) else value
+    origin = _parse_iso(start) if isinstance(start, str) else start
+    if dt is None or origin is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if origin.tzinfo is None:
+        origin = origin.replace(tzinfo=timezone.utc)
+    seconds = (dt - origin).total_seconds()
+    if seconds < 0:
+        return ""                      # clock skew; say nothing rather than lie
+    if seconds < 10:
+        return f"+{seconds:.1f}s"
+    if seconds < 600:
+        return f"+{seconds:.0f}s"
+    return f"+{seconds / 60:.0f}m"
 
 
 def _human_ts(value: str | datetime | None) -> str:
@@ -4335,10 +4393,13 @@ def _build_draft_view(
         headline=headline,
     )
 
-    events = [
-        _event_view(e, {s.section_id: s.title for s in section_views})
-        for e in result.get("audit_events") or []
-    ]
+    raw_events = result.get("audit_events") or []
+    # The origin for the elapsed column. Taken from the first event rather than
+    # the run's created_at: the log measures the run's own steps, and a run can
+    # sit queued for a while before the first one happens.
+    first_ts = str(raw_events[0].get("timestamp_utc", "")) if raw_events else ""
+    section_titles = {s.section_id: s.title for s in section_views}
+    events = [_event_view(e, section_titles, first_ts) for e in raw_events]
 
     notice = _notice_for(record, [s.title for s in section_views if s.band == "no_data"])
 
@@ -4603,7 +4664,11 @@ def _citation_view(
     )
 
 
-def _event_view(event: dict[str, Any], titles: dict[str, str]) -> EventView:
+def _event_view(
+    event: dict[str, Any], titles: dict[str, str], first_ts: str = ""
+) -> EventView:
+    """`first_ts` is the run's earliest event, for the elapsed column. Defaulted
+    so a caller that does not care about offsets is not forced to compute one."""
     action = str(event.get("action", ""))
     group, label = AUDIT_GROUP.get(
         action, ("section", action.replace("_", " ").capitalize())
@@ -4624,6 +4689,10 @@ def _event_view(event: dict[str, Any], titles: dict[str, str]) -> EventView:
     ]
     return EventView(
         ts_human=_human_ts(str(event.get("timestamp_utc", ""))),
+        ts_precise=_clock_ts(str(event.get("timestamp_utc", ""))),
+        offset_human=_offset_human(
+            str(event.get("timestamp_utc", "")), first_ts
+        ),
         action=action,
         action_label=label,
         target=target,

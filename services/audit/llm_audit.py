@@ -53,7 +53,21 @@ class AuditingLlmClient(LlmClient):
                 mode=self._mode,
                 actor_id=self._actor_id,
                 target_type="llm_call",
-                target_id=response.request_id or "anonymous",
+                # "no-provider-id", not "anonymous". In an audit trail
+                # "anonymous" reads as an unattributed ACTOR — someone auditing
+                # this record would reasonably take it as activity with no
+                # identity behind it. What it actually means is narrower and
+                # duller: this provider returned no request id to correlate
+                # against. The local Claude CLI never does, so every real call
+                # would have carried that word.
+                #
+                # A generated id is deliberately NOT used here. The field is
+                # documented as the PROVIDER's request id, and inventing one
+                # that looks like the provider's is the precise kind of thing a
+                # provenance record must not do. Correlation is already
+                # possible: the event carries the model version, the timestamp,
+                # and its place in the hash chain.
+                target_id=response.request_id or "no-provider-id",
                 target_version=response.model_version,
                 timestamp_utc=datetime.now(timezone.utc),
                 extra={

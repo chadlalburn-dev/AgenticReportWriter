@@ -430,10 +430,24 @@
   {# =================== LOG ============================================ #}
   {%- elif tab == 'log' and draft %}
 
+    {#- The date belongs here, once. It used to be on all 46 rows, which is 46
+        copies of one fact and no room for the seconds that tell the rows
+        apart. -#}
     <p class="ti-page__lede">
-      Every step this run took, in order. This is the provenance record.
+      Every step this run took, in order — {{ draft.events|length }} events on
+      {{ run.created_human }}. This is the provenance record.
     </p>
     <div class="ti-panel">
+      {#- A header row, like the runs list and the sources tab have. Without one
+          the middle column read as an unlabelled word: "llm", "plan",
+          "section" with nothing saying what kind of thing that is. -#}
+      <div class="ti-thead ti-lrow--run" role="row">
+        <span role="columnheader">step</span>
+        <span role="columnheader">kind</span>
+        <span role="columnheader">elapsed</span>
+        <span role="columnheader" style="justify-self:end">time</span>
+        <span></span>
+      </div>
       {%- for e in draft.events %}
       <div class="ti-lrow ti-lrow--run" style="cursor:default">
         <div style="min-width:0">
@@ -441,8 +455,12 @@
           <p class="ti-lrow__sub">{{ e.target }}</p>
         </div>
         <span class="ti-lrow__num">{{ e.group }}</span>
-        <span></span>
-        <span class="ti-lrow__meta">{{ e.ts_human }}</span>
+        {#- Elapsed since the first event. On the stub engine every row said the
+            same minute; this is the column that shows where a run actually
+            spends its time, which matters far more now the local Claude engine
+            makes a section take tens of seconds instead of milliseconds. -#}
+        <span class="ti-log__offset">{{ e.offset_human }}</span>
+        <span class="ti-lrow__meta">{{ e.ts_precise }}</span>
         <span></span>
       </div>
       {%- endfor %}
