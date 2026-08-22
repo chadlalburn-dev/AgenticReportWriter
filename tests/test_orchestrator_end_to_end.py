@@ -493,3 +493,38 @@ def test_a_section_with_no_sources_is_told_so_plainly(
         assert "these 0 ids" not in prompt
         assert "leave every claim's citation_ids empty" in prompt
         assert "Do not invent an id" in prompt
+
+
+# --- must_cite_every_number: measurements, not identifiers ------------------
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        # Identifiers. The hyphen is a non-word character, so `\b\d` found a
+        # boundary right before the digits and every mention of the compound
+        # under review counted as an uncited measurement. Run 5726cd3b860f had
+        # four of six sections marked "checks failed" on that basis, including
+        # ones whose only sin was correctly reporting that no data existed.
+        ("compound XYZ-001 was dosed orally", []),
+        ("GSK-2879552 and COVID-19 studies", []),
+        ("named query exposure_margin_v1 failed", []),
+        # Measurements, which must keep matching — a check that stops firing on
+        # real numbers is worse than one that fires too often.
+        ("doses up to 30 mg/kg", ["30 "]),
+        ("10-30 mg/kg twice daily", ["10", "30 "]),
+        ("XYZ-001 at 5.5 mg/kg", ["5.5 "]),
+        ("an increase of 12.5%", ["12.5%"]),
+        ("a 60-fold exposure margin", ["60"]),
+        # Unchanged either way: the 50 in IC50 follows a letter, so there was
+        # never a word boundary before it. An assay name is not a value.
+        ("hERG IC50 of 12 uM", ["12 "]),
+    ],
+)
+def test_only_measured_values_demand_a_citation(text: str, expected: list[str]) -> None:
+    """`must_cite_every_number` exists so no figure reaches a reader without a
+    source behind it. A check that fires on the report's own subject line
+    teaches readers to ignore it, which costs more than the check earns."""
+    from services.generation_orchestrator.critic import _NUMBER_RE
+
+    assert _NUMBER_RE.findall(text) == expected

@@ -23,7 +23,21 @@ class _CritiqueOutput(BaseModel):
     issues: list[str] = Field(default_factory=list)
 
 
-_NUMBER_RE = re.compile(r"\b\d[\d,]*(?:\.\d+)?\s*%?")
+#: Digit runs that look like measured values.
+#:
+#: The negative lookbehind excludes digits hanging off a letter-hyphen prefix,
+#: which is what compound and study codes look like: `XYZ-001`, `GSK-2879552`,
+#: `COVID-19`. Without it, `\b\d` matched the `001` in every mention of the
+#: compound under review — the hyphen is a non-word character, so there is a
+#: word boundary right before the digits. Run 5726cd3b860f had four of six
+#: sections marked "checks failed" on that basis, including sections whose only
+#: sin was correctly reporting that no data had been retrieved. A check that
+#: fires on the report's own subject line teaches readers to ignore it.
+#:
+#: The lookbehind tests for a LETTER before the hyphen, deliberately, so that
+#: ranges keep matching: in "up to 30 mg/kg" and "10-30 mg/kg" the 30 is
+#: preceded by a digit, not a letter, and both numbers still need a citation.
+_NUMBER_RE = re.compile(r"(?<![A-Za-z]-)\b\d[\d,]*(?:\.\d+)?\s*%?")
 
 
 def _local_validation_issues(section: TemplateSection, gen: GeneratedSection) -> list[str]:
