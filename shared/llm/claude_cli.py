@@ -386,24 +386,37 @@ class ClaudeCliLlmClient(LlmClient):
     ) -> str:
         """What went wrong, both times, in enough detail to act on.
 
-        Head AND tail, with the length and the failing offset. A 200-character
-        excerpt of the head cannot distinguish "the model wrote prose" from
-        "the model wrote good JSON and fumbled one escape 1,300 characters in"
-        — and those need opposite fixes. The first live failure of this kind
-        showed only a valid opening brace and was undiagnosable from the
-        record, which is why the offset and the tail are here.
+        Three things, each earned. The **length and offset**, because "could not
+        parse" alone cannot distinguish a reply that was cut off from one that
+        was complete and malformed, and those need opposite fixes. The **window
+        around the failing character**, because that is where the defect
+        literally is — the first live failure of this kind broke at character
+        1,307 of 1,308 and the record kept only the first 200, which made it
+        undiagnosable. And the **head**, because it is the one thing the window
+        cannot tell you: whether the model returned JSON at all or opened with
+        prose.
+
+        Both attempts are reported. Whether the correction changed anything is
+        the first question a reader has: an identical second failure points at
+        the prompt or the schema, a different one points at the model.
         """
         first_raw, first_exc = first
         stop = usage.stop_reason if usage else ""
+
+        def at(text: str, err: json.JSONDecodeError) -> str:
+            return repr(text[max(0, err.pos - 100) : err.pos + 100])
+
         return (
             f"Expected JSON for {request.response_schema_name!r} and could not "
             f"parse it, on the original reply or on the correction. "
             f"First: {len(first_raw)} chars, {first_exc.msg} at position "
-            f"{first_exc.pos}. Retry: {len(raw)} chars, {exc.msg} at position "
-            f"{exc.pos}"
-            f"{f', stop_reason={stop!r}' if stop else ''}. "
-            f"Retry head: {raw[:220]!r} ... Retry tail: {raw[-220:]!r}"
+            f"{first_exc.pos}, around it: {at(first_raw, first_exc)}. "
+            f"Retry: {len(raw)} chars, {exc.msg} at position {exc.pos}"
+            f"{f', stop_reason={stop!r}' if stop else ''}"
+            f", around it: {at(raw, exc)}. "
+            f"Retry began: {raw[:160]!r}"
         )
+
 
     def _generate_pooled(
         self, pool: WarmPool, prompt: str, request: LlmRequest

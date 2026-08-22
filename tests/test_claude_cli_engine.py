@@ -679,6 +679,11 @@ def test_both_failures_are_reported_not_just_the_second(client, monkeypatch):
     message = str(caught.value)
     assert "First:" in message and "Retry:" in message
     assert "position" in message, "the failing offset is what makes this actionable"
+    # The bytes that actually broke it. A record that keeps only the opening of
+    # the reply cannot diagnose a failure 1,300 characters in, which is exactly
+    # what happened to run af146a57442d.
+    assert '"first" "bad"' in message, "the text at the first failure is missing"
+    assert '"second" "bad"' in message, "the text at the retry failure is missing"
 
 
 def test_a_schemaless_request_is_never_retried(client, monkeypatch):
