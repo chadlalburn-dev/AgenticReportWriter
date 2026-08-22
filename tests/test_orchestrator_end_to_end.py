@@ -284,3 +284,212 @@ def test_orchestrator_rejects_fabricated_citation_ids(
                 "release_date": "2026-05-26",
             },
         )
+
+
+# --- fabricated citations: one correction, never a repair -------------------
+#
+# The failure this exists for: live run c5e048197828 died on
+# `citation_id='8e1f3f81'` — eight hex characters in exactly the right shape,
+# appearing nowhere in the pool. Six sections lost to one invented token.
+
+
+def _citable_ids(prompt: str) -> list[str]:
+    """The ids the prompt declares as the complete allowed set.
+
+    Parsed off the line directly after the "you may cite these N" sentence.
+    A looser parser — first line containing a comma — silently picked up the
+    trailing prose instead and produced a phantom id, which is how the empty
+    case came to light.
+    """
+    marker = "## Citable ids"
+    assert marker in prompt, "the prompt no longer states which ids are citable"
+    lines = prompt.split(marker, 1)[1].splitlines()
+    for i, line in enumerate(lines):
+        if "you may cite these" in line.lower():
+            return [p.strip() for p in lines[i + 1].split(",") if p.strip()]
+    return []
+
+
+def _plan_handler(stub):
+    """The scaffolding either side of the fill call, so these tests reach it.
+
+    The critic passes unconditionally here: what is under test is whether a
+    fabricated citation_id can reach the draft, and a critique verdict is a
+    different axis entirely.
+    """
+    stub.register_handler(
+        lambda r: r.response_schema_name == "PlanOutput",
+        lambda r: stub.make_response(
+            parsed_json={"overall_summary": "x", "section_plans": []}
+        ),
+    )
+    stub.register_handler(
+        lambda r: r.response_schema_name == "CritiqueOutput",
+        lambda r: stub.make_response(parsed_json={"verdict": "pass", "issues": []}),
+    )
+
+
+def _para(text: str, cids: list[str]) -> dict:
+    return {"paragraphs": [{"text": text, "claims": [{"text": "claim", "citation_ids": cids}]}]}
+
+
+def test_the_prompt_states_the_complete_set_of_citable_ids(
+    corpus_chunks: tuple, ib_template: ReportTemplate
+) -> None:
+    """Each id is already tagged inline on its own chunk, and that was not
+    enough — the model invented one anyway. With a hundred-odd blocks scrolling
+    past, "cite the id on the chunk you used" is a rule the model must
+    reconstruct from context each time; one closed list is a constraint it can
+    check itself against."""
+    stub = StubLlmClient(strict=True)
+    _plan_handler(stub)
+    prompts: list[str] = []
+
+    def fill(r):
+        prompts.append(r.messages[0].content)
+        return stub.make_response(parsed_json={"paragraphs": []})
+
+    stub.register_handler(lambda r: r.response_schema_name == "FillOutput", fill)
+    ReportGenerator(fill_client=stub, max_retries_per_section=0).generate(
+        template=ib_template,
+        documents=corpus_chunks[0],
+        chunks_by_doc=corpus_chunks[1],
+        free_text_inputs={
+            "product_name": "XYZ-001",
+            "sponsor_name": "Acme",
+            "ib_edition": "1.0",
+            "release_date": "2026-05-26",
+        },
+    )
+
+    populated = [p for p in prompts if "you may cite these" in p.lower()]
+    assert populated, "no section was given a chunk pool, so this proves nothing"
+    for prompt in populated:
+        ids = _citable_ids(prompt)
+        assert ids, "the citable-id list is empty"
+        for cid in ids:
+            assert f"citation_id={cid}" in prompt, (
+                f"{cid} is offered as citable but tagged on no chunk"
+            )
+
+
+def test_a_fabricated_citation_gets_exactly_one_correction(
+    corpus_chunks: tuple, ib_template: ReportTemplate
+) -> None:
+    """The model invents an id, is told which one it invented, and cites a real
+    one on the second attempt. Losing six sections to a single stray token is a
+    poor trade when the model can simply be asked again."""
+    stub = StubLlmClient(strict=True)
+    _plan_handler(stub)
+    prompts: list[str] = []
+
+    def fill(r):
+        prompt = r.messages[0].content
+        prompts.append(prompt)
+        allowed = _citable_ids(prompt)
+        if not allowed:
+            # A section with no retrieved sources is ordinary — a summary is
+            # written from other sections. The honest answer carries no claims.
+            return stub.make_response(parsed_json={"paragraphs": []})
+        if "CORRECTION REQUIRED" not in prompt:
+            return stub.make_response(parsed_json=_para("Bad.", ["8e1f3f81"]))
+        return stub.make_response(parsed_json=_para("Good.", [allowed[0]]))
+
+    stub.register_handler(lambda r: r.response_schema_name == "FillOutput", fill)
+    result = ReportGenerator(fill_client=stub, max_retries_per_section=0).generate(
+        template=ib_template,
+        documents=corpus_chunks[0],
+        chunks_by_doc=corpus_chunks[1],
+        free_text_inputs={
+            "product_name": "XYZ-001",
+            "sponsor_name": "Acme",
+            "ib_edition": "1.0",
+            "release_date": "2026-05-26",
+        },
+    )
+
+    corrections = [p for p in prompts if "CORRECTION REQUIRED" in p]
+    assert corrections, "a fabricated id did not trigger a correction"
+    assert "8e1f3f81" in corrections[0], "the correction did not name the invented id"
+    assert result.citations, "the corrected attempt produced no citations"
+    for citation in result.citations:
+        assert citation.citation_id != "8e1f3f81"
+
+
+def test_no_fabricated_id_survives_into_the_draft(
+    corpus_chunks: tuple, ib_template: ReportTemplate
+) -> None:
+    """The forbidden repair. Dropping the offending id and keeping the sentence
+    leaves a claim standing with nothing behind it, in a report whose only
+    promise is that every value traces to a source; reattaching the claim to
+    some other id manufactures provenance outright. Fabricating twice must fail
+    the section, not quietly ship an unsourced claim."""
+    stub = StubLlmClient(strict=True)
+    _plan_handler(stub)
+    stub.register_handler(
+        lambda r: r.response_schema_name == "FillOutput",
+        lambda r: stub.make_response(
+            parsed_json=_para(
+                "Bad.", ["8e1f3f81" if "CORRECTION" not in r.messages[0].content else "deadbeef"]
+            )
+        ),
+    )
+
+    from shared.llm import StructuredOutputError
+
+    with pytest.raises(StructuredOutputError) as caught:
+        ReportGenerator(fill_client=stub, max_retries_per_section=0).generate(
+            template=ib_template,
+            documents=corpus_chunks[0],
+            chunks_by_doc=corpus_chunks[1],
+            free_text_inputs={
+                "product_name": "XYZ-001",
+                "sponsor_name": "Acme",
+                "ib_edition": "1.0",
+                "release_date": "2026-05-26",
+            },
+        )
+
+    message = str(caught.value)
+    assert "deadbeef" in message, "the second invented id is not named"
+    assert "8e1f3f81" in message, (
+        "the first invented id is not named — whether the correction changed "
+        "anything is the first thing a reader needs to know"
+    )
+
+
+def test_a_section_with_no_sources_is_told_so_plainly(
+    corpus_chunks: tuple, ib_template: ReportTemplate
+) -> None:
+    """Rendering the empty pool as "you may cite these 0 ids and no others:"
+    followed by nothing reads as a formatting bug and invites the model to fill
+    the gap — which is the exact behaviour being guarded against. Sections with
+    no retrieved sources are ordinary: a summary is written from other
+    sections, not from chunks."""
+    stub = StubLlmClient(strict=True)
+    _plan_handler(stub)
+    prompts: list[str] = []
+
+    def fill(r):
+        prompts.append(r.messages[0].content)
+        return stub.make_response(parsed_json={"paragraphs": []})
+
+    stub.register_handler(lambda r: r.response_schema_name == "FillOutput", fill)
+    ReportGenerator(fill_client=stub, max_retries_per_section=0).generate(
+        template=ib_template,
+        documents=corpus_chunks[0],
+        chunks_by_doc=corpus_chunks[1],
+        free_text_inputs={
+            "product_name": "XYZ-001",
+            "sponsor_name": "Acme",
+            "ib_edition": "1.0",
+            "release_date": "2026-05-26",
+        },
+    )
+
+    empty = [p for p in prompts if "## Citable ids — none" in p]
+    assert empty, "no section had an empty pool, so this proves nothing"
+    for prompt in empty:
+        assert "these 0 ids" not in prompt
+        assert "leave every claim's citation_ids empty" in prompt
+        assert "Do not invent an id" in prompt

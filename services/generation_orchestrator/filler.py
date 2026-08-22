@@ -76,6 +76,68 @@ def _build_prompt_template(section_context: ResolvedSectionContext, free_text_in
     return re.sub(r"\{\{\s*bindings\.([\w]+)\s*\}\}", repl, template)
 
 
+def _allowed_citations_block(allowed: list[str]) -> str:
+    """The citation ids the model may use, as one closed list.
+
+    Each id is already tagged inline on its own chunk, which is where the model
+    reads the content from. That was not enough: a live run died on
+    `citation_id='8e1f3f81'`, an eight-hex-character id in exactly the right
+    shape that appeared nowhere in the pool. With a hundred-odd chunk blocks
+    scrolling past, "cite the id attached to the chunk you used" is a rule the
+    model has to reconstruct from context every time; a single closed list at
+    the end is a constraint it can check itself against.
+
+    Cheap insurance, too — a few hundred characters against losing a
+    six-section report to one invented token.
+
+    The empty case is spelled out rather than rendered as "you may cite these 0
+    ids and no others:" followed by nothing, which reads as a formatting bug and
+    invites the model to fill the gap. Sections with no retrieved sources are
+    ordinary here: a summary section is written from other sections, not from
+    chunks.
+    """
+    if not allowed:
+        return (
+            "\n\n## Citable ids — none\n"
+            "No sources were retrieved for this section, so there is no id you "
+            "may cite. Write it from the instructions above and leave every "
+            "claim's citation_ids empty. Do not invent an id to fill the gap."
+        )
+    return (
+        "\n\n## Citable ids — the complete and only list\n"
+        f"You may cite these {len(allowed)} ids and no others:\n"
+        + ", ".join(allowed)
+        + "\n\nAn id that is not in this list does not exist, however plausible "
+        "it looks. If no listed source supports a claim, drop the claim; never "
+        "invent an id to carry it."
+    )
+
+
+
+
+def _fabrication_correction(fabricated: str, allowed: list[str]) -> str:
+    """A second attempt after a fabricated citation, with the violation named.
+
+    A correction rather than a patch, and the distinction is the whole product.
+    The tempting repair is to drop the offending citation_id and keep the
+    sentence — which leaves a claim standing with no source behind it, in a
+    report whose only promise is that every value traces to one. The other
+    repair, reattaching the claim to some other id, is worse: it manufactures
+    provenance outright.
+
+    So the model is told exactly which id it invented and asked again. What
+    comes back is its own work, and if it invents a second time the section
+    fails rather than quietly shipping an unsourced claim.
+    """
+    return (
+        f"\n\n## CORRECTION REQUIRED\nA previous attempt at this exact section "
+        f"cited citation_id={fabricated!r}, which is not in the pool — it was "
+        "invented. Redo the section. Every citation_id you use must appear "
+        "verbatim in the list above. Where no listed source supports a "
+        "sentence, remove the sentence; do not substitute a different id to "
+        "keep it."
+    )
+
 def _render_chunk_for_prompt(chunk: ParsedChunk, citation_id: str) -> str:
     """One chunk rendered as a single block the LLM can quote and cite."""
     if isinstance(chunk.locator, PdfLocator):
@@ -256,6 +318,10 @@ class SectionFiller:
         if section.generation.style_directives:
             style_hint = "Style: " + ", ".join(section.generation.style_directives) + ".\n"
 
+        allowed_citation_ids = sorted(
+            set(chunk_to_citation.values()) | set(table_to_citation.values())
+        )
+
         user_message = (
             f"# Section: {section.section_id} {section.title}\n\n"
             f"## Instructions\n{prompt_body}\n\n"
@@ -265,39 +331,67 @@ class SectionFiller:
             + ("\n".join(chunk_blocks) if chunk_blocks else "(no chunks retrieved for this section)\n")
             + ("\n\n## Deterministic data tables (cite as a whole; do NOT re-derive the numbers)\n\n"
                + "\n".join(table_blocks) if table_blocks else "")
-            + "\n\nProduce the section by calling emit_structured_output."
+            + _allowed_citations_block(allowed_citation_ids)
         )
 
-        request = LlmRequest(
-            tier=ModelTier.FILL,
-            system=FILL_SYSTEM_PROMPT + f"\n\nprompt_version: {PROMPT_VERSION}",
-            messages=[LlmMessage(role=LlmRole.USER, content=user_message)],
-            max_tokens=4096,
-            temperature=0.0,
-            response_schema_name="FillOutput",
-            response_schema_json=_FillOutput.model_json_schema(),
-        )
-
-        response = self._client.generate(request)
-        if response.parsed_json is None:
-            raise StructuredOutputError(
-                f"FillOutput missing from response (text head={response.text[:200]!r})"
-            )
-        fill = _FillOutput.model_validate(response.parsed_json)
-
-        # Validate citation IDs the LLM used: they must all come from the pool
-        # (chunks OR tables).
+        # One attempt, then one correction if the model invents a citation_id.
+        # Bounded at one so persistent fabrication fails the section loudly
+        # instead of burning calls in a loop that merely looks like slowness.
         valid_citation_ids = set(chunk_to_citation.values()) | set(table_to_citation.values())
-        used_citation_ids: set[str] = set()
-        for paragraph in fill.paragraphs:
-            for claim in paragraph.claims:
-                for cid in claim.citation_ids:
-                    if cid not in valid_citation_ids:
-                        raise StructuredOutputError(
-                            f"section {section.section_id!r}: model referenced "
-                            f"unknown citation_id={cid!r} (fabricated)"
-                        )
-                    used_citation_ids.add(cid)
+        correction = ""
+        first_fabrication: str | None = None
+
+        while True:
+            request = LlmRequest(
+                tier=ModelTier.FILL,
+                system=FILL_SYSTEM_PROMPT + f"\n\nprompt_version: {PROMPT_VERSION}",
+                messages=[
+                    LlmMessage(role=LlmRole.USER, content=user_message + correction)
+                ],
+                max_tokens=4096,
+                temperature=0.0,
+                response_schema_name="FillOutput",
+                response_schema_json=_FillOutput.model_json_schema(),
+            )
+
+            response = self._client.generate(request)
+            if response.parsed_json is None:
+                raise StructuredOutputError(
+                    f"FillOutput missing from response (text head={response.text[:200]!r})"
+                )
+            fill = _FillOutput.model_validate(response.parsed_json)
+
+            # Every citation_id the model used must come from the pool, whether
+            # it came from a chunk or a deterministic table.
+            fabricated = next(
+                (
+                    cid
+                    for paragraph in fill.paragraphs
+                    for claim in paragraph.claims
+                    for cid in claim.citation_ids
+                    if cid not in valid_citation_ids
+                ),
+                None,
+            )
+            if fabricated is None:
+                break
+            if first_fabrication is not None:
+                raise StructuredOutputError(
+                    f"section {section.section_id!r}: model referenced unknown "
+                    f"citation_id={fabricated!r} (fabricated) after being told "
+                    f"that {first_fabrication!r} did not exist. "
+                    f"{len(valid_citation_ids)} ids were offered."
+                )
+            first_fabrication = fabricated
+            correction = _fabrication_correction(fabricated, allowed_citation_ids)
+
+        used_citation_ids: set[str] = {
+            cid
+            for paragraph in fill.paragraphs
+            for claim in paragraph.claims
+            for cid in claim.citation_ids
+        }
+
 
         # Build Citation records only for the citation_ids the model actually used.
         citations: list[Citation] = []
