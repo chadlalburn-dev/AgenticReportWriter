@@ -15,6 +15,7 @@ claim is void. So the disclosure is tested as a contract, not as decoration.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from shared.llm import (
     LlmRequest,
     LlmRole,
     ModelTier,
+    StubLlmClient,
     StructuredOutputError,
     find_claude_binary,
 )
@@ -524,3 +526,33 @@ def test_the_short_form_is_used_when_the_cli_is_on_path(monkeypatch):
     fix = runs_module._fix_for(choice="auto", hint="not signed in")
     assert "`claude`" in fix, fix
     assert "/opt/weird" not in fix
+
+
+def test_the_suite_does_not_depend_on_a_local_cli(monkeypatch):
+    """The default engine for tests is the stub, and it must not be accidental.
+
+    `REPORTGEN_ENGINE` defaults to `auto`, which prefers the local CLI. So on
+    the day someone installs and authenticates that CLI, the whole suite
+    silently starts making live model calls — non-deterministic prose, real
+    cost, a network dependency, and a ~23s readiness probe per resolution. That
+    is exactly what happened: six tests in test_ui.py errored and one failed on
+    a machine where nothing had changed except a successful `claude auth login`.
+
+    conftest pins the stub. This asserts the pin is in force, so removing it
+    fails here rather than surfacing as unrelated timeouts somewhere else.
+    """
+    assert os.environ.get("REPORTGEN_ENGINE") == "stub", (
+        "the suite is not pinned to the stub engine; it will use whatever "
+        "engine happens to be installed on this machine"
+    )
+    assert runs_module.resolve_engine().kind == "stub"
+    assert isinstance(runs_module.build_llm_client(), StubLlmClient)
+
+
+def test_a_test_can_still_opt_into_the_real_path(monkeypatch):
+    """The pin is a default, not a lock. The CLI suites override it, which is
+    how the end-to-end test drives ClaudeCliLlmClient at all."""
+    monkeypatch.setenv(runs_module.ENGINE_ENV, "cli")
+    monkeypatch.setattr(ClaudeCliLlmClient, "check", lambda self: None)
+    runs_module.reset_engine_cache()
+    assert runs_module.resolve_engine().kind == "cli"
