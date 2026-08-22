@@ -125,6 +125,48 @@ and are pinned by tests in `tests/test_claude_cli_engine.py`:
 - **stdin must be closed explicitly**, or the CLI waits ~3s for piped input and
   writes a warning into the captured output.
 
+#### When the model answers badly
+
+Two failures killed live runs outright, and both now get exactly one correction
+before the run dies. One correction, never a repair — the distinction carries
+the whole product, so it is worth being precise about.
+
+- **Malformed JSON.** Run `af146a57442d` lost a six-section report to a 1,308
+  character critique that parsed cleanly for 1,307 characters and then hit
+  `Expecting ',' delimiter`. The model wrote good JSON and fumbled one escape,
+  almost certainly a quotation mark inside a phrase it was quoting back from the
+  draft — which is a critique's entire job. The transport was not at fault: a
+  probe put 6,299 characters and 1,366 output tokens of JSON through the stream
+  intact.
+- **A fabricated citation id.** Run `c5e048197828` died on
+  `citation_id='8e1f3f81'`, eight hex characters in exactly the right shape
+  appearing nowhere in the pool. The guard caught it, which is the system
+  working. Every id was already tagged inline on its own chunk and that was not
+  enough, so the fill prompt now ends with the complete closed list of citable
+  ids — a constraint the model can check itself against rather than a rule it
+  must reconstruct from a hundred scrolling blocks.
+
+Why re-asking and not patching. Repairing malformed JSON means guessing what the
+model meant to say and then presenting the guess as the model's own output.
+Dropping a fabricated citation_id leaves a claim standing with nothing behind
+it; reattaching it to a different id manufactures provenance outright. All three
+are inventions wearing a provenance badge, in an application whose only claim is
+that every value traces to a real source. Re-asking has none of that problem:
+the model is shown its own broken output and the exact complaint, and whatever
+comes back is genuinely its own.
+
+Both corrections are capped at one, and the failure names *both* attempts —
+whether the correction changed anything is the first thing a reader needs, since
+an identical second failure points at the prompt and a different one points at
+the model.
+
+`stop_reason` is now read off the stream's `result` event instead of being
+hardcoded to `end_turn`. That hardcoded value was a false statement about how
+generation ended: a reply cut off at a token ceiling was announced to the
+pipeline as a normal completion, which made a truncated section
+indistinguishable from a finished one. It is what distinguished the two failures
+above, which need opposite fixes.
+
 #### Data-governance boundary
 
 The local CLI routes prompt content to Anthropic through its own session, **not**
