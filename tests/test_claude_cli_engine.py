@@ -695,3 +695,58 @@ def test_a_schemaless_request_is_never_retried(client, monkeypatch):
     client.generate(_request(schema=None))
 
     assert len(calls) == 1
+
+
+# --- text encoding ----------------------------------------------------------
+
+
+def test_the_prompt_and_reply_are_utf8_not_the_locale_default(client, monkeypatch):
+    """`text=True` alone decodes with `locale.getpreferredencoding()`, which is
+    cp1252 on this machine, while the CLI emits UTF-8. A live critique caught
+    the result in section 1 of run 5726cd3b860f: "12 µM" had arrived as
+    "12 µM", and after a second round trip "12 ÂµM".
+
+    Worth a test rather than a comment because of how this defect fails. A
+    preclinical safety summary is built from µg/mL, °C and ±; corrupting every
+    one of them while each citation still resolves and every check still passes
+    produces a document that looks fully sourced and misstates its numbers.
+    """
+    seen: dict[str, object] = {}
+
+    def fake_run(argv, **kwargs):
+        seen.update(kwargs)
+        return _Proc(stdout='{"paragraphs":[]}')
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client.generate(_request(text="NOAEL 12 µg/mL at 37 °C ± 2"))
+
+    assert seen.get("encoding") == "utf-8", (
+        f"the generate call decodes as {seen.get('encoding')!r}; cp1252 turns "
+        "µ into Âµ"
+    )
+    assert "µg/mL" in str(seen.get("input")), "the prompt lost its micro sign"
+    assert "°C" in str(seen.get("input"))
+
+
+def test_the_warm_pool_decodes_as_utf8_too(monkeypatch):
+    """The pooled path is a different call — `Popen`, not `run` — so it needs
+    its own guard. Fixing one and not the other would leave the corruption in
+    place on the path that actually drafts reports."""
+    import shared.llm.claude_cli_pool as pool_module
+
+    seen: dict[str, object] = {}
+
+    class _Fake:
+        def __init__(self, argv, **kwargs):
+            seen.update(kwargs)
+            self.stdin = self.stdout = self.stderr = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(pool_module.subprocess, "Popen", _Fake)
+    pool_module.WarmProcess(["claude"], None)
+
+    assert seen.get("encoding") == "utf-8", (
+        f"the pool decodes as {seen.get('encoding')!r}; the CLI emits UTF-8"
+    )

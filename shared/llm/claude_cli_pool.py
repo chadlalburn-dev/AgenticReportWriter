@@ -96,6 +96,7 @@ class WarmProcess:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",   # never the cp1252 locale default; see claude_cli.py
             bufsize=1,
             cwd=cwd,
         )

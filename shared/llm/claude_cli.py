@@ -25,6 +25,15 @@ the caller flags the corpus as real. Nothing here silently widens scope.
 
 Implementation notes that cost real debugging
 ---------------------------------------------
+* **`max_tokens` on the request is not honoured on this path.** The CLI has no
+  `--max-tokens` flag — `--max-budget-usd` caps spend, not output length, and
+  the two are not interchangeable. So the limit the callers declare
+  (`critic.py` asks for 1024, the filler and planner for 4096) is silently
+  dropped here, and a probe confirmed it: a critique-shaped request came back
+  at 1,366 output tokens, comfortably past the 1,024 it had asked for. Nothing
+  is broken by this — the pipeline validates what it gets rather than trusting
+  a length — but it is worth knowing before treating `max_tokens` as a control
+  that works everywhere. `VertexLlmClient` does honour it.
 * **An unauthenticated CLI exits 0.** `claude -p` prints
   "Not logged in · Please run /login" and returns status 0, so exit code alone
   reports success on a total failure. The output is inspected instead.
@@ -248,6 +257,7 @@ class ClaudeCliLlmClient(LlmClient):
                 [self._binary, "-p", "Reply with the single word: ready"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",   # UTF-8, not cp1252 — see the note on the generate path
                 timeout=self._config.check_timeout_s,
                 stdin=subprocess.DEVNULL,
                 cwd=self._config.cwd,
@@ -475,6 +485,20 @@ class ClaudeCliLlmClient(LlmClient):
                 input=prompt,
                 capture_output=True,
                 text=True,
+                # UTF-8 explicitly, never the locale default. `text=True` alone
+                # decodes with `locale.getpreferredencoding()`, which is cp1252 on
+                # this machine, and the CLI emits UTF-8 — so "12 µM" arrived as
+                # "12 µM" and, after a second round trip, "12 ÂµM". A live
+                # critique caught it in section 1 of run 5726cd3b860f, which is
+                # lucky: a preclinical summary is made of µg/mL, °C and ±, and
+                # silently corrupting all of them while every citation still
+                # resolves is the worst kind of defect this app can have.
+                #
+                # Strict, not errors="replace". A replacement character is a silent
+                # substitution in a document whose only promise is that its values
+                # match the source; a decode failure is loud and diagnosable. The
+                # CLI's output is JSON from a Node process, so strict is safe.
+                encoding="utf-8",
                 timeout=self._config.timeout_s,
                 cwd=self._config.cwd,
             )
