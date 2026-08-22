@@ -31,7 +31,13 @@
    aria-label="{{ c.title }} — set up a run{% if c.tag_aria %}. Tagged {{ c.tag_aria }}{% endif %}">
   <div style="min-width:0">
     <p class="ti-lrow__title" title="{{ c.title }}">{{ c.title }}</p>
-    <p class="ti-lrow__sub" title="{{ c.owner or 'unowned' }} — v{{ c.version }}">{{ c.owner or 'unowned' }} &middot; v{{ c.version }}</p>
+    {#- Scope first, before the owner. "Who else can see this" is the fact a
+        reader needs and cannot infer from anything else on the row, and it is
+        the one that changes what pressing Edit means: on a shared template it
+        changes the report everyone else gets. -#}
+    <p class="ti-lrow__sub" title="{{ 'Only you can see this' if c.scope == 'user' else 'Shared with everyone using this app' }} — {{ c.owner or 'unowned' }} — v{{ c.version }}">
+      {%- if c.scope == 'user' %}Just me{% else %}Everyone{% endif %} &middot;
+      {{ c.owner or 'unowned' }} &middot; v{{ c.version }}</p>
     {%- if c.chips %}
     <div class="ti-tags">
       {%- for chip in c.chips %}
@@ -60,7 +66,7 @@
 {% macro tpl_panel(rows) %}
 <div class="ti-panel">
   <div class="ti-thead ti-lrow--tpl" role="row">
-    <span role="columnheader">template &middot; owner</span>
+    <span role="columnheader">template &middot; who can see it &middot; owner</span>
     <span role="columnheader" style="justify-self:end">sources ready</span>
     <span role="columnheader">sections</span>
     <span></span>

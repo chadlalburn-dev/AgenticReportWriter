@@ -19,7 +19,9 @@ which is the app describing itself.
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
 
 import pytest
 from fastapi.testclient import TestClient
@@ -44,32 +46,69 @@ def client() -> TestClient:
 
 
 @pytest.fixture(scope="module")
-def pages(client: TestClient) -> dict[str, str]:
-    """Every reader-facing page, including a run with failed sections."""
+def failed_run_id() -> str:
+    """A run with a failed critique, built here rather than found.
+
+    This fixture used to mine the run store for whatever happened to be lying
+    around, and it broke twice for opposite reasons: first because the window
+    was the newest 40 of 50 runs, then because the store prunes to the newest 50
+    and the one failing run was evicted from disk entirely. Both times the suite
+    went red while the application was fine — the second time *because* fixing
+    `must_cite_every_number` stopped sections failing, so a test was punishing an
+    improvement.
+
+    So the run is constructed: copy a real completed run's artifacts, flip one
+    section's `critique_status`, and register it. `critique_status` is read
+    straight out of `result.json` by `_build_draft_view`, so this produces a
+    genuinely rendered failed-section page rather than a mocked one, and it does
+    it without a model call.
+    """
     store = runs_module.get_store()
-    urls = ["/", "/runs", "/templates"]
-    failed = None
-    # No limit. The window was 40, the local store passed 50 runs, and the one
-    # run with a failed critique fell out the back — so this suite started
-    # failing because the *app got better at not failing sections*, which is a
-    # test punishing an improvement.
-    #
-    # The real coupling is still here and is worth naming: this fixture mines
-    # whatever runs happen to be in var/, so it depends on development data. It
-    # should build a run with a deliberately unsatisfiable citation policy
-    # instead. Tracked in docs/data-connections-and-visuals-plan.md.
+    source_id = None
     for summary in store.list_runs(limit=10_000):
-        if not summary.terminal:
+        if summary.terminal and store.draft_view(summary.run_id):
+            source_id = summary.run_id
+            break
+    if source_id is None:
+        pytest.skip("no completed run to build a failed-critique fixture from")
+
+    root = store._run_dir(source_id).parent
+    run_id = "ftest0000fail"
+    target = root / run_id
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(root / source_id, target)
+
+    for name, mutate in (
+        ("run.json", lambda d: d.update({"run_id": run_id})),
+        ("result.json", None),
+    ):
+        path = target / name
+        if not path.is_file():
             continue
-        view = store.draft_view(summary.run_id)
-        if not view:
-            continue
-        if failed is None and any(
-            s.critique_status == "failed_after_retries" for s in view.sections
-        ):
-            failed = summary.run_id
-    if failed:
-        urls += [f"/runs/{failed}?tab={tab}" for tab in ("draft", "sources", "log")]
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if mutate is not None:
+            mutate(payload)
+        else:
+            sections = (payload.get("instance") or {}).get("sections") or []
+            if sections:
+                sections[0]["critique_status"] = "failed_after_retries"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    # Force a rehydrate so the singleton sees it. The store globs run.json at
+    # construction, and there is no reload hook.
+    runs_module._STORE = None
+    yield run_id
+    shutil.rmtree(target, ignore_errors=True)
+    runs_module._STORE = None
+
+
+@pytest.fixture(scope="module")
+def pages(client: TestClient, failed_run_id: str) -> dict[str, str]:
+    """Every reader-facing page, including a run with failed sections."""
+    urls = ["/", "/runs", "/templates"] + [
+        f"/runs/{failed_run_id}?tab={tab}" for tab in ("draft", "sources", "log")
+    ]
     return {url: client.get(url).text for url in urls}
 
 

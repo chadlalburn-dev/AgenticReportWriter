@@ -194,7 +194,9 @@ _FLASH_PARAMS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _flash_for(store: Any, params: Any) -> dict[str, str] | None:
+def _flash_for(
+    store: Any, params: Any, user_id: str | None = None
+) -> dict[str, str] | None:
     """Turn `?saved=` / `?deleted=` / `?restored=` into one banner.
 
     The value is a template key, so it is checked against the key charset
@@ -206,7 +208,7 @@ def _flash_for(store: Any, params: Any) -> dict[str, str] | None:
             continue
         title = raw
         try:
-            title = store.get_template(raw).title or raw
+            title = store.get_template(raw, user_id).title or raw
         except Exception:  # noqa: BLE001 - a deleted key has no card any more
             pass
         if name == "saved":
@@ -236,6 +238,17 @@ def _flash_for(store: Any, params: Any) -> dict[str, str] | None:
             "href_label": "",
         }
     return None
+
+
+def _uid(request: Request) -> str:
+    """The requesting user's id, for scoping the template library.
+
+    Templates are visible to their owner and to nobody else, so every route that
+    resolves a template by key has to say who is asking. Wrapped in one function
+    so a new route cannot quietly omit it and fall back to the universal-only
+    view — which would make someone's own template look deleted.
+    """
+    return identity_module.resolve_user(request.headers).user_id
 
 
 def _key_or_404(template_key: str) -> str:
@@ -272,9 +285,10 @@ def _new_run_context(
     field_errors: Mapping[str, str] | None = None,
     evidence_folder: str = "",
     from_run_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Build the whole §3.2 context.  Never raises for a broken template."""
-    card = store.get_template(template_key)  # KeyError -> caller turns it into 404
+    card = store.get_template(template_key, user_id)  # KeyError -> 404
 
     resolved, label, evidence_error = store.describe_evidence(evidence_folder)
     default_folder = str(runs_module.CORPUS_DIR)
@@ -455,6 +469,7 @@ def gallery(request: Request) -> HTMLResponse:
         sort=params.get("sort"),
         tags=params.getlist("tag"),
         q=params.get("q") or "",
+        user_id=_uid(request),
     )
     return _render(
         request,
@@ -477,7 +492,7 @@ def gallery(request: Request) -> HTMLResponse:
             sort_options=view.sort_options,
             group_options=view.group_options,
             filtering=view.filtering,
-            flash=_flash_for(store, params),
+            flash=_flash_for(store, params, _uid(request)),
             taxonomy_ok=view.taxonomy_ok,
         ),
         nav_active="templates",
@@ -511,7 +526,7 @@ def template_new(request: Request) -> HTMLResponse:
     banner: dict[str, str] | None = None
     if from_key:
         try:
-            source = store.draft_for(from_key)
+            source = store.draft_for(from_key, _uid(request))
         except (KeyError, ValueError, OSError):
             banner = {
                 "state": "neutral",
@@ -554,7 +569,7 @@ def template_edit(request: Request, template_key: str) -> HTMLResponse:
     taxonomy = runs_module.load_taxonomy()
 
     try:
-        draft = store.draft_for(key)
+        draft = store.draft_for(key, _uid(request))
     except KeyError:
         raise StarletteHTTPException(
             status_code=404, detail=f"No report template named {key!r}."
@@ -605,7 +620,7 @@ async def _post_template(request: Request, key: str | None) -> Response:
     create = key is None
     mode = "new" if create else "edit"
 
-    if not create and not store.template_exists(key or ""):
+    if not create and not store.template_exists(key or "", _uid(request)):
         raise StarletteHTTPException(
             status_code=404, detail=f"No report template named {key!r}."
         )
@@ -644,13 +659,13 @@ async def _post_template(request: Request, key: str | None) -> Response:
     base_draft = None
     if not create:
         try:
-            base_draft = store.draft_for(key or "")
+            base_draft = store.draft_for(key or "", _uid(request))
         except (KeyError, ValueError, OSError):
             base_draft = None
 
     issues = runs_module.validate_template_draft(
         draft,
-        existing_keys=store.template_keys(),
+        existing_keys=store.template_keys(_uid(request)),
         is_new=create,
         taxonomy=taxonomy,
         base_draft=base_draft,
@@ -691,6 +706,15 @@ async def _post_template(request: Request, key: str | None) -> Response:
             draft,
             create=create,
             expected_sha256=(None if (create or force) else (base_sha or None)),
+            user_id=_uid(request),
+            # Only consulted on create. A save never moves a template between
+            # scopes, or pressing Save could publish someone's personal draft to
+            # everyone — or withdraw a shared one from under other people.
+            scope=(
+                "user"
+                if runs_module._form_str(form, "scope").strip() == "user"
+                else "universal"
+            ),
         )
     except runs_module.TemplateConflict:
         return _render_editor(
@@ -784,12 +808,12 @@ async def template_save(request: Request, template_key: str) -> Response:
 def template_delete_confirm(request: Request, template_key: str) -> HTMLResponse:
     store = get_store()
     key = _key_or_404(template_key)
-    if not store.template_exists(key):
+    if not store.template_exists(key, _uid(request)):
         raise StarletteHTTPException(
             status_code=404, detail=f"No report template named {key!r}."
         )
     try:
-        draft = store.draft_for(key)
+        draft = store.draft_for(key, _uid(request))
     except (KeyError, ValueError, OSError):
         # A file that will not parse is still a file someone may want gone.
         draft = runs_module.blank_draft()
@@ -820,7 +844,7 @@ def template_delete(request: Request, template_key: str) -> Response:
     store = get_store()
     key = _key_or_404(template_key)
     try:
-        store.delete_template(key)
+        store.delete_template(key, _uid(request))
     except KeyError:
         raise StarletteHTTPException(
             status_code=404, detail=f"No report template named {key!r}."
@@ -946,7 +970,7 @@ def run_list(request: Request) -> HTMLResponse:
 def new_run(request: Request, template_key: str) -> HTMLResponse:
     store = get_store()
     try:
-        card = store.get_template(template_key)
+        card = store.get_template(template_key, _uid(request))
     except KeyError:
         raise StarletteHTTPException(
             status_code=404, detail=f"No report template named {template_key!r}."
@@ -977,6 +1001,7 @@ def new_run(request: Request, template_key: str) -> HTMLResponse:
         values=values,
         evidence_folder=evidence_folder,
         from_run_id=from_run_id,
+        user_id=_uid(request),
     )
     status = 200 if card.ok else 422
     return _render(request, "new_run_titanium.html", ctx, nav_active="templates", status_code=status)
@@ -989,7 +1014,7 @@ async def create_run(request: Request) -> Response:
     template_key = str(form.get("template_key") or "").strip()
 
     try:
-        card = store.get_template(template_key)
+        card = store.get_template(template_key, _uid(request))
     except KeyError:
         raise StarletteHTTPException(
             status_code=404, detail=f"No report template named {template_key!r}."
@@ -1022,6 +1047,7 @@ async def create_run(request: Request) -> Response:
         values=raw,
         field_errors=field_errors,
         evidence_folder=evidence_folder,
+        user_id=_uid(request),
     )
     return _render(
         request, "new_run_titanium.html", ctx, nav_active="templates", status_code=422
@@ -1174,8 +1200,8 @@ def export_citations_csv(request: Request, run_id: str) -> Response:
 
 
 @router.get("/api/templates", name="api_templates")
-def api_templates() -> JSONResponse:
-    runnable, unavailable = get_store().list_templates()
+def api_templates(request: Request) -> JSONResponse:
+    runnable, unavailable = get_store().list_templates(_uid(request))
     return JSONResponse(
         {
             "count": len(runnable),
@@ -1186,10 +1212,10 @@ def api_templates() -> JSONResponse:
 
 
 @router.get("/api/templates/{template_key}", name="api_template_detail")
-def api_template_detail(template_key: str) -> JSONResponse:
+def api_template_detail(request: Request, template_key: str) -> JSONResponse:
     store = get_store()
     try:
-        card = store.get_template(template_key)
+        card = store.get_template(template_key, _uid(request))
     except KeyError:
         raise StarletteHTTPException(
             status_code=404, detail=f"No report template named {template_key!r}."
@@ -1228,7 +1254,7 @@ async def api_create_run(request: Request) -> JSONResponse:
 
     store = get_store()
     try:
-        store.get_template(template_key)
+        store.get_template(template_key, _uid(request))
     except KeyError:
         raise StarletteHTTPException(
             status_code=404, detail=f"No report template named {template_key!r}."

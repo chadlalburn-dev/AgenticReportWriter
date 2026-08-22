@@ -928,6 +928,31 @@
                    ('Warnings', n_warnings)
                  ]) }}
 
+              {#- Who can see this. Only on create: a save must never move a
+                  template between scopes, or pressing Save would publish a
+                  personal draft to everyone. Radios rather than a select
+                  because there are two options and the consequence of each is
+                  worth reading, not collapsing into a closed control. -#}
+              {%- if mode != 'edit' %}
+              <fieldset class="rg-facet">
+                <legend class="rg-field__label">Who can see this template</legend>
+                <label class="rg-checkgroup__item">
+                  <input type="radio" name="scope" value="user" checked>
+                  <span>Just me</span>
+                  <span class="rg-caption rg-subtle">Yours alone. Nobody else sees it in the library.</span>
+                </label>
+                <label class="rg-checkgroup__item">
+                  <input type="radio" name="scope" value="universal">
+                  <span>Everyone</span>
+                  <span class="rg-caption rg-subtle">Shared. Anyone using this app can run it and edit it.</span>
+                </label>
+                <p class="rg-field__hint">
+                  This is fixed once the template exists — saving never changes
+                  it, so nothing gets shared or withdrawn by accident.
+                </p>
+              </fieldset>
+              {%- endif %}
+
               <p class="rg-caption rg-subtle">
                 {%- if mode == 'edit' -%}
                 Saving rewrites {{ key }}.md and puts the previous version aside first.

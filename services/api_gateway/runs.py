@@ -99,6 +99,34 @@ from shared.schemas.template import (
 
 REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 TEMPLATES_DIR: Path = REPO_ROOT / "report-templates"
+
+#: Where a user's own templates live, under the shared library directory.
+USER_TEMPLATES_DIR_NAME = "users"
+
+#: "universal" is visible to everyone and editable by anyone who can reach the
+#: app; "user" belongs to one person and nobody else sees it.
+TemplateScope = Literal["universal", "user"]
+
+_USER_SLUG_UNSAFE = re.compile(r"[^a-z0-9._-]+")
+
+
+def user_dir_slug(user_id: str) -> str:
+    """A directory name for a user id.
+
+    Identities here are whatever the proxy or the OS hands over, and in the GSK
+    deployment that is an email — `chad.l.alburn@gsk.com`. That cannot be a path
+    segment as-is, so everything outside a conservative set collapses to an
+    underscore. Lossy and deliberately so: this is a storage location, not an
+    identity, and `resolve_user` remains the only thing that decides who someone
+    is.
+
+    Guarded rather than trusted, because a user id reaching a filesystem path is
+    exactly where a traversal would live if one could.
+    """
+    slug = _USER_SLUG_UNSAFE.sub("_", (user_id or "").strip().lower()).strip("._-")
+    return slug or "unknown"
+
+
 RUNS_ROOT: Path = REPO_ROOT / "var" / "runs"
 CORPUS_DIR: Path = REPO_ROOT / "samples" / "synthetic_compound" / "sources"
 QUERIES_DIR: Path = REPO_ROOT / "samples" / "synthetic_compound" / "queries"
@@ -510,6 +538,11 @@ class TemplateCard(_Dict):
     n_more_tags: int = 0
     tag_aria: str = ""
     updated: str = ""
+    #: "universal" or "user". Shown on every card, because "who else can see
+    #: this" is not something a reader should have to infer from a folder.
+    scope: str = "universal"
+    #: Set only for user-scoped templates: whose it is.
+    owned_by: str = ""
     updated_ts: float = 0.0
     search: str = ""
 
@@ -2212,10 +2245,34 @@ class RunStore:
             self._template_cache[key] = (stamp, parsed)
         return parsed
 
-    def _template_paths(self) -> list[Path]:
+    def _user_templates_dir(self, user_id: str) -> Path:
+        return self._templates_dir / USER_TEMPLATES_DIR_NAME / user_dir_slug(user_id)
+
+    def _template_paths(self, user_id: str | None = None) -> list[Path]:
+        """Universal templates, plus `user_id`'s own if a user is given.
+
+        Never anyone else's. `user_id=None` means "the universal library only",
+        which is the right default for anything that is not answering a request
+        — a background task has no user and should not inherit one.
+        """
         if not self._templates_dir.is_dir():
             return []
-        return sorted(self._templates_dir.glob("*.md"))
+        # Non-recursive: the users/ subtree is reached deliberately below, so a
+        # stray .md dropped anywhere else under the directory is not silently
+        # published to everyone.
+        paths = sorted(self._templates_dir.glob("*.md"))
+        if user_id:
+            mine = self._user_templates_dir(user_id)
+            if mine.is_dir():
+                paths += sorted(mine.glob("*.md"))
+        return paths
+
+    def scope_of(self, path: Path) -> tuple[str, str]:
+        """`(scope, owner_slug)` for a template file."""
+        parent = Path(path).parent
+        if parent.name and parent.parent.name == USER_TEMPLATES_DIR_NAME:
+            return "user", parent.name
+        return "universal", ""
 
     def _card_for(self, parsed: _ParsedTemplate) -> TemplateCard:
         taxonomy = load_taxonomy()
@@ -2223,6 +2280,7 @@ class RunStore:
         tokens = list(taxonomy.tokens_for(tags))
         chips, n_more = _chips_for(tags, taxonomy)
         aria = _tag_aria(tags, taxonomy)
+        scope, owned_by = self.scope_of(parsed.path)
 
         if parsed.template is None:
             return TemplateCard(
@@ -2247,6 +2305,8 @@ class RunStore:
                 chips=chips,
                 n_more_tags=n_more,
                 tag_aria=aria,
+                scope=scope,
+                owned_by=owned_by,
                 updated=parsed.updated,
                 updated_ts=parsed.updated_ts,
                 search=_search_haystack(
@@ -2305,6 +2365,8 @@ class RunStore:
             chips=chips,
             n_more_tags=n_more,
             tag_aria=aria,
+            scope=scope,
+            owned_by=owned_by,
             updated=parsed.updated,
             updated_ts=parsed.updated_ts,
             search=_search_haystack(
@@ -2323,23 +2385,35 @@ class RunStore:
             ),
         )
 
-    def list_templates(self) -> tuple[list[TemplateCard], list[TemplateCard]]:
+    def list_templates(
+        self, user_id: str | None = None
+    ) -> tuple[list[TemplateCard], list[TemplateCard]]:
         runnable: list[TemplateCard] = []
         unavailable: list[TemplateCard] = []
-        for path in self._template_paths():
+        for path in self._template_paths(user_id):
             card = self._card_for(self._parse_template(path))
             (runnable if card.ok else unavailable).append(card)
-        runnable.sort(key=lambda c: c.title.lower())
-        unavailable.sort(key=lambda c: c.key.lower())
+        # Personal templates first within each group. Someone who made one is
+        # looking for it, and a list ordered purely by title buries it among
+        # a dozen shared ones.
+        runnable.sort(key=lambda c: (c.scope != "user", c.title.lower()))
+        unavailable.sort(key=lambda c: (c.scope != "user", c.key.lower()))
         return runnable, unavailable
 
-    def _parsed_or_raise(self, key: str) -> _ParsedTemplate:
-        path = self._templates_dir / f"{key}.md"
-        if "/" in key or "\\" in key or not path.is_file():
+    def _parsed_or_raise(
+        self, key: str, user_id: str | None = None
+    ) -> _ParsedTemplate:
+        if "/" in key or "\\" in key:
+            raise KeyError(f"unknown report template: {key!r}")
+        try:
+            path = self.template_path(key, user_id)
+        except KeyError:
+            raise KeyError(f"unknown report template: {key!r}") from None
+        if not path.is_file():
             raise KeyError(f"unknown report template: {key!r}")
         return self._parse_template(path)
 
-    def get_template(self, key: str) -> TemplateCard:
+    def get_template(self, key: str, user_id: str | None = None) -> TemplateCard:
         return self._card_for(self._parsed_or_raise(key))
 
     def _template_or_raise(self, key: str) -> ReportTemplate:
@@ -2383,13 +2457,19 @@ class RunStore:
         sort: str | None = None,
         tags: Iterable[str] = (),
         q: str = "",
+        user_id: str | None = None,
     ) -> GalleryView:
         """Everything `GET /` renders, filtered and grouped SERVER-SIDE.
 
         Non-matching cards are omitted, never rendered-then-hidden, so there
         is exactly one predicate in exactly one language (contract R7).
+
+        `user_id` widens the library to include that person's own templates.
+        Omitting it shows the universal ones only — the safe direction, since
+        the failure mode of forgetting to pass it is a template the owner cannot
+        find, not someone else's private template on a shared page.
         """
-        runnable, unavailable = self.list_templates()
+        runnable, unavailable = self.list_templates(user_id)
         return _build_gallery_view(
             runnable,
             unavailable,
@@ -2410,20 +2490,44 @@ class RunStore:
     def trash_dir(self) -> Path:
         return self._trash_dir
 
-    def template_path(self, key: str) -> Path:
-        """`report-templates/{key}.md`, or KeyError for anything unsafe."""
+    def template_path(
+        self, key: str, user_id: str | None = None, *, scope: str | None = None
+    ) -> Path:
+        """Where `{key}.md` lives, or KeyError for anything unsafe.
+
+        Keys are unique across both scopes rather than shadowing each other, and
+        that is a provenance decision rather than a convenience one: a run
+        record stores `template_key`, so if a universal and a personal template
+        could share a key, an existing report would no longer say which template
+        produced it. `new_template_key` enforces the uniqueness on the way in.
+
+        With `scope` given, this returns where a template *would* live — used
+        when creating. Without it, the caller's own directory is checked first
+        and the universal library second.
+        """
         if not TEMPLATE_KEY_RE.match(str(key or "")):
             raise KeyError(f"unknown report template: {key!r}")
+        if scope == "user":
+            if not user_id:
+                raise KeyError("a user-scoped template needs a user")
+            return self._user_templates_dir(user_id) / f"{key}.md"
+        if scope == "universal":
+            return self._templates_dir / f"{key}.md"
+        if user_id:
+            mine = self._user_templates_dir(user_id) / f"{key}.md"
+            if mine.is_file():
+                return mine
         return self._templates_dir / f"{key}.md"
 
-    def template_keys(self) -> list[str]:
-        """Every `*.md` stem on disk right now — re-globbed on every call, so
-        a template created through the editor is visible immediately."""
-        return [p.stem for p in self._template_paths()]
+    def template_keys(self, user_id: str | None = None) -> list[str]:
+        """Every `*.md` stem visible to `user_id` right now — re-globbed on
+        every call, so a template created through the editor is visible
+        immediately."""
+        return [p.stem for p in self._template_paths(user_id)]
 
-    def template_exists(self, key: str) -> bool:
+    def template_exists(self, key: str, user_id: str | None = None) -> bool:
         try:
-            return self.template_path(key).is_file()
+            return self.template_path(key, user_id).is_file()
         except KeyError:
             return False
 
@@ -2438,10 +2542,10 @@ class RunStore:
             raise KeyError(f"unknown report template: {key!r}")
         return path.read_text(encoding="utf-8")
 
-    def draft_for(self, key: str) -> Any:
+    def draft_for(self, key: str, user_id: str | None = None) -> Any:
         """`TemplateDraft` for an existing file. KeyError when it is missing;
         `TemplateWriteError` when the file is not a report template."""
-        path = self.template_path(key)
+        path = self.template_path(key, user_id)
         if not path.is_file():
             raise KeyError(f"unknown report template: {key!r}")
         return draft_from_path(path)
@@ -2456,9 +2560,24 @@ class RunStore:
         *,
         create: bool,
         expected_sha256: str | None = None,
+        user_id: str | None = None,
+        scope: str | None = None,
     ) -> Any:
-        """The only path in the UI that writes into `report-templates/`."""
-        path = self.template_path(draft.report_type)
+        """The only path in the UI that writes into `report-templates/`.
+
+        On create, `scope` decides where the file lands. On an edit it is left
+        alone: a template does not change scope by being saved, because that
+        would let a save quietly publish someone's personal draft to everyone
+        or withdraw a shared one. Moving between scopes is its own action.
+        """
+        key = draft.report_type
+        if create:
+            if scope == "user" and not user_id:
+                raise ValueError("a personal template needs a user")
+            path = self.template_path(key, user_id, scope=scope or "universal")
+            path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            path = self.template_path(key, user_id)
         result = write_template(
             draft,
             path,
@@ -2470,9 +2589,9 @@ class RunStore:
         self.invalidate_template(draft.report_type)
         return result
 
-    def delete_template(self, key: str) -> Path:
+    def delete_template(self, key: str, user_id: str | None = None) -> Path:
         """Back the file up, then move it to the trash folder. Recoverable."""
-        path = self.template_path(key)
+        path = self.template_path(key, user_id)
         if not path.is_file():
             raise KeyError(f"unknown report template: {key!r}")
         backup_template(path, self._backups_dir)
@@ -2502,7 +2621,13 @@ class RunStore:
         stem = stem or "new_template"
         if not stem[0].isalpha():
             stem = f"t_{stem}"[:56]
-        taken = {k.lower() for k in self.template_keys()}
+        # Both scopes, because keys are unique across them — a personal copy
+        # that collides with a universal key would make an existing run record
+        # ambiguous about which template drafted it.
+        taken = {k.lower() for k in self.template_keys()} | {
+            p.stem.lower()
+            for p in (self._templates_dir / USER_TEMPLATES_DIR_NAME).glob("*/*.md")
+        }
         candidate = f"{stem}_copy"
         n = 2
         while candidate.lower() in taken:
