@@ -160,6 +160,39 @@ def _strip_fence(text: str) -> str:
     return text.strip()
 
 
+def _reask_for_valid_json(
+    original: str, broken: str, exc: json.JSONDecodeError
+) -> str:
+    """A self-contained second attempt.
+
+    Self-contained is not a style choice. A warm process serves exactly one
+    call and is then discarded, precisely so that one section's retrieved
+    chunks can never leak into another's context — so the correction lands on a
+    brand-new process that has never seen the original prompt or its own broken
+    reply. Everything it needs to fix the mistake has to travel in this string.
+
+    The parser's own `msg` and `pos` go in verbatim rather than being
+    paraphrased. "Expecting ',' delimiter at position 1307" tells the model
+    exactly which byte to look at; "your JSON was invalid" invites it to
+    rewrite the content instead of the punctuation, and the content was fine.
+    """
+    window = broken[max(0, exc.pos - 90) : exc.pos + 90]
+    return (
+        f"{original}\n\n"
+        "--- CORRECTION REQUIRED ---\n"
+        "A previous attempt at this exact task returned JSON that could not "
+        f"be parsed: {exc.msg}, at character {exc.pos} of {len(broken)}.\n\n"
+        f"The text around that position was:\n{window!r}\n\n"
+        "Redo the task and return the corrected JSON object. Keep the same "
+        "findings and the same wording; the analysis was not the problem. Fix "
+        "only the JSON syntax. The most common cause is an unescaped double "
+        "quote or a literal newline inside a string value: when quoting a "
+        "phrase from the draft, escape the quotation marks or use single "
+        "quotes instead. Return the JSON object and nothing else - no prose "
+        "before it, no code fence around it."
+    )
+
+
 class ClaudeCliLlmClient(LlmClient):
     def __init__(self, config: ClaudeCliConfig | None = None) -> None:
         self._config = config or ClaudeCliConfig()
@@ -258,44 +291,17 @@ class ClaudeCliLlmClient(LlmClient):
             )
 
         prompt = self._compose_prompt(request)
-        pool = self._get_pool()
-        if pool is None:
-            raw, usage = self._generate_cold(prompt, request), None
-        else:
-            raw, usage = self._generate_pooled(pool, prompt, request)
-
-        if not raw:
-            raise StructuredOutputError("The Claude CLI returned no output.")
-
-        parsed: dict[str, object] | None = None
-        if request.response_schema_name:
-            body = _strip_fence(raw)
-            try:
-                loaded = json.loads(body)
-            except json.JSONDecodeError as exc:
-                # Head AND tail, with the length. A 200-character excerpt of
-                # the head cannot distinguish "the model wrote prose" from
-                # "the model wrote good JSON that got cut off" — and those need
-                # opposite fixes. The first live failure showed only a valid
-                # opening brace and was undiagnosable from the record.
-                raise StructuredOutputError(
-                    f"Expected JSON for {request.response_schema_name!r} and "
-                    f"could not parse {len(raw)} characters ("
-                    f"{exc.msg} at position {exc.pos}). "
-                    f"Head: {raw[:220]!r} ... Tail: {raw[-220:]!r}"
-                ) from exc
-            if not isinstance(loaded, dict):
-                raise StructuredOutputError(
-                    f"Expected a JSON object for {request.response_schema_name!r}, "
-                    f"got {type(loaded).__name__}."
-                )
-            parsed = loaded
+        raw, usage, parsed = self._ask_for_json(prompt, request)
 
         return LlmResponse(
             text=raw,
             parsed_json=parsed,
             model_version=self._config.models.get(request.tier) or "claude-code-cli",
-            stop_reason="end_turn",
+            # The real value when the stream reports one. Hardcoding "end_turn"
+            # told the pipeline every generation completed normally, including
+            # the ones cut off at a limit — so a truncated section was
+            # indistinguishable from a finished one.
+            stop_reason=(usage.stop_reason if usage and usage.stop_reason else "end_turn"),
             usage=LlmUsage(
                 # Real numbers when the stream reports them. The single-shot
                 # path has no token accounting at all, and writing an estimate
@@ -304,6 +310,99 @@ class ClaudeCliLlmClient(LlmClient):
                 input_tokens=usage.input_tokens if usage else 0,
                 output_tokens=usage.output_tokens if usage else 0,
             ),
+        )
+
+    def _ask(self, prompt: str, request: LlmRequest) -> tuple[str, CliResult | None]:
+        """One exchange, pooled if a pool exists and cold otherwise."""
+        pool = self._get_pool()
+        if pool is None:
+            return self._generate_cold(prompt, request), None
+        return self._generate_pooled(pool, prompt, request)
+
+    def _ask_for_json(
+        self, prompt: str, request: LlmRequest
+    ) -> tuple[str, CliResult | None, dict[str, object] | None]:
+        """Ask, and if a schema was requested, insist on parseable JSON —
+        allowing the model exactly one correction.
+
+        Why a re-ask and not a repair
+        -----------------------------
+        The first live failure of this kind was a 1,308-character critique that
+        parsed cleanly for 1,307 of those characters and then hit `Expecting ','
+        delimiter`. The model had written good JSON and fumbled one escape,
+        almost certainly a quotation mark inside a phrase it was quoting back
+        from the draft — a critique's whole job is to quote the text it objects
+        to. Losing an entire five-section report to one stray byte is a poor
+        trade.
+
+        The tempting fix is to patch the string: balance the quote, strip the
+        control character, close the brace. That is forbidden here. Repairing
+        JSON means guessing what the model meant to say and then presenting the
+        guess as the model's own output — inside an application whose only
+        claim is that every value traces to a real source. A repaired critique
+        is invented content wearing a provenance badge.
+
+        Re-asking has none of that problem. The model is shown its own broken
+        output and the parser's exact complaint, and writes fresh JSON; whatever
+        comes back is genuinely its own. The cost is one extra call on a rare
+        path, which is why it is capped at one and never becomes a loop that
+        hides a systematically wrong schema.
+        """
+        attempt_prompt = prompt
+        first_failure: tuple[str, json.JSONDecodeError] | None = None
+
+        while True:
+            raw, usage = self._ask(attempt_prompt, request)
+            if not raw:
+                raise StructuredOutputError("The Claude CLI returned no output.")
+            if not request.response_schema_name:
+                return raw, usage, None
+
+            try:
+                loaded = json.loads(_strip_fence(raw))
+            except json.JSONDecodeError as exc:
+                if first_failure is None:
+                    first_failure = (raw, exc)
+                    attempt_prompt = _reask_for_valid_json(prompt, raw, exc)
+                    continue
+                raise StructuredOutputError(
+                    self._json_failure_report(request, raw, exc, usage, first_failure)
+                ) from exc
+
+            if not isinstance(loaded, dict):
+                raise StructuredOutputError(
+                    f"Expected a JSON object for {request.response_schema_name!r}, "
+                    f"got {type(loaded).__name__}."
+                )
+            return raw, usage, loaded
+
+    @staticmethod
+    def _json_failure_report(
+        request: LlmRequest,
+        raw: str,
+        exc: json.JSONDecodeError,
+        usage: CliResult | None,
+        first: tuple[str, json.JSONDecodeError],
+    ) -> str:
+        """What went wrong, both times, in enough detail to act on.
+
+        Head AND tail, with the length and the failing offset. A 200-character
+        excerpt of the head cannot distinguish "the model wrote prose" from
+        "the model wrote good JSON and fumbled one escape 1,300 characters in"
+        — and those need opposite fixes. The first live failure of this kind
+        showed only a valid opening brace and was undiagnosable from the
+        record, which is why the offset and the tail are here.
+        """
+        first_raw, first_exc = first
+        stop = usage.stop_reason if usage else ""
+        return (
+            f"Expected JSON for {request.response_schema_name!r} and could not "
+            f"parse it, on the original reply or on the correction. "
+            f"First: {len(first_raw)} chars, {first_exc.msg} at position "
+            f"{first_exc.pos}. Retry: {len(raw)} chars, {exc.msg} at position "
+            f"{exc.pos}"
+            f"{f', stop_reason={stop!r}' if stop else ''}. "
+            f"Retry head: {raw[:220]!r} ... Retry tail: {raw[-220:]!r}"
         )
 
     def _generate_pooled(

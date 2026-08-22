@@ -78,6 +78,11 @@ class CliResult:
     session_id: str
     is_error: bool
     raw_events: int
+    #: Why generation stopped, as the stream reported it. Not defaulted and not
+    #: assumed: the client used to hardcode "end_turn", so a reply cut off at a
+    #: token limit was announced to the pipeline as a normal completion and a
+    #: truncated draft looked like a finished one.
+    stop_reason: str
 
 
 class WarmProcess:
@@ -145,6 +150,7 @@ class WarmProcess:
                 session_id=str(event.get("session_id") or ""),
                 is_error=bool(event.get("is_error")),
                 raw_events=events,
+                stop_reason=str(event.get("stop_reason") or ""),
             )
 
     def close(self) -> None:

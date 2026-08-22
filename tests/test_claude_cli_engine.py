@@ -582,3 +582,111 @@ def test_a_test_can_still_opt_into_the_real_path(monkeypatch):
     monkeypatch.setattr(ClaudeCliLlmClient, "check", lambda self: None)
     runs_module.reset_engine_cache()
     assert runs_module.resolve_engine().kind == "cli"
+
+
+# --- one correction, never a repair ----------------------------------------
+#
+# The failure this exists for: a live run died on a 1,308-character critique
+# that parsed cleanly for 1,307 characters and then hit `Expecting ','
+# delimiter`. The model had written good JSON and fumbled one escape — almost
+# certainly a quotation mark inside a phrase it was quoting back from the draft,
+# which is a critique's entire job. A five-section report was lost to one byte.
+
+
+def _replies(*payloads: str):
+    """A `subprocess.run` that returns each payload in turn, and records calls."""
+    calls: list[str] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(str(kwargs.get("input", "")))
+        return _Proc(stdout=payloads[min(len(calls) - 1, len(payloads) - 1)])
+
+    return fake_run, calls
+
+
+def test_a_malformed_reply_gets_one_more_chance(client, monkeypatch):
+    """Losing a whole report to a single stray byte is a poor trade when the
+    model can be shown the parser's complaint and asked again."""
+    fake_run, calls = _replies('{"verdict":"fail" "issues":[]}', '{"verdict":"fail","issues":[]}')
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    response = client.generate(_request(schema="CritiqueOutput"))
+
+    assert response.parsed_json == {"verdict": "fail", "issues": []}
+    assert len(calls) == 2, f"expected one retry, the client made {len(calls)} calls"
+
+
+def test_the_retry_is_not_a_repair_of_the_first_answer(client, monkeypatch):
+    """The forbidden fix. Patching the broken string — balancing the quote,
+    closing the brace — means guessing what the model meant and then presenting
+    the guess as the model's own output, inside an application whose only claim
+    is that every value traces to a real source. A repaired critique is
+    invented content wearing a provenance badge.
+
+    So the accepted answer must be the second reply verbatim, and must not
+    contain anything salvaged from the first.
+    """
+    fake_run, _ = _replies(
+        '{"verdict":"fail","issues":["SALVAGED FROM THE BROKEN ONE" "unescaped]}',
+        '{"verdict":"pass","issues":[]}',
+    )
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    response = client.generate(_request(schema="CritiqueOutput"))
+
+    assert response.parsed_json == {"verdict": "pass", "issues": []}
+    assert "SALVAGED" not in response.text, "content from the broken reply survived"
+
+
+def test_the_correction_prompt_stands_on_its_own(client, monkeypatch):
+    """A warm process serves exactly one call and is discarded, so the retry
+    lands on a brand-new process that has never seen the original prompt or its
+    own broken reply. If the correction is not self-contained it is a request to
+    fix something the model cannot see."""
+    fake_run, calls = _replies('{"a" "b"}', "{}")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    client.generate(_request(schema="CritiqueOutput", text="CRITIQUE THIS DRAFT"))
+
+    retry = calls[1]
+    assert "CRITIQUE THIS DRAFT" in retry, "the retry dropped the original task"
+    assert "CritiqueOutput" in retry, "the retry dropped the schema"
+    assert "Expecting" in retry, "the retry did not say what the parser objected to"
+
+
+def test_the_retry_is_capped_at_one(client, monkeypatch):
+    """Bounded so a systematically wrong schema fails loudly instead of
+    burning calls in a loop that looks like slowness."""
+    fake_run, calls = _replies('{"still" "broken"}')
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(StructuredOutputError):
+        client.generate(_request(schema="CritiqueOutput"))
+
+    assert len(calls) == 2, f"the client made {len(calls)} calls, not two"
+
+
+def test_both_failures_are_reported_not_just_the_second(client, monkeypatch):
+    """Whether the correction changed anything is the first thing a reader needs
+    to know: an identical second failure points at the prompt, a different one
+    points at the model."""
+    fake_run, _ = _replies('{"first" "bad"}', '{"second" "bad"}')
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(StructuredOutputError) as caught:
+        client.generate(_request(schema="CritiqueOutput"))
+
+    message = str(caught.value)
+    assert "First:" in message and "Retry:" in message
+    assert "position" in message, "the failing offset is what makes this actionable"
+
+
+def test_a_schemaless_request_is_never_retried(client, monkeypatch):
+    """Prose has nothing to parse, so there is no such thing as a malformed
+    answer to retry — and re-asking would double the cost of every plain call."""
+    fake_run, calls = _replies("just some prose, no braces at all")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    client.generate(_request(schema=None))
+
+    assert len(calls) == 1

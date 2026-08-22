@@ -66,6 +66,10 @@ class _FakeProc:
             session_id="s-1",
             is_error=False,
             raw_events=4,
+            # Supplied, not defaulted. CliResult deliberately gives stop_reason
+            # no default so a fake cannot silently claim a normal completion —
+            # that assumption is the exact bug the field was added to kill.
+            stop_reason="end_turn",
         )
 
     def close(self) -> None:
@@ -255,3 +259,87 @@ def test_the_probe_does_not_warm_a_pool(monkeypatch):
     monkeypatch.setattr("shared.llm.claude_cli.find_claude_binary", lambda *a, **k: __file__)
     client = ClaudeCliLlmClient(ClaudeCliConfig(pool_size=3))
     assert client._pool is None, "constructing a client eagerly warmed processes"
+
+
+
+# --- how generation ended: reported, not assumed ---------------------------
+
+
+class _ScriptedPipe:
+    """A stdout that yields prepared lines, then EOF."""
+
+    closed = False
+
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = list(lines)
+
+    def readline(self) -> str:
+        return self._lines.pop(0) if self._lines else ""
+
+    def write(self, _: str) -> None:
+        pass
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def _process_answering(event: dict, monkeypatch):
+    """A WarmProcess whose CLI replies with exactly `event`."""
+    from shared.llm.claude_cli_pool import WarmProcess
+
+    class _Fake:
+        def __init__(self, *a, **k) -> None:
+            self.stdin = _ScriptedPipe([])
+            self.stderr = _ScriptedPipe([])
+            self.stdout = _ScriptedPipe([json.dumps(event) + "\n"])
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr("shared.llm.claude_cli_pool.subprocess.Popen", _Fake)
+    return WarmProcess(["claude"], None)
+
+
+def test_the_reason_generation_stopped_is_carried_not_invented(monkeypatch):
+    """The client hardcoded `stop_reason="end_turn"` and discarded the stream's
+    own value. That is a false statement about how generation ended, in an
+    application whose single claim is that what it reports is traceable: a
+    section cut off at a token ceiling was announced to the pipeline as a
+    normal completion, so a truncated draft was indistinguishable from a
+    finished one.
+
+    Asserted against a `max_tokens` stop, because that is the case the
+    hardcoded value got wrong.
+    """
+    proc = _process_answering(
+        {
+            "type": "result",
+            "result": '{"verdict":"fail"',  # cut off mid-object
+            "stop_reason": "max_tokens",
+            "usage": {"input_tokens": 900, "output_tokens": 1024},
+            "session_id": "s-9",
+        },
+        monkeypatch,
+    )
+    result = proc.ask("critique this", timeout_s=5)
+    assert result.stop_reason == "max_tokens", (
+        "the stream said the model hit a token ceiling and the pool reported "
+        "something else"
+    )
+
+
+def test_a_silent_stream_yields_no_claim_about_stopping(monkeypatch):
+    """When the stream says nothing, the honest record is nothing. Defaulting
+    to "end_turn" would manufacture the reassuring answer from no evidence,
+    which is the same defect one layer down."""
+    proc = _process_answering({"type": "result", "result": "{}"}, monkeypatch)
+    assert proc.ask("x", timeout_s=5).stop_reason == ""
