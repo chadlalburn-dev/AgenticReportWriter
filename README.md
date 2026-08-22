@@ -77,17 +77,44 @@ in the non-dismissible notice above the draft itself. If placeholder prose
 could be mistaken for a model's words, the product's provenance claim is void,
 so this disclosure is covered by tests rather than left to convention.
 
-**To turn on real generation**, sign the CLI in once — the app cannot do this
-for you, because the login is an interactive browser flow:
+**To turn on real generation**, install the CLI and sign it in once. The app
+cannot do either for you: the login is an interactive browser flow, and an agent
+working in this repo may be running behind a filesystem overlay whose writes
+never reach the host (see the note at the end of this section).
 
-```bash
-claude
+```powershell
+$env:NODE_OPTIONS = "--use-system-ca"
+npm install -g @anthropic-ai/claude-code
+& "$env:APPDATA\npm\claude.cmd" auth login
 ```
 
-then `/login` at the prompt. The app picks it up within a minute; no restart.
-Until then it correctly falls back to the stub and says so. `find_claude_binary`
-looks at `REPORTGEN_CLAUDE_BIN`, then `PATH`, then the Windows install
-directory, so set that variable if the CLI lives somewhere unusual.
+Three details, each of which cost a wrong answer:
+
+- **`--use-system-ca` is not optional here.** Without it npm fails with
+  `SELF_SIGNED_CERT_IN_CHAIN`: GSK's TLS-inspection proxy presents its own CA,
+  which Windows trusts and npm's bundled store does not. This is the same root
+  cause as the HTTPS git failures that make SSH the only working push path. Do
+  not reach for `npm config set strict-ssl false` — that disables certificate
+  validation outright, in a repo that handles preclinical data.
+- **npm's global bin is not on this machine's PATH.** The user PATH holds only
+  Python and WindowsApps, so `claude` does not resolve even once installed, and
+  `shutil.which("claude")` finds nothing. Invoke the shim by full path, or add
+  `%APPDATA%\npm` to PATH.
+- **`claude auth login`, not the in-REPL `/login`.** Same result, one command,
+  and `claude auth status` then reports `{"loggedIn": true}` machine-readably.
+
+`find_claude_binary` looks at `REPORTGEN_CLAUDE_BIN`, then `PATH`, then two real
+install layouts — npm's global shim and the desktop app's versioned directory,
+newest first. Set the variable if the CLI lives somewhere else. Until it is
+signed in the app falls back to the stub and says so, on every surface.
+
+**If you are an agent reading this:** verify from the *user's* shell, not yours.
+A session working in this repo was able to create, read and execute
+`%APPDATA%\npm\claude.cmd` while the user's own non-elevated PowerShell reported
+the directory absent — reads fell through to the real disk, writes did not.
+`dangerouslyDisableSandbox` does not lift that; it changes command sandboxing,
+not the overlay, so comparing your own two views proves nothing. Do not conclude
+software is installed because you installed it.
 
 Two behaviours of the CLI are worth knowing, because both cost real debugging
 and are pinned by tests in `tests/test_claude_cli_engine.py`:
