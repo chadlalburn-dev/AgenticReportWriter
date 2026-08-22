@@ -117,3 +117,9 @@ chroma/
 # Design-export working artifacts (not app code)
 design-export/
 design-export.zip
+
+# Personal templates are not committed.
+# report-templates/*.md is the shared library; users/ holds one directory per
+# person. Someone's own drafts are theirs, and committing them would publish
+# to the repository the thing the scope exists to keep out of the shared list.
+report-templates/users/

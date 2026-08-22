@@ -196,7 +196,10 @@ _ROW_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,31}$")
 
 GROUP_NONE: str = "none"
 #: Facet ids that are DERIVED from the card, never configured (contract R11).
-DERIVED_GROUPS: tuple[str, ...] = ("owner", "readiness")
+#: Groupings computed from a card rather than read off its tags. "scope" is one
+#: of these: which library a template lives in is a property of where the file
+#: is, not something an author tags it with.
+DERIVED_GROUPS: tuple[str, ...] = ("scope", "owner", "readiness")
 
 SORT_OPTIONS: list[tuple[str, str]] = [
     ("name", "Name (A–Z)"),
@@ -2414,16 +2417,20 @@ class RunStore:
         return self._parse_template(path)
 
     def get_template(self, key: str, user_id: str | None = None) -> TemplateCard:
-        return self._card_for(self._parsed_or_raise(key))
+        return self._card_for(self._parsed_or_raise(key, user_id))
 
-    def _template_or_raise(self, key: str) -> ReportTemplate:
-        parsed = self._parsed_or_raise(key)
+    def _template_or_raise(
+        self, key: str, user_id: str | None = None
+    ) -> ReportTemplate:
+        parsed = self._parsed_or_raise(key, user_id)
         if parsed.template is None:
             raise ValueError(parsed.error or f"{key} could not be parsed")
         return parsed.template
 
-    def template_outline(self, key: str) -> list[SectionOutline]:
-        parsed = self._parsed_or_raise(key)
+    def template_outline(
+        self, key: str, user_id: str | None = None
+    ) -> list[SectionOutline]:
+        parsed = self._parsed_or_raise(key, user_id)
         if parsed.template is None:
             return []
         out: list[SectionOutline] = []
@@ -2444,8 +2451,8 @@ class RunStore:
             )
         return out
 
-    def default_inputs(self, key: str) -> dict[str, str]:
-        card = self.get_template(key)
+    def default_inputs(self, key: str, user_id: str | None = None) -> dict[str, str]:
+        card = self.get_template(key, user_id)
         return {f.binding_id: f.default for f in card.form_fields}
 
     # -- gallery: group / sort / filter ------------------------------------
@@ -2701,8 +2708,9 @@ class RunStore:
         key: str,
         inputs: dict[str, str],
         evidence_folder: str | None = None,
+        user_id: str | None = None,
     ) -> PreflightReport:
-        parsed = self._parsed_or_raise(key)
+        parsed = self._parsed_or_raise(key, user_id)
         folder, folder_issue = self._resolve_evidence(evidence_folder)
         if parsed.template is None:
             return PreflightReport(
@@ -2806,9 +2814,9 @@ class RunStore:
     # -- run lifecycle -----------------------------------------------------
 
     def validate_inputs(
-        self, key: str, raw: dict[str, str]
+        self, key: str, raw: dict[str, str], user_id: str | None = None
     ) -> tuple[dict[str, str], dict[str, str]]:
-        card = self.get_template(key)
+        card = self.get_template(key, user_id)
         cleaned: dict[str, str] = {}
         errors: dict[str, str] = {}
         for f in card.form_fields:
@@ -2836,20 +2844,20 @@ class RunStore:
         evidence_folder: str | None = None,
         owner: str = "",
     ) -> RunRecord:
-        card = self.get_template(key)
+        card = self.get_template(key, owner or None)
         if not card.ok:
             raise ValueError(card.error or "This template cannot be run.")
 
-        cleaned, errors = self.validate_inputs(key, inputs)
+        cleaned, errors = self.validate_inputs(key, inputs, owner or None)
         if errors:
             raise ValueError("; ".join(f"{k}: {v}" for k, v in sorted(errors.items())))
 
-        report = self.preflight(key, cleaned, evidence_folder)
+        report = self.preflight(key, cleaned, evidence_folder, owner or None)
         if report.blocked:
             raise ValueError(report.headline)
 
         folder, _ = self._resolve_evidence(evidence_folder)
-        template = self._template_or_raise(key)
+        template = self._template_or_raise(key, owner or None)
 
         run_id = uuid.uuid4().hex[:12]
         created = _iso()
@@ -3364,7 +3372,10 @@ class RunStore:
         if cancel.is_set():
             raise RunCancelled("cancelled before start")
 
-        template = self._template_or_raise(record.template_key)
+        # `record.owner`, not an ambient user: this runs on a worker thread
+        # with no request, and a run started from someone's personal template
+        # has to keep resolving it after they have closed the tab.
+        template = self._template_or_raise(record.template_key, record.owner or None)
         section_index = {s.section_id: s for s in template.all_sections()}
 
         self._mutate(
@@ -5417,6 +5428,31 @@ def _group_cards(
             for owner in order
         ]
 
+    if group == "scope":
+        # "Mine" first, deliberately. Someone grouping by this is looking for
+        # their own templates; putting the shared library first would bury them
+        # under a dozen rows they did not come for. Grouping is where this
+        # belongs rather than a sort, because the page groups before it sorts —
+        # a scope-aware sort was written first and never showed, since the
+        # grouping ran ahead of it.
+        buckets = {}
+        for card in cards:
+            buckets.setdefault(card.scope, []).append(card)
+        return [
+            GroupView(
+                key=f"scope:{scope}",
+                facet_id="scope",
+                value_id=scope,
+                label="Just me" if scope == "user" else "Everyone",
+                heading_id=_heading_id("scope", scope, used),
+                untagged=False,
+                count=len(buckets[scope]),
+                cards=buckets[scope],
+            )
+            for scope in ("user", "universal")
+            if scope in buckets
+        ]
+
     if group == "readiness":
         buckets = {}
         for card in cards:
@@ -5643,6 +5679,7 @@ def _build_gallery_view(
     n_active = sum(len(v) for v in selected.values())
     group_options = [(f.id, f.label) for f in taxonomy.groupable_facets()]
     group_options += [
+        ("scope", "Who can see it"),
         ("owner", "Owning team"),
         ("readiness", "Source readiness"),
         (GROUP_NONE, "Nothing (one flat list)"),

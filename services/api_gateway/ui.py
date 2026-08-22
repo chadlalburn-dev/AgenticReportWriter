@@ -303,7 +303,9 @@ def _new_run_context(
             "evidence_default": default_folder,
             "evidence_label": label,
             "evidence_error": evidence_error,
-            "preflight": store.preflight(template_key, {}, evidence_folder or None),
+            "preflight": store.preflight(
+                template_key, {}, evidence_folder or None, user_id
+            ),
             "sections": [],
             "from_run_id": from_run_id,
         }
@@ -324,8 +326,10 @@ def _new_run_context(
         "evidence_default": default_folder,
         "evidence_label": label,
         "evidence_error": evidence_error,
-        "preflight": store.preflight(template_key, effective, evidence_folder or None),
-        "sections": store.template_outline(template_key),
+        "preflight": store.preflight(
+            template_key, effective, evidence_folder or None, user_id
+        ),
+        "sections": store.template_outline(template_key, user_id),
         "from_run_id": from_run_id,
     }
 
@@ -1023,7 +1027,7 @@ async def create_run(request: Request) -> Response:
     evidence_folder = str(form.get("evidence_folder") or "").strip()
     raw = {f.binding_id: str(form.get(f.binding_id) or "") for f in card.form_fields}
 
-    cleaned, field_errors = store.validate_inputs(template_key, raw)
+    cleaned, field_errors = store.validate_inputs(template_key, raw, _uid(request))
 
     if not field_errors:
         try:
@@ -1034,7 +1038,9 @@ async def create_run(request: Request) -> Response:
                 owner=identity_module.resolve_user(request.headers).user_id,
             )
         except ValueError as exc:
-            report = store.preflight(template_key, cleaned, evidence_folder or None)
+            report = store.preflight(
+                template_key, cleaned, evidence_folder or None, _uid(request)
+            )
             field_errors = _blocker_field_errors(report)
             if not field_errors:
                 field_errors = {"__run__": str(exc)}
@@ -1222,7 +1228,10 @@ def api_template_detail(request: Request, template_key: str) -> JSONResponse:
         )
     payload = card.to_dict()
     payload["preflight"] = store.preflight(
-        template_key, store.default_inputs(template_key) if card.ok else {}
+        template_key,
+        store.default_inputs(template_key, _uid(request)) if card.ok else {},
+        None,
+        _uid(request),
     ).to_dict()
     return JSONResponse(payload, status_code=200 if card.ok else 422)
 

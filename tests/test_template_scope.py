@@ -110,13 +110,38 @@ def test_the_listing_labels_which_scope_each_template_is_in(store: RunStore):
 
 def test_personal_templates_sort_ahead_of_shared_ones(store: RunStore):
     """Someone who just made one is looking for it, and ordering purely by
-    title buries it among a dozen shared templates."""
+    title buries it among a dozen shared templates.
+
+    This is `list_templates` order only. The gallery groups before it sorts, so
+    on the page this ordering is invisible — which is why grouping by scope
+    exists, and why that has its own test below rather than this one being left
+    to imply something the page does not do."""
     _make(store, "aaa_shared", scope="universal")
     _make(store, "zzz_mine", scope="user", user_id=ALICE)
 
     runnable, unavailable = store.list_templates(ALICE)
     keys = [c.key for c in runnable + unavailable]
     assert keys.index("zzz_mine") < keys.index("aaa_shared")
+
+
+def test_the_gallery_can_group_by_who_can_see_a_template(store: RunStore):
+    """The page groups before it sorts, so a scope-aware sort never showed.
+    Grouping is the affordance that actually surfaces the split, and "Just me"
+    comes first because that is what someone grouping by it came for."""
+    _make(store, "aaa_shared", scope="universal")
+    _make(store, "zzz_mine", scope="user", user_id=ALICE)
+
+    view = store.gallery_view(group="scope", user_id=ALICE)
+    labels = [g.label for g in view.groups]
+    assert labels == ["Just me", "Everyone"], labels
+    assert [c.key for c in view.groups[0].cards] == ["zzz_mine"]
+    assert [c.key for c in view.groups[1].cards] == ["aaa_shared"]
+
+
+def test_grouping_by_scope_is_offered_in_the_ui(store: RunStore):
+    _make(store, "shared_one", scope="universal")
+    view = store.gallery_view(user_id=ALICE)
+    assert ("scope", "Who can see it") in view.group_options
 
 
 # --- saving does not move a template between scopes ------------------------
@@ -191,3 +216,49 @@ def test_two_users_with_ids_differing_only_in_case_share_one_directory():
     headers attributes to one identity. The storage slug has to agree, or their
     templates split across two folders and half of them vanish."""
     assert user_dir_slug("Alice@Example.COM") == user_dir_slug("alice@example.com")
+
+
+# --- a personal template has to be runnable, not just visible --------------
+
+
+def test_the_owner_can_resolve_their_own_template_for_a_run(store: RunStore):
+    """Found in the running app, not here: `/templates` listed Alice's own
+    template and linked to `/new/<key>`, and that link 404ed for Alice.
+
+    `get_template` accepted `user_id` and never passed it to the parse — a
+    parameter taken and ignored, the same defect shape as the chart reading
+    `rows` instead of `typed_rows`. Everything downstream of it (the run-setup
+    page, preflight, the outline) inherited the universal-only view, so a
+    personal template could be created and seen and never used.
+    """
+    _make(store, "alice_only", scope="user", user_id=ALICE)
+
+    card = store.get_template("alice_only", ALICE)
+    assert card.key == "alice_only"
+    assert card.scope == "user"
+
+    assert store.template_outline("alice_only", ALICE), "no sections resolved"
+    assert store.preflight("alice_only", {}, None, ALICE) is not None
+
+    with pytest.raises(KeyError):
+        store.get_template("alice_only", BOB)
+
+
+def test_a_run_resolves_its_template_from_the_record_not_an_ambient_user(
+    store: RunStore,
+):
+    """Generation happens on a worker thread with no request. A run started from
+    someone's personal template has to keep resolving it after they close the
+    tab, so the run record's `owner` is the authority — the same discipline as
+    reading `model_version` off the run rather than the ambient engine."""
+    _make(store, "alice_only", scope="user", user_id=ALICE)
+
+    record = store.create(
+        "alice_only", {"compound_id": "XYZ-001"}, None, owner=ALICE
+    )
+    assert record.owner == ALICE
+
+    # What the worker does: resolve by key, as the recorded owner.
+    assert store._template_or_raise(record.template_key, record.owner) is not None
+    with pytest.raises(KeyError):
+        store._template_or_raise(record.template_key, BOB)
