@@ -34,6 +34,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import threading
 import time
 import traceback
@@ -74,6 +75,7 @@ from shared.llm import (
     LlmRequest,
     LlmResponse,
     StubLlmClient,
+    find_claude_binary,
 )
 from shared.schemas import CanonicalDocument, ParsedChunk, ReportTemplate, TemplateSection
 from shared.schemas.template import (
@@ -1349,8 +1351,15 @@ def _probe_engine(choice: str) -> EngineInfo:
 #: why the CLI is unavailable, and getting it wrong is worse than saying
 #: nothing: telling someone to run `/login` when they set REPORTGEN_ENGINE=stub
 #: themselves sends them chasing a problem that does not exist.
+#: Signing in, phrased so the command can actually be pasted.
+#:
+#: This said "run `claude`" flatly, which is wrong whenever the CLI is not on
+#: PATH — and after `npm install -g` on this machine it is not: the npm global
+#: bin is absent from the user PATH, so `claude` resolves to nothing. An
+#: instruction that fails when followed is worse than no instruction, so the
+#: resolved path is substituted when there is one to substitute.
 _FIX_NOT_SIGNED_IN = (
-    "Open a terminal, run `claude`, then `/login`. This page picks it up "
+    "Open a terminal, run `{binary}`, then `/login`. This page picks it up "
     "within a minute — no restart, and nothing else to configure."
 )
 _FIX_NOT_INSTALLED = (
@@ -1376,7 +1385,13 @@ def _fix_for(*, choice: str, hint: str) -> str:
     low = hint.lower()
     if "not found" in low or "could not be executed" in low:
         return _FIX_NOT_INSTALLED
-    return _FIX_NOT_SIGNED_IN
+    # Name the binary that was actually found. `claude` is only the right thing
+    # to type when the CLI is on PATH, and after an npm global install it is
+    # not — so the bare word sends someone to a CommandNotFoundException.
+    binary = find_claude_binary() or "claude"
+    if binary != "claude" and shutil.which("claude"):
+        binary = "claude"          # on PATH after all: the short form is kinder
+    return _FIX_NOT_SIGNED_IN.format(binary=binary)
 
 
 def _stub_engine(*, hint: str, choice: str = "auto") -> EngineInfo:

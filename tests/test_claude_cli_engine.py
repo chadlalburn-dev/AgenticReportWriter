@@ -441,3 +441,86 @@ def test_the_probe_timeout_is_named_in_its_own_error(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", boom)
     with pytest.raises(ClaudeCliUnavailable, match="within 7s"):
         client.check()
+
+
+# --- discovery must cover how the CLI is actually installed ---------------
+
+
+def test_the_npm_global_shim_is_discoverable(monkeypatch, tmp_path):
+    """`npm install -g @anthropic-ai/claude-code` writes shims to the npm global
+    bin, and that directory is not on the user PATH on this machine — it holds
+    only Python and WindowsApps. So `shutil.which("claude")` finds nothing with
+    the CLI correctly installed, and discovery has to know the layout.
+    """
+    monkeypatch.delenv("REPORTGEN_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr("shared.llm.claude_cli.shutil.which", lambda _n: None)
+    monkeypatch.setattr("shared.llm.claude_cli.Path.home", staticmethod(lambda: tmp_path))
+    shim = tmp_path / "AppData" / "Roaming" / "npm" / "claude.cmd"
+    shim.parent.mkdir(parents=True)
+    shim.write_text("@echo off", encoding="utf-8")
+    assert find_claude_binary() == str(shim)
+
+
+def test_the_desktop_bundle_is_still_discoverable(monkeypatch, tmp_path):
+    """The other real layout, and the newest version wins."""
+    monkeypatch.delenv("REPORTGEN_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr("shared.llm.claude_cli.shutil.which", lambda _n: None)
+    monkeypatch.setattr("shared.llm.claude_cli.Path.home", staticmethod(lambda: tmp_path))
+    root = tmp_path / "AppData" / "Roaming" / "Claude" / "claude-code"
+    for version in ("2.1.100", "2.1.239"):
+        exe = root / version / "claude.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("x", encoding="utf-8")
+    assert find_claude_binary() == str(root / "2.1.239" / "claude.exe")
+
+
+def test_a_cmd_shim_can_actually_be_executed():
+    """CreateProcess routes .cmd through the command interpreter, so subprocess
+    drives the shim with no shell=True — which would be an injection risk with
+    a path this code did not choose."""
+    import subprocess as sp
+
+    from shared.llm.claude_cli import find_claude_binary as find
+
+    binary = find()
+    if not binary or not binary.endswith(".cmd"):
+        pytest.skip("no .cmd shim installed on this machine")
+    result = sp.run(
+        [binary, "--version"], capture_output=True, text=True, timeout=90,
+        stdin=sp.DEVNULL,
+    )
+    assert result.returncode == 0
+    assert "Claude Code" in (result.stdout or "")
+
+
+# --- the instruction has to be runnable ----------------------------------
+
+
+def test_the_login_instruction_names_a_real_command(monkeypatch, tmp_path):
+    """It said "run `claude`" unconditionally. That is wrong whenever the CLI is
+    off PATH, which is the normal case after an npm global install here — so the
+    one instruction the user must follow sent them to a
+    CommandNotFoundException. Twice, in practice.
+    """
+    monkeypatch.delenv(runs_module.ENGINE_ENV, raising=False)
+    monkeypatch.setattr("shared.llm.claude_cli.shutil.which", lambda _n: None)
+    monkeypatch.setattr("services.api_gateway.runs.shutil.which", lambda _n: None)
+    shim = tmp_path / "AppData" / "Roaming" / "npm" / "claude.cmd"
+    shim.parent.mkdir(parents=True)
+    shim.write_text("@echo off", encoding="utf-8")
+    monkeypatch.setattr("shared.llm.claude_cli.Path.home", staticmethod(lambda: tmp_path))
+
+    fix = runs_module._fix_for(choice="auto", hint="not signed in")
+    assert str(shim) in fix, f"the instruction does not name the found binary: {fix}"
+    assert "/login" in fix
+
+
+def test_the_short_form_is_used_when_the_cli_is_on_path(monkeypatch):
+    """Pasting an absolute path when `claude` would do is noise."""
+    monkeypatch.setattr("services.api_gateway.runs.shutil.which", lambda _n: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "services.api_gateway.runs.find_claude_binary", lambda: "/opt/weird/claude.cmd"
+    )
+    fix = runs_module._fix_for(choice="auto", hint="not signed in")
+    assert "`claude`" in fix, fix
+    assert "/opt/weird" not in fix

@@ -54,9 +54,20 @@ from shared.llm.client import (
     StructuredOutputError,
 )
 
-#: Where the CLI lives when it is not on PATH. The versioned directory under
-#: %APPDATA% is how the desktop app installs it on Windows.
-_WINDOWS_GLOB = "AppData/Roaming/Claude/claude-code/*/claude.exe"
+#: Where the CLI lives when it is not on PATH, most specific first.
+#:
+#: Two real layouts, and the npm one was missing. `npm install -g` writes its
+#: shims to the npm global bin, which on this machine is NOT on the user PATH —
+#: that PATH holds only Python and WindowsApps — so `shutil.which("claude")`
+#: finds nothing even with the CLI correctly installed. The shims are a `.cmd`,
+#: a `.ps1` and an extensionless script; subprocess drives the `.cmd` directly
+#: (verified), because CreateProcess routes .cmd through the command interpreter.
+_WINDOWS_GLOBS = (
+    # `npm install -g @anthropic-ai/claude-code`
+    "AppData/Roaming/npm/claude.cmd",
+    # bundled by the desktop app, versioned directory
+    "AppData/Roaming/Claude/claude-code/*/claude.exe",
+)
 
 #: Substrings that mean "the CLI ran but produced nothing usable". Matched
 #: case-insensitively against stdout, because the CLI exits 0 for these.
@@ -105,8 +116,12 @@ def find_claude_binary(explicit: str | None = None) -> str | None:
     on_path = shutil.which("claude")
     if on_path:
         return on_path
-    matches = sorted(Path.home().glob(_WINDOWS_GLOB), reverse=True)
-    return str(matches[0]) if matches else None
+    for pattern in _WINDOWS_GLOBS:
+        # reverse=True so a versioned directory yields the newest install
+        matches = sorted(Path.home().glob(pattern), reverse=True)
+        if matches:
+            return str(matches[0])
+    return None
 
 
 def _strip_fence(text: str) -> str:
