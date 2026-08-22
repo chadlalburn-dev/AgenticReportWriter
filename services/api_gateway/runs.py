@@ -1230,6 +1230,20 @@ def resolve_engine() -> EngineInfo:
     """
     choice = (os.environ.get(ENGINE_ENV) or "auto").strip().lower()
     if choice == "cli":
+        # Synchronous for the FIRST answer only. An operator who forced `cli`
+        # wants the failure surfaced rather than a reassuring placeholder — but
+        # that is one answer, not one per click. This branch wrote to the cache
+        # and never read it, so every HTML page spawned a fresh probe: a ~330MB
+        # binary booting a Node runtime, measured at 15-19s, for the chip in the
+        # header. Static files and the JSON API came back in 10ms because they
+        # never render a template; a 404 took 16s because it does.
+        #
+        # A stale answer is bounded by ENGINE_TTL_S, the same window every other
+        # mode already accepts, and a cached failure keeps surfacing as a
+        # failure.
+        cached = _cached_engine(choice)
+        if cached is not None:
+            return cached
         return _cache_engine(choice, _probe_engine(choice))
 
     cached = _cached_engine(choice)

@@ -238,3 +238,58 @@ def test_the_list_marker_says_what_it_means_on_hover(client: TestClient):
     chip = _re.search(r"<span class=\"ti-lrow__stub\"[^>]*>", body).group(0)
     assert "title=" in chip
     assert "not a model" in chip
+
+
+# --- the chip must not cost a subprocess per click -------------------------
+
+
+def test_forced_cli_probes_once_not_once_per_page(monkeypatch):
+    """Every HTML page discloses the engine, so `resolve_engine()` runs on every
+    render — including 404s, which is how this was found: static files and the
+    JSON API returned in 10ms while every HTML page, error pages included, took
+    15 to 19 seconds.
+
+    The `cli` branch wrote its answer to the cache and never read it back, so
+    each click booted a ~330MB binary to ask whether it was signed in. The first
+    answer is still synchronous, because an operator who forced `cli` wants the
+    failure and not a placeholder — but that is one answer, not one per click.
+    """
+    from services.api_gateway import runs as runs_module
+
+    probes = 0
+
+    def counting_probe(choice: str):
+        nonlocal probes
+        probes += 1
+        return runs_module._stub_engine(hint="", choice=choice)
+
+    monkeypatch.setenv(runs_module.ENGINE_ENV, "cli")
+    monkeypatch.setattr(runs_module, "_probe_engine", counting_probe)
+    runs_module.reset_engine_cache()
+
+    for _ in range(12):
+        runs_module.resolve_engine()
+
+    assert probes == 1, (
+        f"twelve page renders launched {probes} engine probes; at ~16s each "
+        "that is the load time the app was showing"
+    )
+
+
+def test_a_forced_cli_failure_is_not_hidden_by_the_cache(monkeypatch):
+    """The reason this branch was synchronous in the first place. Caching must
+    not turn "the CLI is not signed in" into a quiet stub claim — the cached
+    answer has to be the real one, including when it is bad news."""
+    from services.api_gateway import runs as runs_module
+
+    def failing_probe(choice: str):
+        return runs_module._stub_engine(hint="not signed in", choice=choice)
+
+    monkeypatch.setenv(runs_module.ENGINE_ENV, "cli")
+    monkeypatch.setattr(runs_module, "_probe_engine", failing_probe)
+    runs_module.reset_engine_cache()
+
+    first = runs_module.resolve_engine()
+    second = runs_module.resolve_engine()
+    assert second.kind == first.kind
+    assert second.hint == first.hint == "not signed in"
