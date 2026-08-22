@@ -128,19 +128,36 @@ def test_a_nonzero_exit_is_reported_with_its_output(client, monkeypatch):
 # --- stdin must be closed --------------------------------------------------
 
 
-def test_stdin_is_closed_so_the_cli_does_not_wait_for_piped_input(client, monkeypatch):
+def test_the_prompt_travels_on_stdin_not_in_argv(client, monkeypatch):
+    """The regression that killed the first real run.
+
+    A report prompt is the section instruction plus every retrieved chunk and
+    table — tens of thousands of characters. The npm shim is a `.cmd`, so the
+    call routes through cmd.exe, which caps a command line at 8191 characters.
+    Past that it either dies with "The command line is too long" or arrives
+    truncated, and the CLI politely answers the fragment: the first live run
+    failed with "your message may have been cut off — I only received the
+    template title".
+
+    This also subsumes the old reason stdin was DEVNULL. The CLI waits ~3s for
+    piped input and warns into the captured output if the pipe is left open;
+    `input=` writes the prompt and closes it, which satisfies both.
+    """
     seen: dict[str, object] = {}
 
     def fake_run(argv, **kwargs):
-        seen.update(kwargs)
         seen["argv"] = argv
+        seen.update(kwargs)
         return _Proc(stdout='{"paragraphs":[]}')
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    client.generate(_request())
-    assert seen["stdin"] is subprocess.DEVNULL, (
-        "without this the CLI waits ~3s and warns into stdout"
-    )
+    client.generate(_request(text="x" * 20000))
+
+    assert isinstance(seen.get("input"), str), "the prompt is not on stdin"
+    assert len(str(seen["input"])) > 8191, "this test is not exercising the ceiling"
+    argv = " ".join(str(a) for a in seen["argv"])
+    assert len(argv) <= 8191, f"argv is {len(argv)} chars, over cmd.exe's limit"
+    assert "x" * 100 not in argv, "the prompt leaked into the command line"
 
 
 def test_dangerous_tools_are_disallowed(client, monkeypatch):
@@ -184,7 +201,8 @@ def test_the_schema_and_the_no_invented_citations_rule_reach_the_prompt(client, 
     seen: dict[str, str] = {}
 
     def fake_run(argv, **kwargs):
-        seen["prompt"] = argv[argv.index("-p") + 1]
+        # stdin, not argv — see test_the_prompt_travels_on_stdin_not_in_argv
+        seen["prompt"] = kwargs.get("input") or ""
         return _Proc(stdout='{"paragraphs":[]}')
 
     monkeypatch.setattr(subprocess, "run", fake_run)

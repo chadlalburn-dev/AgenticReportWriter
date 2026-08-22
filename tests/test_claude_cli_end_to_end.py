@@ -60,12 +60,26 @@ class FakeCli:
         self.prompts: list[str] = []
         self.argvs: list[list[str]] = []
 
+    #: cmd.exe's command-line ceiling. The npm shim is a `.cmd`, so every real
+    #: invocation goes through it.
+    _CMD_LINE_MAX = 8191
+
     def __call__(self, argv, **kwargs):  # noqa: ANN001, ANN003
-        assert kwargs.get("stdin") is subprocess.DEVNULL, (
-            "the client must close stdin or the real CLI waits for piped input"
-        )
         self.argvs.append(list(argv))
-        prompt = argv[argv.index("-p") + 1]
+        prompt = kwargs.get("input")
+        assert prompt is not None, (
+            "the prompt must be sent on stdin; passing it in argv truncates at "
+            "cmd.exe's 8191-character limit and the CLI answers the fragment"
+        )
+        # Enforce the real platform limit the earlier fake ignored. That
+        # omission is exactly why this suite passed while the first live run
+        # failed: a fake that accepts any argv length cannot see the ceiling
+        # the shim imposes.
+        joined = " ".join(str(a) for a in argv)
+        assert len(joined) <= self._CMD_LINE_MAX, (
+            f"command line is {len(joined)} chars, over cmd.exe's "
+            f"{self._CMD_LINE_MAX}; the real call would fail"
+        )
         self.prompts.append(prompt)
         return _Completed(stdout=json.dumps(self._answer(prompt)))
 

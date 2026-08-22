@@ -28,8 +28,17 @@ Implementation notes that cost real debugging
 * **An unauthenticated CLI exits 0.** `claude -p` prints
   "Not logged in · Please run /login" and returns status 0, so exit code alone
   reports success on a total failure. The output is inspected instead.
-* **stdin must be closed explicitly.** Without it the CLI waits ~3s for piped
-  input and emits a warning into the captured output.
+* **The prompt goes on stdin, not in argv.** A report prompt carries the
+  section instruction plus every retrieved chunk and table — tens of thousands
+  of characters — and the npm shim is a `.cmd`, so the call routes through
+  cmd.exe, which caps a command line at 8191 characters. Past that the call
+  either dies with "The command line is too long" or, worse, arrives truncated:
+  the first real run failed with the CLI answering "your message may have been
+  cut off — I only received the template title", because that is all that fit.
+  Measured: 12,859 characters fails as an argument and succeeds on stdin with a
+  marker at the very end. Writing the prompt and closing the pipe also settles
+  why stdin used to be DEVNULL — the CLI waits ~3s for piped input and warns
+  into the captured output if the pipe is left open.
 * Tools are disabled (`--disallowed-tools`) and permission mode is `dontAsk`:
   this is a text-generation call, and a subprocess that could edit files or
   run commands on the analyst's machine is not something a report draft needs.
@@ -212,10 +221,20 @@ class ClaudeCliLlmClient(LlmClient):
             )
 
         prompt = self._compose_prompt(request)
+        # The prompt goes on STDIN, not in argv. A report prompt carries the
+        # section instruction plus every retrieved chunk and table, so it runs
+        # to tens of thousands of characters — and the npm shim is a .cmd, which
+        # routes through cmd.exe and caps a command line at 8191 characters.
+        # Over that the call either dies with "The command line is too long" or,
+        # worse, arrives truncated: the first real run failed with the CLI
+        # replying "your message may have been cut off — I only received the
+        # template title", because that is all that fit.
+        #
+        # Measured: a 12,859-character prompt fails as an argument and succeeds
+        # on stdin with a marker placed at its very end.
         argv = [
             self._binary,
             "-p",
-            prompt,
             # This is a text-generation call. A subprocess that can edit files
             # or run commands is not something drafting a report needs.
             "--disallowed-tools",
@@ -232,10 +251,14 @@ class ClaudeCliLlmClient(LlmClient):
         try:
             proc = subprocess.run(  # noqa: S603 - fixed binary, no shell
                 argv,
+                # `input` writes the prompt and closes the pipe, which also
+                # settles the reason stdin used to be DEVNULL: the CLI waits
+                # ~3s for piped input and warns into stdout if the pipe is left
+                # open. Sending the prompt and closing satisfies both.
+                input=prompt,
                 capture_output=True,
                 text=True,
                 timeout=self._config.timeout_s,
-                stdin=subprocess.DEVNULL,  # or the CLI waits 3s for piped input
                 cwd=self._config.cwd,
             )
         except subprocess.TimeoutExpired as exc:
