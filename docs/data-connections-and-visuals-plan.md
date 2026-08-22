@@ -35,16 +35,21 @@ sections correctly reported that no data was retrieved.
 
 ## Slices, each confirmable in the app
 
-1. **Tables carry real data.** Fix the id mismatches, author the genuinely
-   missing queries, add the two missing synthetic tables. Make `> Table:`
-   authoritative rather than advisory.
-2. **Visualisations.** A `> Visual:` directive → a `VisualSpec` on the section →
-   a server-rendered inline **SVG**. No CDN, no build step, works with
-   JavaScript off, same spec always yields the same design. Chart values come
-   from the resolved query result, never from the model.
-3. **Editor exposes the guidance.** The section Instruction becomes an editable
-   markdown field; Table and Visual are pickable per section; everything
-   round-trips to the .md.
+1. ~~**Tables carry real data.**~~ **Done.** Ids repointed,
+   `safety_pharmacology_v1` / `genotoxicity_summary_v1` / `exposure_margin_v1`
+   authored, three tables seeded. All six bindings of
+   `nonclinical_safety_summary` resolve and are cited; five of six sections pass
+   their checks, against two of six before. `> Table:` is still advisory — the
+   filler renders every resolved binding, which is the behaviour we want, so the
+   directive is documentation rather than a switch. Left as is.
+2. ~~**Visualisations.**~~ **Done for `bar` and `margin`.** `> Visual:` parses
+   to a `VisualSpec`, rendered as deterministic inline SVG from
+   `LedgerRow.typed_rows`. `line` and `scatter` are declared in `VisualKind` and
+   raise "not implemented yet" — next tick.
+3. ~~**Editor exposes the guidance.**~~ **Done.** The Instruction textarea was
+   already there; a Figure field sits beside it and the writer round-trips
+   `> Visual:` (it silently dropped it at first, which the round-trip test
+   caught — saving an unedited template would have deleted the figure).
 4. **Connectors.** New kinds — Oracle, SharePoint/OneDrive PPT — plus an in-app
    config surface where each declares what it needs and reports honestly when
    it cannot reach it. Per-compound/target default source sets, overridable per
@@ -59,3 +64,32 @@ never uses API keys. Those connectors get built to the same protocol, with
 configuration and a connection test that reports *unreachable from here* rather
 than pretending. The SQLite executor stays the one that actually runs, and the
 app names which is which — the same rule the engine chip already follows.
+
+
+## Still open, in order
+
+4. **Connectors.** Kinds today: `bigquery`, `confluence`, `file`, `api`. Needed:
+   Oracle, and SharePoint/OneDrive PPT. Plus an in-app config surface, and
+   per-compound/target default source sets.
+5. **Evidence in several places.** A run still takes one `evidence_folder`.
+6. **`line` and `scatter`** chart kinds.
+7. **The rest of the query registry.** Sixteen `query_id` references across the
+   template library resolve to nothing, and nothing tells you until a run
+   half-fails. Two things: author the queries, and make an unresolvable
+   reference visible in the editor at authoring time. The second matters more —
+   you cannot configure data connections safely if a broken one is invisible.
+   Remaining: `assay_potency_selectivity_v1`, `dmpk_summary_v1`,
+   `developability_metrics_v1`, `compound_identity_v1`, `headline_potency_v1`,
+   `headline_pk_v1`, `headline_noael_v1`, `invitro_adme_v1`,
+   `metabolite_profile_v1`, `human_pk_projection_v1`, `physchem_formulation_v1`,
+   `target_screening_summary_v1`, `assay_potency_summary_v1`.
+
+## Test-infrastructure follow-up
+
+`tests/test_no_internal_vocabulary.py` mines the real run store in `var/` for a
+run with a failed critique, and asserts loudly when it finds none. Fixing
+`must_cite_every_number` removed the reason most sections were failing, so the
+suite broke because the app improved. The scan window is gone, which fixes it
+today; the coupling is not. The fixture should build a run with a deliberately
+unsatisfiable citation policy rather than depending on development data. Several
+other page tests read the same store and share the fragility.

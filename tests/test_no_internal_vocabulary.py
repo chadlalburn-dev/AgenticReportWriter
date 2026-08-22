@@ -49,7 +49,16 @@ def pages(client: TestClient) -> dict[str, str]:
     store = runs_module.get_store()
     urls = ["/", "/runs", "/templates"]
     failed = None
-    for summary in store.list_runs(limit=40):
+    # No limit. The window was 40, the local store passed 50 runs, and the one
+    # run with a failed critique fell out the back — so this suite started
+    # failing because the *app got better at not failing sections*, which is a
+    # test punishing an improvement.
+    #
+    # The real coupling is still here and is worth naming: this fixture mines
+    # whatever runs happen to be in var/, so it depends on development data. It
+    # should build a run with a deliberately unsatisfiable citation policy
+    # instead. Tracked in docs/data-connections-and-visuals-plan.md.
+    for summary in store.list_runs(limit=10_000):
         if not summary.terminal:
             continue
         view = store.draft_view(summary.run_id)

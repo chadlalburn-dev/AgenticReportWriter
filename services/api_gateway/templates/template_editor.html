@@ -615,6 +615,41 @@
                              error=row.errors.get('sql', ''), rows=4, mono=True) }}
                 </fieldset>
 
+                <fieldset class="rg-erow__vary" data-kind="oracle"{% if row.kind != 'oracle' %} hidden{% endif %}>
+                  <legend class="rg-vh">Oracle settings</legend>
+                  <div class="rg-erow__grid">
+                    {{ ed_text('source.' ~ row.key ~ '.service', 'Service', row.fields.get('service', ''),
+                               hint='Service name or schema. Shown beside every figure this source produces, so a reader can tell which database it came from.',
+                               error=row.errors.get('service', ''), placeholder='LIMSPRD') }}
+                    {{ ed_text('source.' ~ row.key ~ '.query_id', 'Named query', row.fields.get('query_id', ''),
+                               hint='A query the gateway already knows. Preferred — it needs no per-run approval.',
+                               error=row.errors.get('query_id', ''), placeholder='invivo_pk_summary_v1') }}
+                  </div>
+                  {{ ed_area('source.' ~ row.key ~ '.sql', 'Or inline SQL', row.fields.get('sql', ''),
+                             hint='Only used when there is no named query. Inline SQL needs per-run approval.',
+                             error=row.errors.get('sql', ''), rows=4, mono=True) }}
+                </fieldset>
+
+                <fieldset class="rg-erow__vary" data-kind="sharepoint"{% if row.kind != 'sharepoint' %} hidden{% endif %}>
+                  <legend class="rg-vh">SharePoint / OneDrive settings</legend>
+                  <div class="rg-erow__grid">
+                    {{ ed_text('source.' ~ row.key ~ '.site', 'Site or drive', row.fields.get('site', ''),
+                               hint='The site or drive to read from.',
+                               error=row.errors.get('site', ''), placeholder='Nonclinical-Safety') }}
+                    {{ ed_text('source.' ~ row.key ~ '.file_types', 'File types', row.fields.get('file_types', ''),
+                               hint='Comma separated. Without this, every document in scope is pulled — including ones nobody meant to cite.',
+                               error=row.errors.get('file_types', ''), placeholder='pptx, docx') }}
+                  </div>
+                  {{ ed_text('source.' ~ row.key ~ '.folder', 'Folder', row.fields.get('folder', ''),
+                             hint='A path within the site. Leave blank to search the whole site.',
+                             error=row.errors.get('folder', ''), placeholder='Programmes/XYZ-001/Tox',
+                             extra_class='rg-input--wide') }}
+                  {{ ed_text('source.' ~ row.key ~ '.query', 'Search', row.fields.get('query', ''),
+                             hint='Free-text search. When set, the folder narrows the search rather than being fetched whole.',
+                             error=row.errors.get('query', ''),
+                             extra_class='rg-input--wide') }}
+                </fieldset>
+
                 <fieldset class="rg-erow__vary" data-kind="confluence"{% if row.kind != 'confluence' %} hidden{% endif %}>
                   <legend class="rg-vh">Confluence settings</legend>
                   <div class="rg-erow__grid">
@@ -981,6 +1016,32 @@
           {{ ed_area('source.__KEY__.sql', 'Or inline SQL', '',
                      hint='Only used when there is no named query. Inline SQL needs per-run approval.',
                      rows=4, mono=True) }}
+        </fieldset>
+        <fieldset class="rg-erow__vary" data-kind="oracle" hidden>
+          <legend class="rg-vh">Oracle settings</legend>
+          <div class="rg-erow__grid">
+            {{ ed_text('source.__KEY__.service', 'Service', '',
+                       hint='Service name or schema. Shown beside every figure this source produces.', placeholder='LIMSPRD') }}
+            {{ ed_text('source.__KEY__.query_id', 'Named query', '',
+                       hint='A query the gateway already knows. Preferred — it needs no per-run approval.', placeholder='invivo_pk_summary_v1') }}
+          </div>
+          {{ ed_area('source.__KEY__.sql', 'Or inline SQL', '',
+                     hint='Only used when there is no named query. Inline SQL needs per-run approval.', rows=4, mono=True) }}
+        </fieldset>
+        <fieldset class="rg-erow__vary" data-kind="sharepoint" hidden>
+          <legend class="rg-vh">SharePoint / OneDrive settings</legend>
+          <div class="rg-erow__grid">
+            {{ ed_text('source.__KEY__.site', 'Site or drive', '',
+                       hint='The site or drive to read from.', placeholder='Nonclinical-Safety') }}
+            {{ ed_text('source.__KEY__.file_types', 'File types', '',
+                       hint='Comma separated. Without this, every document in scope is pulled.', placeholder='pptx, docx') }}
+          </div>
+          {{ ed_text('source.__KEY__.folder', 'Folder', '',
+                     hint='A path within the site. Leave blank to search the whole site.',
+                     placeholder='Programmes/XYZ-001/Tox', extra_class='rg-input--wide') }}
+          {{ ed_text('source.__KEY__.query', 'Search', '',
+                     hint='Free-text search. When set, the folder narrows the search rather than being fetched whole.',
+                     extra_class='rg-input--wide') }}
         </fieldset>
         <fieldset class="rg-erow__vary" data-kind="confluence" hidden>
           <legend class="rg-vh">Confluence settings</legend>

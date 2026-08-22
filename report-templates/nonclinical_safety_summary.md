@@ -96,7 +96,7 @@ output:
 > interpret the therapeutic window.
 > Sources: exposure_margins, pivotal_tox
 > Table: exposure_margins
-> Visual: margin binding=exposure_margins x=duration_text y=exposure_margin_x unit=x threshold=10 title="Exposure margin at NOAEL vs projected human AUC"
+> Visual: margin binding=exposure_margins x=study_label y=exposure_margin_x unit=x threshold=10 title="Exposure margin at NOAEL vs projected human AUC"
 
 ## 6. Safety conclusions and watch items
 

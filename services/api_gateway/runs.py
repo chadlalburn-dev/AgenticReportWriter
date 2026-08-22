@@ -187,7 +187,9 @@ GRANULARITY_OPTIONS: list[tuple[str, str]] = [
 
 SOURCE_KIND_OPTIONS: list[tuple[str, str]] = [
     ("bigquery", "BigQuery"),
+    ("oracle", "Oracle database"),
     ("confluence", "Confluence"),
+    ("sharepoint", "SharePoint / OneDrive"),
     ("file", "Local documents"),
     ("api", "API connector"),
 ]
@@ -202,6 +204,11 @@ SOURCE_FIELD_NAMES: tuple[str, ...] = (
     "cql",
     "page_id",
     "filter_tags",
+    "service",
+    "site",
+    "folder",
+    "file_types",
+    "query",
     "connector",
     "endpoint",
     "params",
@@ -4116,7 +4123,15 @@ def _ledger_from_dicts(payload: list[Any]) -> list[LedgerRow]:
                 fix_hint=item.get("fix_hint"),
                 columns=[str(c) for c in item.get("columns", []) or []],
                 rows=[[str(c) for c in row] for row in item.get("rows", []) or []],
-                typed_rows=[list(row) for row in item.get("rows", []) or []],
+                # `typed_rows`, not `rows` — reading the stringified copy here
+                # defeated the whole point of storing both, and the chart
+                # correctly refused to plot the string "15.0". Falls back to
+                # `rows` for runs written before the field existed, where the
+                # strings are all there is.
+                typed_rows=[
+                    list(row)
+                    for row in (item.get("typed_rows") or item.get("rows") or [])
+                ],
                 sql=item.get("sql"),
             )
         )

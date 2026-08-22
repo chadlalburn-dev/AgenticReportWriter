@@ -21,6 +21,7 @@ from shared.schemas.template import VisualKind, VisualSpec
 COLUMNS = (
     "species",
     "duration_text",
+    "study_label",
     "study_id",
     "noael_mg_per_kg_per_day",
     "noael_auc_24",
@@ -28,10 +29,10 @@ COLUMNS = (
     "exposure_margin_x",
 )
 ROWS = (
-    ("Rat", "28-day", "XYZ-NC-002", 60.0, 12000.0, 800.0, 15.0),
-    ("Dog", "28-day", "XYZ-NC-003", 12.0, 9600.0, 800.0, 12.0),
-    ("Rat", "13-week", "XYZ-NC-004", 30.0, 6200.0, 800.0, 7.8),
-    ("Dog", "26-week", "XYZ-NC-005", 6.0, 4800.0, 800.0, 6.0),
+    ("Rat", "28-day", "Rat 28-day", "XYZ-NC-002", 60.0, 12000.0, 800.0, 15.0),
+    ("Dog", "28-day", "Dog 28-day", "XYZ-NC-003", 12.0, 9600.0, 800.0, 12.0),
+    ("Rat", "13-week", "Rat 13-week", "XYZ-NC-004", 30.0, 6200.0, 800.0, 7.8),
+    ("Dog", "26-week", "Dog 26-week", "XYZ-NC-005", 6.0, 4800.0, 800.0, 6.0),
 )
 
 
@@ -39,7 +40,7 @@ def _spec(**over) -> VisualSpec:
     fields = {
         "kind": VisualKind.MARGIN,
         "binding_id": "exposure_margins",
-        "x": "duration_text",
+        "x": "study_label",
         "y": "exposure_margin_x",
         "unit": "x",
         "threshold": 10.0,
@@ -57,14 +58,19 @@ def test_every_plotted_value_comes_from_the_rows():
     and could not be checked against a source."""
     points = extract_points(_spec(), COLUMNS, ROWS)
     assert [p.value for p in points] == [15.0, 12.0, 7.8, 6.0]
-    assert [p.label for p in points] == ["28-day", "28-day", "13-week", "26-week"]
+    assert [p.label for p in points] == [
+        "Rat 28-day",
+        "Dog 28-day",
+        "Rat 13-week",
+        "Dog 26-week",
+    ]
 
 
 def test_a_non_numeric_cell_is_refused_not_coerced():
     """Reading 12 out of "12 uM" would plot a number the table does not state.
     The unit is not decoration — 12 uM and 12 nM differ by a thousandfold, and
     a bar cannot show which one it meant."""
-    rows = (("Rat", "28-day", "XYZ-NC-002", 60.0, 12000.0, 800.0, "12 uM"),)
+    rows = (("Rat", "28-day", "Rat 28-day", "X", 60.0, 12000.0, 800.0, "12 uM"),)
     with pytest.raises(ChartDataError, match="not a number"):
         render_chart(_spec(), COLUMNS, rows)
 
@@ -88,7 +94,7 @@ def test_a_missing_column_names_what_is_actually_there():
 def test_a_boolean_is_not_a_measurement():
     """True would plot as 1.0 and look like a value. SQLite hands back integers
     for booleans, so this is reachable rather than theoretical."""
-    rows = (("Rat", "28-day", "XYZ-NC-002", 60.0, 12000.0, 800.0, True),)
+    rows = (("Rat", "28-day", "Rat 28-day", "X", 60.0, 12000.0, 800.0, True),)
     with pytest.raises(ChartDataError, match="boolean"):
         render_chart(_spec(), COLUMNS, rows)
 
@@ -185,7 +191,69 @@ def test_the_figure_is_announced_and_described():
 def test_labels_are_escaped():
     """Category labels are data, and data reaches this from a database. An
     unescaped label would inject markup into the page."""
-    rows = (("Rat", '</svg><script>alert(1)</script>', "X", 1.0, 2.0, 3.0, 5.0),)
+    rows = (
+        ("Rat", "28-day", '</svg><script>alert(1)</script>', "X", 1.0, 2.0, 3.0, 5.0),
+    )
     svg = render_chart(_spec(), COLUMNS, rows)
     assert "<script>" not in svg
     assert "&lt;/svg&gt;" in svg or "&lt;script&gt;" in svg
+
+
+# --- the rehydration path --------------------------------------------------
+
+
+def test_numbers_survive_the_trip_through_stored_sources():
+    """The gap thirteen passing tests left open.
+
+    Every test above calls `render_chart` directly with typed rows, and they all
+    passed while the app rendered "No figure: column 'exposure_margin_x' holds
+    str '15.0', which is not a number." The draft view does not build charts from
+    live objects — it rebuilds them from `sources.json`, and the loader was
+    reading the stringified `rows` key into `typed_rows`.
+
+    So this test goes through the loader. A chart that works in a unit test and
+    not on the page is worth nothing.
+    """
+    from services.api_gateway.runs import _ledger_from_dicts
+
+    stored = [
+        {
+            "binding_id": "exposure_margins",
+            "kind": "named_query",
+            "label": "Registered query",
+            "status": "cited",
+            "columns": list(COLUMNS),
+            # What the writer persists: display strings and the real values.
+            "rows": [[str(c) for c in row] for row in ROWS],
+            "typed_rows": [list(row) for row in ROWS],
+        }
+    ]
+    row = _ledger_from_dicts(stored)[0]
+
+    assert [type(c).__name__ for c in row.typed_rows[0]] == [
+        "str", "str", "str", "str", "float", "float", "float", "float"
+    ], f"types lost on load: {row.typed_rows[0]}"
+
+    svg = render_chart(
+        _spec(), tuple(row.columns), tuple(tuple(c) for c in row.typed_rows)
+    )
+    assert svg.count("<rect") == 4
+
+
+def test_a_run_recorded_before_typed_rows_existed_does_not_crash():
+    """Older runs have only the strings. The chart refuses them — which is the
+    correct outcome, and specifically not a traceback on someone's report."""
+    from services.api_gateway.runs import _ledger_from_dicts
+
+    stored = [
+        {
+            "binding_id": "exposure_margins",
+            "kind": "named_query",
+            "columns": list(COLUMNS),
+            "rows": [[str(c) for c in row] for row in ROWS],
+        }
+    ]
+    row = _ledger_from_dicts(stored)[0]
+    assert row.typed_rows, "the fallback to rows did not happen"
+    with pytest.raises(ChartDataError, match="not a number"):
+        render_chart(_spec(), tuple(row.columns), tuple(tuple(c) for c in row.typed_rows))

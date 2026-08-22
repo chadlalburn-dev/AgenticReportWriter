@@ -10,6 +10,7 @@ sql: |
   SELECT
     t.species,
     t.duration_text,
+    t.species || ' ' || t.duration_text AS study_label,
     t.study_id,
     t.noael_mg_per_kg_per_day,
     t.noael_auc_24,
@@ -28,6 +29,15 @@ output_columns:
     type: string
   duration_text:
     type: string
+  study_label:
+    type: string
+    description: |
+      Species and duration together, so a figure plotting one bar per study has
+      a label that identifies it. Charting duration alone gave two bars both
+      reading "28-day" — the rat and the dog were indistinguishable, in a plot
+      whose entire job is comparing margins between them. The label is built in
+      the query rather than concatenated in the renderer, because a chart may
+      not compose values the table does not show.
   study_id:
     type: string
   noael_mg_per_kg_per_day:

@@ -59,8 +59,25 @@ SCRATCH_DIR = VAR_DIR / "template-drafts"
 BACKUP_DIR = VAR_DIR / "template-backups"
 TRASH_DIR = VAR_DIR / "template-trash"
 
-SourceKind = Literal["bigquery", "confluence", "file", "api"]
-SOURCE_KINDS: tuple[SourceKind, ...] = ("bigquery", "confluence", "file", "api")
+SourceKind = Literal[
+    "bigquery", "oracle", "confluence", "sharepoint", "file", "api"
+]
+SOURCE_KINDS: tuple[SourceKind, ...] = (
+    "bigquery",
+    #: A relational source reached over a driver rather than an HTTP API.
+    #: Separate from `bigquery` because the connection is configured
+    #: differently and the citation should say which warehouse a figure came
+    #: from — "the numbers came from a database" is not provenance.
+    "oracle",
+    "confluence",
+    #: Files in SharePoint or OneDrive, decks included. Distinct from `file`,
+    #: which reads a local folder: this one crosses a network and needs a
+    #: configured connector, so it can be unreachable in a way a local folder
+    #: cannot.
+    "sharepoint",
+    "file",
+    "api",
+)
 Granularity = Literal["claim", "paragraph", "section"]
 GRANULARITIES: tuple[Granularity, ...] = ("claim", "paragraph", "section")
 
@@ -99,7 +116,11 @@ _MODELLED_KEYS = frozenset(
 #: that source kind, which keeps hand-authored files byte-stable on re-save.
 _KIND_REQUIRED_DEFAULT: dict[str, bool] = {
     "bigquery": True,
+    #: Required like bigquery: a section built on a warehouse query has nothing
+    #: to say without it, whereas supplementary documents merely add colour.
+    "oracle": True,
     "confluence": False,
+    "sharepoint": False,
     "file": False,
     "api": False,
 }
@@ -107,14 +128,16 @@ _KIND_REQUIRED_DEFAULT: dict[str, bool] = {
 #: Order in which kind-specific keys are emitted.
 _KIND_FIELDS: dict[str, tuple[str, ...]] = {
     "bigquery": ("dataset", "query_id", "sql"),
+    "oracle": ("service", "query_id", "sql"),
     "confluence": ("space", "cql", "page_id"),
+    "sharepoint": ("site", "folder", "file_types", "query"),
     "file": ("filter_tags",),
     "api": ("connector", "endpoint"),
 }
 
 #: Source kinds whose payload the filler renders as a table. `> Table:` may only
 #: name one of these.
-_TABULAR_KINDS = frozenset({"bigquery", "api"})
+_TABULAR_KINDS = frozenset({"bigquery", "oracle", "api"})
 
 #: A wrapped instruction line must never start with one of these, or the loader's
 #: directive regex would swallow the rest of the instruction.
@@ -172,6 +195,13 @@ class DraftSource:
     page_id: str = ""
     # file
     filter_tags: list[str] = field(default_factory=list)
+    # oracle
+    service: str = ""
+    # sharepoint
+    site: str = ""
+    folder: str = ""
+    file_types: str = ""
+    query: str = ""
     # api
     connector: str = ""
     endpoint: str = ""
@@ -973,7 +1003,8 @@ def _validate_source(
                 "error",
                 "source_kind_unknown",
                 f"{src.kind or '(blank)'} is not a source kind.",
-                "Choose BigQuery, Confluence, local documents, or an API connector.",
+                "Choose BigQuery, Oracle, Confluence, SharePoint, local "
+                "documents, or an API connector.",
             )
         )
         return issues
@@ -1014,6 +1045,56 @@ def _validate_source(
                     "warning",
                     "bq_inline_sql",
                     "Inline SQL needs per-run approval; a named query does not.",
+                )
+            )
+    elif src.kind == "oracle":
+        if not src.query_id.strip() and not src.sql.strip():
+            add(
+                DraftIssue(
+                    f"{base}.query_id",
+                    "error",
+                    "or_needs_query",
+                    "An Oracle source needs either a named query or inline SQL.",
+                )
+            )
+        if not src.service.strip():
+            add(
+                DraftIssue(
+                    f"{base}.service",
+                    "warning",
+                    "or_no_service",
+                    "Without a service name the citation just says 'oracle', "
+                    "which does not tell a reader which database a figure "
+                    "came from.",
+                )
+            )
+        if src.sql.strip():
+            add(
+                DraftIssue(
+                    f"{base}.sql",
+                    "warning",
+                    "or_inline_sql",
+                    "Inline SQL needs per-run approval; a named query does not.",
+                )
+            )
+    elif src.kind == "sharepoint":
+        if not (src.site.strip() or src.folder.strip() or src.query.strip()):
+            add(
+                DraftIssue(
+                    f"{base}.site",
+                    "error",
+                    "sp_needs_locator",
+                    "A SharePoint source needs a site, a folder, or a search.",
+                )
+            )
+        if not src.file_types.strip():
+            add(
+                DraftIssue(
+                    f"{base}.file_types",
+                    "warning",
+                    "sp_no_types",
+                    "Without file types this pulls every document in scope, "
+                    "including ones nobody meant to cite.",
                 )
             )
     elif src.kind == "confluence":

@@ -312,6 +312,41 @@ def _source_to_binding(src: dict[str, Any], path: str) -> DataBinding:
                 required=bool(src.get("required", True)),
             )
         raise ReportDocError(f"{path}: bigquery source {sid!r} needs query_id or sql")
+    if stype == "oracle":
+        # The same binding shape as bigquery. What differs is the connection,
+        # which is the source's business, not the section's — but `source`
+        # carries the service name so a citation says which database a figure
+        # came from rather than just "a database".
+        service = str(src.get("service") or "oracle")
+        if src.get("query_id"):
+            return NamedQueryBinding(
+                binding_id=sid,
+                source=service,
+                query_id=src["query_id"],
+                parameters=params,
+                required=bool(src.get("required", True)),
+            )
+        if src.get("sql"):
+            return SqlQueryBinding(
+                binding_id=sid,
+                source=service,
+                sql=src["sql"],
+                parameters=params,
+                required=bool(src.get("required", True)),
+            )
+        raise ReportDocError(f"{path}: oracle source {sid!r} needs query_id or sql")
+    if stype == "sharepoint":
+        api_params = dict(params)
+        for key in ("site", "folder", "file_types", "query"):
+            if src.get(key) is not None:
+                api_params[key] = _sub_inputs(src[key])
+        return ApiCallBinding(
+            binding_id=sid,
+            connector_id="sharepoint",
+            endpoint="get_file" if src.get("folder") and not src.get("query") else "search_files",
+            parameters=api_params,
+            required=bool(src.get("required", False)),
+        )
     if stype == "confluence":
         endpoint = "get_page" if src.get("page_id") else "search_pages"
         api_params = dict(params)
