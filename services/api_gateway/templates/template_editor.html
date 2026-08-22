@@ -714,7 +714,7 @@
                            placeholder='Absorption') }}
 
                 {{ ed_area('section.' ~ row.key ~ '.instruction', 'Instruction', row.instruction,
-                           hint='Sent to the model unchanged. Say what to cover, in what order, and what to leave out. Do not start a line with "Sources:" or "Table:".',
+                           hint='Sent to the model unchanged. Say what to cover, in what order, and what to leave out. Do not start a line with "Sources:", "Table:" or "Visual:".',
                            error=row.errors.get('instruction', ''), required=True, rows=4) }}
 
                 {#- Same rule as the tag facets: the error <p> below is only
@@ -763,6 +763,16 @@
                   </p>
                   {{- ed_error('section.' ~ row.key ~ '.table', row.errors.get('table', '')) -}}
                 </div>
+
+                {#- One line rather than six controls. The directive is what the
+                    .md file actually contains, so an author who edits the file
+                    and an author who edits this form are looking at the same
+                    string — and a round trip through the editor cannot quietly
+                    rewrite it into something else. -#}
+                {{ ed_text('section.' ~ row.key ~ '.visual', 'Figure', row.visual,
+                           hint='Optional, and always drawn from a ticked source above — never from the model. Example: margin binding=exposure_margins x=duration_text y=exposure_margin_x unit=x threshold=10',
+                           error=row.errors.get('visual', ''),
+                           placeholder='margin binding=exposure_margins x=duration_text y=exposure_margin_x unit=x threshold=10') }}
 
                 {{ ed_row_acts('section', row.key, 'section', row.number) }}
               </fieldset>

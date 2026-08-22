@@ -73,6 +73,36 @@ CREATE TABLE pivotal_tox (
     noael_auc_24 REAL NOT NULL,
     target_organs TEXT NOT NULL
 );
+DROP TABLE IF EXISTS safety_pharmacology;
+CREATE TABLE safety_pharmacology (
+    compound_id TEXT NOT NULL,
+    study_id TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    model TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    finding TEXT NOT NULL,
+    key_metric TEXT NOT NULL
+);
+
+DROP TABLE IF EXISTS genotoxicity;
+CREATE TABLE genotoxicity (
+    compound_id TEXT NOT NULL,
+    study_id TEXT NOT NULL,
+    assay TEXT NOT NULL,
+    test_system TEXT NOT NULL,
+    doses_or_concentrations TEXT NOT NULL,
+    metabolic_activation TEXT NOT NULL,
+    result TEXT NOT NULL
+);
+
+DROP TABLE IF EXISTS projected_human_exposure;
+CREATE TABLE projected_human_exposure (
+    compound_id TEXT NOT NULL,
+    basis TEXT NOT NULL,
+    projected_dose_text TEXT NOT NULL,
+    projected_cmax_ng_per_ml REAL NOT NULL,
+    projected_auc_24_ng_h_per_ml REAL NOT NULL
+);
 """
 
 
@@ -132,6 +162,65 @@ PIVOTAL_TOX_ROWS = [
 ]
 
 
+# Safety pharmacology. Every row here is stated in the DOCX corpus
+# (XYZ-NC-001 primary pharmacology, XYZ-NC-005 dog 26-week), because the
+# corpus and these tables have to agree — a contradiction between the prose the
+# model reads and the table it is handed shows up as a critique failure, which
+# is the right outcome but a waste of a run. Respiratory and CNS are absent on
+# purpose: the corpus does not cover them, so inventing "no effect" findings
+# would be manufacturing results. The section reports the gap instead.
+SAFETY_PHARM_ROWS = [
+    (
+        COMPOUND, "XYZ-NC-001", "Cardiovascular", "hERG patch clamp (in vitro)",
+        "hERG potassium channel tail-current inhibition",
+        "Inhibition with IC50 of 12 uM", "IC50 12 uM; ~60-fold over projected human Cmax",
+    ),
+    (
+        COMPOUND, "XYZ-NC-001", "Cardiovascular", "Anaesthetised dog (in vivo)",
+        "Heart rate, arterial blood pressure, QTc interval",
+        "No clinically meaningful change up to 30 mg/kg IV", "NOEL >= 30 mg/kg IV",
+    ),
+    (
+        COMPOUND, "XYZ-NC-005", "Cardiovascular", "Beagle dog, 26-week oral (ECG)",
+        "QTcF interval at weeks 4, 13 and 26",
+        "No compound-related change at any dose", "QTcF within 1.5% of baseline at 20 mg/kg/day",
+    ),
+]
+
+# Genotoxicity. Synthetic and table-only: the DOCX corpus has no genotoxicity
+# narrative, so this exercises the deterministic-table path with no prose
+# counterpart to agree with. Called out in
+# docs/data-connections-and-visuals-plan.md rather than left as a surprise.
+GENOTOX_ROWS = [
+    (
+        COMPOUND, "XYZ-NC-010", "Bacterial reverse mutation (Ames)",
+        "S. typhimurium TA98/TA100/TA1535/TA1537, E. coli WP2uvrA",
+        "up to 5000 ug/plate", "With and without S9", "Negative",
+    ),
+    (
+        COMPOUND, "XYZ-NC-011", "In vitro micronucleus",
+        "Human peripheral blood lymphocytes", "up to 250 ug/mL",
+        "With and without S9", "Negative",
+    ),
+    (
+        COMPOUND, "XYZ-NC-012", "In vivo micronucleus",
+        "Rat bone marrow", "up to 500 mg/kg/day for 3 days", "Not applicable (in vivo)",
+        "Negative",
+    ),
+]
+
+# The denominator for every exposure margin. Held as data rather than hardcoded
+# in the query so the margin and the projection it is measured against are
+# visible in the same report, and so changing the projection changes the
+# margins rather than silently disagreeing with them.
+PROJECTED_HUMAN_EXPOSURE_ROWS = [
+    (
+        COMPOUND, "Anticipated efficacious dose, projected from rat and dog PK",
+        "300 mg QD equivalent", 200.0, 800.0,
+    ),
+]
+
+
 def seed(db_path: Path = DB_PATH) -> Path:
     if db_path.exists():
         db_path.unlink()
@@ -152,6 +241,16 @@ def seed(db_path: Path = DB_PATH) -> Path:
         )
         conn.executemany(
             "INSERT INTO pivotal_tox VALUES (?,?,?,?,?,?,?)", PIVOTAL_TOX_ROWS
+        )
+        conn.executemany(
+            "INSERT INTO safety_pharmacology VALUES (?,?,?,?,?,?,?)", SAFETY_PHARM_ROWS
+        )
+        conn.executemany(
+            "INSERT INTO genotoxicity VALUES (?,?,?,?,?,?,?)", GENOTOX_ROWS
+        )
+        conn.executemany(
+            "INSERT INTO projected_human_exposure VALUES (?,?,?,?,?)",
+            PROJECTED_HUMAN_EXPOSURE_ROWS,
         )
         conn.commit()
     finally:

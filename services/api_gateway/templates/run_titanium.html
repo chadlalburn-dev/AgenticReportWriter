@@ -234,6 +234,38 @@
           </p>
         </div>
 
+        {#- The figure, above the table it was drawn from. Deliberately in that
+            order: the chart is the shape of the numbers and the table is the
+            numbers, so a reader who wants the value looks down, never up. Both
+            carry the same citation, because they are the same evidence. -#}
+        {%- if s.chart %}
+        <div class="ti-para">
+          <div class="ti-gutter">
+            {%- if s.chart.citation_n %}
+            <a class="ti-cite" href="#cite-{{ s.chart.citation_n }}">{{ s.chart.citation_n }}</a>
+            {%- endif %}
+          </div>
+          <div style="min-width:0;padding-left:var(--ti-14)">
+            <figure class="ti-retrieved ti-figure">
+              <div class="ti-retrieved__head">
+                <span>{{ s.chart.title }}</span>
+                <span>{{ s.chart.kind }} &middot; {{ s.chart.binding_id }}</span>
+              </div>
+              {%- if s.chart.svg %}
+              <div class="ti-figure__plot">{{ s.chart.svg|safe }}</div>
+              <figcaption class="ti-figure__cap">{{ s.chart.caption }}</figcaption>
+              {%- else %}
+              {#- No empty frame. A blank plot area leaves the reader deciding
+                  whether the values are zero or the query is broken. -#}
+              <div style="padding:var(--ti-12)">
+                <p class="ti-field__msg">{{ s.chart.unavailable_reason }}</p>
+              </div>
+              {%- endif %}
+            </figure>
+          </div>
+        </div>
+        {%- endif %}
+
         {#- retrieved data first: it is the evidence the prose narrates -#}
         {%- for t in s.tables %}
         <div class="ti-para">

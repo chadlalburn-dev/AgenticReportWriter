@@ -1,0 +1,40 @@
+id: genotoxicity_summary_v1
+description: |
+  Standard genotoxicity battery — bacterial reverse mutation, in vitro
+  clastogenicity, and in vivo micronucleus — with test system, dose range,
+  metabolic activation and outcome.
+source: nonclinical_warehouse
+version: 1
+sql: |
+  SELECT
+    assay,
+    study_id,
+    test_system,
+    doses_or_concentrations,
+    metabolic_activation,
+    result
+  FROM genotoxicity
+  WHERE compound_id = :compound_id
+  ORDER BY study_id
+parameters:
+  compound_id:
+    type: string
+    required: true
+output_columns:
+  assay:
+    type: string
+  study_id:
+    type: string
+  test_system:
+    type: string
+  doses_or_concentrations:
+    type: string
+  metabolic_activation:
+    type: string
+  result:
+    type: string
+approval:
+  approved_by: nonclinical_genetic_toxicology
+  approved_at: 2026-08-21
+  change_log:
+    - "v1: initial version - Ames, in vitro micronucleus, in vivo micronucleus"

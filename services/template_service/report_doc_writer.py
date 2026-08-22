@@ -118,7 +118,7 @@ _TABULAR_KINDS = frozenset({"bigquery", "api"})
 
 #: A wrapped instruction line must never start with one of these, or the loader's
 #: directive regex would swallow the rest of the instruction.
-_DIRECTIVE_WORDS = ("Sources:", "Table:", "Instruction:")
+_DIRECTIVE_WORDS = ("Sources:", "Table:", "Instruction:", "Visual:")
 
 
 # --- errors ----------------------------------------------------------------
@@ -186,6 +186,12 @@ class DraftSection:
     instruction: str = ""
     source_keys: list[str] = field(default_factory=list)  # DraftSource.key values
     table_key: str = ""  # DraftSource.key or ""
+    #: The `> Visual:` directive body, kept as the author typed it rather than
+    #: parsed into fields. Two reasons: the round trip is exact, and the editor
+    #: can expose it as one line the author already understands. Validation
+    #: lives in the loader (`_parse_visual`), which is the only place that has
+    #: to agree with the chart renderer.
+    visual: str = ""
     #: Authored heading number, preserved so re-saving an existing file does not
     #: renumber it. `None` means "the writer numbers this 1..N"; `""` means the
     #: heading is deliberately unnumbered. See the deviation note in the module
@@ -519,6 +525,8 @@ def _serialize_sections(draft: TemplateDraft) -> list[str]:
         out.append("> Sources: " + (", ".join(source_ids) if source_ids else "(none)"))
         table = by_key.get(section.table_key)
         out.append("> Table: " + (table.id if table and table.id else "(none)"))
+        if section.visual.strip():
+            out.append("> Visual: " + section.visual.strip())
         out.append("")
     return out
 
@@ -635,7 +643,7 @@ def _parse_draft_sections(body: str, id_to_key: dict[str, str]) -> list[DraftSec
         raw_heading = match.group(1).strip()
         start = match.end()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
-        instruction, source_ids, table_id = _parse_block(body[start:end])
+        instruction, source_ids, table_id, visual = _parse_block(body[start:end])
 
         number_match = _LEADING_NUM_RE.match(raw_heading)
         number = number_match.group(1) if number_match else ""
@@ -648,18 +656,20 @@ def _parse_draft_sections(body: str, id_to_key: dict[str, str]) -> list[DraftSec
                 instruction=instruction,
                 source_keys=[id_to_key.get(sid, f"!{sid}") for sid in source_ids],
                 table_key=id_to_key.get(table_id, f"!{table_id}") if table_id else "",
+                visual=visual,
                 number=number,
             )
         )
     return sections
 
 
-def _parse_block(block: str) -> tuple[str, list[str], str]:
+def _parse_block(block: str) -> tuple[str, list[str], str, str]:
     """Re-implements the loader's directive parsing over one section body."""
     cleaned = "\n".join(re.sub(r"^\s*>\s?", "", line) for line in block.splitlines())
     instruction = ""
     sources: list[str] = []
     table = ""
+    visual = ""
     for match in _DIRECTIVE_RE.finditer(cleaned):
         if match.group("instruction") is not None:
             instruction = " ".join(match.group("instruction").split())
@@ -674,7 +684,10 @@ def _parse_block(block: str) -> tuple[str, list[str], str]:
         elif match.group("table") is not None:
             raw = match.group("table").strip()
             table = "" if raw.lower() in ("(none)", "none", "") else raw
-    return instruction, sources, table
+        elif match.group("visual") is not None:
+            raw = match.group("visual").strip()
+            visual = "" if raw.lower() in ("(none)", "none", "") else raw
+    return instruction, sources, table, visual
 
 
 def blank_draft(
@@ -1145,14 +1158,14 @@ def _validate_section(
     else:
         for line in instruction.splitlines():
             stripped = re.sub(r"^\s*>\s?", "", line).strip()
-            if stripped.startswith(("Sources:", "Table:")):
+            if stripped.startswith(("Sources:", "Table:", "Visual:")):
                 add(
                     DraftIssue(
                         f"{base}.instruction",
                         "error",
                         "instruction_directive",
-                        "An instruction line cannot start with 'Sources:' or "
-                        "'Table:' — those are reserved.",
+                        "An instruction line cannot start with 'Sources:', "
+                        "'Table:' or 'Visual:' — those are reserved.",
                     )
                 )
                 break

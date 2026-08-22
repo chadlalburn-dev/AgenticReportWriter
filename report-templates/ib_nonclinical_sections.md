@@ -37,7 +37,7 @@ sources:
   - id: pivotal_tox
     type: bigquery
     dataset: nonclinical_safety
-    query_id: pivotal_tox_summary_v2
+    query_id: pivotal_toxicology_summary_v2
     params: { compound_id: "{{inputs.compound_id}}" }
   - id: pharmacology_docs
     type: file

@@ -1,0 +1,45 @@
+id: exposure_margin_v1
+description: |
+  Exposure margin between the AUC at each pivotal-study NOAEL and the projected
+  efficacious human AUC. The projection is joined in from
+  projected_human_exposure rather than hardcoded, so the margin and the number
+  it is measured against always appear together and cannot drift apart.
+source: nonclinical_warehouse
+version: 1
+sql: |
+  SELECT
+    t.species,
+    t.duration_text,
+    t.study_id,
+    t.noael_mg_per_kg_per_day,
+    t.noael_auc_24,
+    h.projected_auc_24_ng_h_per_ml,
+    ROUND(t.noael_auc_24 / h.projected_auc_24_ng_h_per_ml, 1) AS exposure_margin_x
+  FROM pivotal_tox t
+  JOIN projected_human_exposure h ON h.compound_id = t.compound_id
+  WHERE t.compound_id = :compound_id
+  ORDER BY exposure_margin_x DESC
+parameters:
+  compound_id:
+    type: string
+    required: true
+output_columns:
+  species:
+    type: string
+  duration_text:
+    type: string
+  study_id:
+    type: string
+  noael_mg_per_kg_per_day:
+    type: float
+  noael_auc_24:
+    type: float
+  projected_auc_24_ng_h_per_ml:
+    type: float
+  exposure_margin_x:
+    type: float
+approval:
+  approved_by: nonclinical_toxicology
+  approved_at: 2026-08-21
+  change_log:
+    - "v1: initial version - NOAEL AUC over projected human AUC"

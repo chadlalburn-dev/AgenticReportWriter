@@ -1,0 +1,42 @@
+id: safety_pharmacology_v1
+description: |
+  Core-battery safety pharmacology findings by domain — cardiovascular
+  (including hERG and QTc), respiratory and CNS — with the endpoint measured
+  and the margin or no-effect level. Rows exist only for domains actually
+  studied, so a domain absent from this table was not assessed rather than
+  assessed and clear.
+source: nonclinical_warehouse
+version: 1
+sql: |
+  SELECT
+    domain,
+    study_id,
+    model,
+    endpoint,
+    finding,
+    key_metric
+  FROM safety_pharmacology
+  WHERE compound_id = :compound_id
+  ORDER BY domain, study_id
+parameters:
+  compound_id:
+    type: string
+    required: true
+output_columns:
+  domain:
+    type: string
+  study_id:
+    type: string
+  model:
+    type: string
+  endpoint:
+    type: string
+  finding:
+    type: string
+  key_metric:
+    type: string
+approval:
+  approved_by: nonclinical_safety_pharmacology
+  approved_at: 2026-08-21
+  change_log:
+    - "v1: initial version - cardiovascular, respiratory and CNS domains"

@@ -45,16 +45,22 @@ from shared.schemas.template import (
     TemplateMetadata,
     TemplateStatus,
     ValidationRule,
+    VisualKind,
+    VisualSpec,
 )
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 _SECTION_RE = re.compile(r"^##\s+(.*)$", re.MULTILINE)
 _LEADING_NUM_RE = re.compile(r"^([\d]+(?:\.\d+)*)[.\s]")
 _DIRECTIVE_RE = re.compile(
-    # Instruction spans lines up to (but not consuming) the next directive.
-    r"Instruction:\s*(?P<instruction>.*?)(?=\n\s*Sources:|\n\s*Table:|\Z)"
+    # Instruction runs to the next directive, whichever it is. Visual has to be
+    # in this lookahead too, or a section with a Visual line swallows it into
+    # the prompt and the model is handed chart syntax as guidance.
+    r"Instruction:\s*(?P<instruction>.*?)"
+    r"(?=\n\s*Sources:|\n\s*Table:|\n\s*Visual:|\Z)"
     r"|Sources:\s*(?P<sources>[^\n]*)"
-    r"|Table:\s*(?P<table>[^\n]*)",
+    r"|Table:\s*(?P<table>[^\n]*)"
+    r"|Visual:\s*(?P<visual>[^\n]*)",
     re.DOTALL,
 )
 
@@ -131,7 +137,9 @@ def _parse_sections(
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
         block = body[start:end]
 
-        instruction, source_ids, _table = _parse_directives(block)
+        instruction, source_ids, _table, visual = _parse_directives(
+            block, heading, path
+        )
         section_id = _section_id_from_heading(heading, idx + 1)
         title = _LEADING_NUM_RE.sub("", heading).strip() or heading
 
@@ -164,12 +172,15 @@ def _parse_sections(
                     ValidationRule(rule="must_cite_every_number", severity="error"),
                     ValidationRule(rule="no_unbound_claims", severity="error"),
                 ],
+                visual=visual,
             )
         )
     return sections
 
 
-def _parse_directives(block: str) -> tuple[str, list[str], str | None]:
+def _parse_directives(
+    block: str, heading: str = "", path: str = ""
+) -> tuple[str, list[str], str | None, VisualSpec | None]:
     # Strip blockquote markers so the directive regex sees clean text.
     cleaned = "\n".join(
         re.sub(r"^\s*>\s?", "", line) for line in block.splitlines()
@@ -177,6 +188,7 @@ def _parse_directives(block: str) -> tuple[str, list[str], str | None]:
     instruction = ""
     sources: list[str] = []
     table: str | None = None
+    visual: VisualSpec | None = None
     for m in _DIRECTIVE_RE.finditer(cleaned):
         if m.group("instruction") is not None:
             instruction = " ".join(m.group("instruction").split())
@@ -194,7 +206,73 @@ def _parse_directives(block: str) -> tuple[str, list[str], str | None]:
         elif m.group("table") is not None:
             raw = m.group("table").strip()
             table = None if raw.lower() in ("(none)", "none", "") else raw
-    return instruction, sources, table
+        elif m.group("visual") is not None:
+            visual = _parse_visual(m.group("visual"), heading, path)
+    return instruction, sources, table, visual
+
+
+_VISUAL_TOKEN_RE = re.compile(r'(\w+)=("[^"]*"|\S+)')
+
+
+def _parse_visual(raw: str, heading: str, path: str) -> VisualSpec | None:
+    """`> Visual: margin binding=exposure_margins x=species y=margin_x ...`
+
+    Authored as a directive rather than picked per run, because the value of
+    declaring the figure in the template is that every report of this type
+    renders the same one. A reader comparing two compounds should be comparing
+    the data, not working out whether the chart changed shape.
+
+    A malformed directive raises. The alternative — dropping the figure and
+    carrying on — produces a report that is quietly missing something the
+    template asked for, and nobody reads the log to find out why.
+    """
+    raw = raw.strip()
+    if not raw or raw.lower() in ("(none)", "none"):
+        return None
+
+    kind_token, _, rest = raw.partition(" ")
+    try:
+        kind = VisualKind(kind_token.strip().lower())
+    except ValueError:
+        raise ReportDocError(
+            f"{path}: section {heading!r} asks for visual kind "
+            f"{kind_token.strip()!r}. Known kinds: "
+            f"{', '.join(k.value for k in VisualKind)}"
+        ) from None
+
+    fields = {
+        key: value.strip('"')
+        for key, value in _VISUAL_TOKEN_RE.findall(rest)
+    }
+    missing = [k for k in ("binding", "x", "y") if not fields.get(k)]
+    if missing:
+        raise ReportDocError(
+            f"{path}: section {heading!r} visual is missing "
+            f"{', '.join(missing)}. A chart needs to know which binding "
+            f"supplies the rows and which columns to plot — it is never "
+            f"inferred, because guessing a column would put numbers on a "
+            f"figure that nobody chose."
+        )
+
+    threshold = fields.get("threshold")
+    try:
+        threshold_value = float(threshold) if threshold else None
+    except ValueError:
+        raise ReportDocError(
+            f"{path}: section {heading!r} visual threshold {threshold!r} is "
+            f"not a number"
+        ) from None
+
+    return VisualSpec(
+        kind=kind,
+        binding_id=fields["binding"],
+        x=fields["x"],
+        y=fields["y"],
+        series=fields.get("series") or None,
+        title=fields.get("title") or None,
+        unit=fields.get("unit") or None,
+        threshold=threshold_value,
+    )
 
 
 def _section_id_from_heading(heading: str, ordinal: int) -> str:

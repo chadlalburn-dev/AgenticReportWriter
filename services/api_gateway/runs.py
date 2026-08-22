@@ -77,7 +77,11 @@ from shared.llm import (
     StubLlmClient,
     find_claude_binary,
 )
+from pydantic import ValidationError
+
+from services.document_renderer.charts import ChartDataError, render_chart
 from shared.schemas import CanonicalDocument, ParsedChunk, ReportTemplate, TemplateSection
+from shared.schemas.template import VisualSpec
 from shared.schemas.template import (
     ApiCallBinding,
     ComputedMetricBinding,
@@ -615,6 +619,11 @@ class EditorSectionRow(_Dict):
     instruction: str
     source_keys: list[str]
     table_key: str
+    #: The `> Visual:` directive, as authored. Round-tripped verbatim so opening
+    #: a template in the editor and saving it unchanged cannot delete a figure
+    #: the author declared — which is exactly what happened before the writer
+    #: learned to emit this line, and the round-trip test caught it.
+    visual: str
     errors: dict[str, str]
 
 
@@ -816,6 +825,25 @@ class DataTableView(_Dict):
 
 
 @dataclass
+class ChartView(_Dict):
+    """A figure for one section, already rendered to SVG markup.
+
+    `svg` and `unavailable_reason` are mutually exclusive: either the chart drew,
+    or it did not and the page says why. There is deliberately no third state
+    where an empty frame renders and the reader is left to guess whether the
+    margins are zero or the query is broken.
+    """
+
+    binding_id: str
+    kind: str
+    title: str
+    svg: str
+    caption: str
+    citation_n: int | None
+    unavailable_reason: str
+
+
+@dataclass
 class SectionView(_Dict):
     section_id: str
     title: str
@@ -834,6 +862,11 @@ class SectionView(_Dict):
     notes_short: list[str]
     paragraphs: list[ParagraphView]
     tables: list[DataTableView]
+    #: At most one, because the template declares at most one. A section that
+    #: grew a second figure would stop being comparable with the same section of
+    #: the next report, which is the whole reason the figure is declared in the
+    #: template rather than chosen per run.
+    chart: ChartView | None
     n_citations: int
     n_uncited_numbers: int
     band: BandKind
@@ -873,6 +906,13 @@ class LedgerRow(_Dict):
     fix_hint: str | None
     columns: list[str]
     rows: list[list[str]]
+    #: The same cells before they were turned into display strings. Charts read
+    #: these, never `rows`: a figure has to plot the number the query returned,
+    #: not a number recovered from the text a table happened to render. The
+    #: chart renderer refuses non-numeric input on purpose, and re-parsing
+    #: "15.0" back out of a string would route around that refusal instead of
+    #: honouring it.
+    typed_rows: list[list[object]]
     sql: str | None
 
     @property
@@ -3239,6 +3279,16 @@ class RunStore:
             "instance": result.instance.model_dump(mode="json"),
             "citations": [c.model_dump(mode="json") for c in result.citations],
             "audit_events": [e.model_dump(mode="json") for e in result.audit_events],
+            # The figure each section asked for, recorded on the run rather than
+            # read back off the template at view time. Editing a template must
+            # not silently redraw a report that shipped months ago — the same
+            # reason model_version is stored per run instead of resolved from
+            # the ambient engine.
+            "visuals": {
+                s.section_id: s.visual.model_dump(mode="json")
+                for s in _iter_template_sections(template)
+                if s.visual is not None
+            },
         }
         self._write_json(self._run_dir(run_id) / "result.json", payload)
 
@@ -3965,6 +4015,7 @@ def _ledger_row(
 
     columns: list[str] = []
     rows: list[list[str]] = []
+    typed_rows: list[list[object]] = []
     row_count: int | None = None
     deferred: str | None = None
     sql_text: str | None = None
@@ -3982,12 +4033,14 @@ def _ledger_row(
             q = resolved.query_result
             columns = list(q.columns)
             rows = [["" if c is None else str(c) for c in row] for row in q.rows]
+            typed_rows = [list(row) for row in q.rows]
             row_count = q.row_count
             is_cited = bid in cited_binding_ids
         elif resolved.api_result is not None:
             a = resolved.api_result
             columns = list(a.columns)
             rows = [["" if c is None else str(c) for c in row] for row in a.rows]
+            typed_rows = [list(row) for row in a.rows]
             row_count = a.row_count
             is_cited = bid in cited_binding_ids
         elif resolved.chunks:
@@ -4038,6 +4091,7 @@ def _ledger_row(
         fix_hint=fix_hint,
         columns=columns,
         rows=rows,
+        typed_rows=typed_rows,
         sql=sql_text,
     )
 
@@ -4062,6 +4116,7 @@ def _ledger_from_dicts(payload: list[Any]) -> list[LedgerRow]:
                 fix_hint=item.get("fix_hint"),
                 columns=[str(c) for c in item.get("columns", []) or []],
                 rows=[[str(c) for c in row] for row in item.get("rows", []) or []],
+                typed_rows=[list(row) for row in item.get("rows", []) or []],
                 sql=item.get("sql"),
             )
         )
@@ -4175,6 +4230,25 @@ def _locator_rows(
     return rows, caption, "Version", version
 
 
+def _iter_template_sections(template: ReportTemplate) -> list[TemplateSection]:
+    """Every section in the template tree, parents included.
+
+    Separate from `_flatten_instance_sections`, which walks the *generated*
+    instance. The two trees carry different things — one has the authored spec,
+    the other has the drafted prose — and conflating them is how a figure ends
+    up attached to the wrong section.
+    """
+    out: list[TemplateSection] = []
+
+    def walk(nodes: list[TemplateSection]) -> None:
+        for node in nodes:
+            out.append(node)
+            walk(list(node.children))
+
+    walk(list(template.sections))
+    return out
+
+
 def _build_draft_view(
     record: RunRecord,
     result: dict[str, Any],
@@ -4184,6 +4258,10 @@ def _build_draft_view(
     instance_id = str(instance.get("instance_id", "")) or (record.instance_id or "")
     citations_raw: list[dict[str, Any]] = list(result.get("citations") or [])
     citations_by_id = {str(c.get("citation_id")): c for c in citations_raw}
+    # The figures this run recorded for itself. Absent on runs generated before
+    # visuals existed, which is why this is a plain .get rather than a lookup
+    # that assumes the key: an old report shows no figure, not a stack trace.
+    visuals_by_section = dict(result.get("visuals") or {})
     generated_sections = _flatten_instance_sections(list(instance.get("sections") or []))
 
     # --- pass 1: number citations by first appearance in document order ---
@@ -4293,6 +4371,11 @@ def _build_draft_view(
             if bid in ledger_by_id
         ]
 
+        chart = None
+        visual_raw = visuals_by_section.get(section_id)
+        if isinstance(visual_raw, dict):
+            chart = _chart_view(visual_raw, ledger_by_id, citation_ns_by_binding)
+
         n_section_citations = len(section_cids)
         if critique_status == "failed_after_retries":
             band: BandKind = "failed"
@@ -4326,6 +4409,7 @@ def _build_draft_view(
                 notes_short=[_truncate(n, 240) for n in critique_notes],
                 paragraphs=paragraphs,
                 tables=tables,
+                chart=chart,
                 n_citations=n_section_citations,
                 n_uncited_numbers=section_uncited,
                 band=band,
@@ -4589,6 +4673,84 @@ def _table_view(
         status=status,
         deferred_note=row.deferred_note,
         vh_note=vh_note,
+    )
+
+
+def _chart_view(
+    spec_raw: dict[str, Any],
+    ledger_by_id: dict[str, LedgerRow],
+    citation_ns_by_binding: dict[str, list[int]],
+) -> ChartView | None:
+    """One section's figure, or a ChartView carrying the reason there is none.
+
+    Returns None only when the template asked for nothing. Every other outcome
+    renders something: a chart, or a sentence saying why the chart is absent.
+    Silently dropping a declared figure leaves a report quietly missing a piece
+    the template asked for, and nobody reads a log to discover that.
+    """
+    try:
+        spec = VisualSpec.model_validate(spec_raw)
+    except ValidationError as exc:
+        return ChartView(
+            binding_id=str(spec_raw.get("binding_id", "")),
+            kind=str(spec_raw.get("kind", "")),
+            title="Figure",
+            svg="",
+            caption="",
+            citation_n=None,
+            unavailable_reason=f"The figure this section declares is not valid: {exc}",
+        )
+
+    row = ledger_by_id.get(spec.binding_id)
+    title = spec.title or f"{spec.y} by {spec.x}"
+    ns = citation_ns_by_binding.get(spec.binding_id, [])
+    base = {
+        "binding_id": spec.binding_id,
+        "kind": spec.kind.value,
+        "title": title,
+        "citation_n": ns[0] if ns else None,
+    }
+
+    if row is None:
+        return ChartView(
+            **base,
+            svg="",
+            caption="",
+            unavailable_reason=(
+                f"No figure: this section declares a chart over "
+                f"{spec.binding_id!r}, which is not one of its sources."
+            ),
+        )
+    if row.status == "unavailable":
+        return ChartView(
+            **base,
+            svg="",
+            caption="",
+            unavailable_reason=(
+                f"No figure: {spec.binding_id} did not resolve, so there are no "
+                f"values to plot. {row.deferred_note or ''}".strip()
+            ),
+        )
+
+    try:
+        svg = render_chart(
+            spec,
+            tuple(row.columns),
+            tuple(tuple(cells) for cells in row.typed_rows),
+        )
+    except ChartDataError as exc:
+        return ChartView(
+            **base, svg="", caption="", unavailable_reason=f"No figure: {exc}"
+        )
+
+    return ChartView(
+        **base,
+        svg=svg,
+        caption=(
+            f"Plotted from {row.label} — {spec.binding_id}. Values are the "
+            f"query's own; the model did not write them."
+        ),
+        unavailable_reason="",
     )
 
 
@@ -5540,6 +5702,7 @@ def draft_from_form(form: Any, *, taxonomy: Any = None) -> Any:
                 instruction=_form_str(form, f"section.{key}.instruction").strip(),
                 source_keys=list(dict.fromkeys(picked)),
                 table_key=_form_str(form, f"section.{key}.table").strip(),
+                visual=_form_str(form, f"section.{key}.visual").strip(),
             )
         )
     return draft
@@ -5902,6 +6065,7 @@ def editor_context(
             instruction=row.instruction,
             source_keys=list(row.source_keys or []),
             table_key=row.table_key,
+            visual=row.visual,
             errors=_row_errors(field_errors, f"section.{row.key}."),
         )
         for index, row in enumerate(draft.sections, start=1)

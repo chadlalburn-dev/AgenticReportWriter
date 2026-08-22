@@ -2554,3 +2554,40 @@
   color: var(--ti-mut);
   white-space: nowrap;
 }
+
+/* ---------------------------------------------------------------- figures --
+   Charts are inline SVG generated server-side (services/document_renderer/
+   charts.py). No canvas, no library: the app has no build step and core flows
+   must work with JavaScript off, and inline SVG is also the only one of those
+   options that prints.
+
+   The plot sits on the recessed surface with the table it was drawn from,
+   because both are retrieved evidence rather than the model's words — the same
+   distinction the surfaces already carry everywhere else on this page.        */
+
+.ti-figure { margin: 0; }
+
+.ti-figure__plot {
+  padding: var(--ti-12) var(--ti-8) var(--ti-4);
+  /* The SVG is authored at 720x300 and scales down. It never scales up: a bar
+     chart stretched across a wide monitor turns a 6x margin into a gesture,
+     and the whole point of the figure is that the lengths are comparable. */
+  max-width: 760px;
+}
+
+.ti-figure__plot svg { display: block; width: 100%; height: auto; }
+
+.ti-figure__cap {
+  padding: 0 var(--ti-12) var(--ti-12);
+  font-size: var(--ti-12);
+  line-height: 1.5;
+  color: var(--ti-dim);
+}
+
+@media print {
+  /* Figures must survive the print path — a safety summary is read on paper in
+     review meetings, and a chart that vanishes there is a chart that is not in
+     the document. */
+  .ti-figure { break-inside: avoid; }
+  .ti-figure__plot { max-width: 100%; }
+}

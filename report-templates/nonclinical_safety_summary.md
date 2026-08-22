@@ -24,7 +24,7 @@ sources:
   - id: pivotal_tox
     type: bigquery
     dataset: nonclinical_safety
-    query_id: pivotal_tox_summary_v2
+    query_id: pivotal_toxicology_summary_v2
     params: { compound_id: "{{inputs.compound_id}}" }
   - id: safety_pharm
     type: bigquery
@@ -96,6 +96,7 @@ output:
 > interpret the therapeutic window.
 > Sources: exposure_margins, pivotal_tox
 > Table: exposure_margins
+> Visual: margin binding=exposure_margins x=duration_text y=exposure_margin_x unit=x threshold=10 title="Exposure margin at NOAEL vs projected human AUC"
 
 ## 6. Safety conclusions and watch items
 

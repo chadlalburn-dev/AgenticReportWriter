@@ -59,6 +59,54 @@ class OutputShape(StrEnum):
     LIST = "list"
 
 
+class VisualKind(StrEnum):
+    """The chart shapes a section may ask for.
+
+    A closed set on purpose. The point of declaring a visual in the template is
+    that every report of this type renders the same figure the same way, so a
+    reader comparing two compounds is comparing the data and not the chart. An
+    open "any chart you like" field would give that away immediately.
+    """
+
+    BAR = "bar"
+    #: A bar chart with a threshold line, for safety multiples. Bars below the
+    #: threshold are accented, because "which margin is too thin" is the only
+    #: question anyone asks of an exposure-margin figure.
+    MARGIN = "margin"
+    LINE = "line"
+    SCATTER = "scatter"
+
+
+class VisualSpec(BaseModel):
+    """A figure paired with a section, drawn from one of its data bindings.
+
+    `binding_id` is not optional and there is no free-text data field: a chart
+    can only be drawn from a resolved table, never from the model's prose. A
+    figure whose numbers came out of generated text would carry no citation and
+    could not be checked against a source, which is the one thing this document
+    promises about every value it shows.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    kind: VisualKind
+    binding_id: str = Field(
+        description="Which of the section's data bindings supplies the numbers"
+    )
+    x: str = Field(description="Column giving each point its category or position")
+    y: str = Field(description="Column giving each point its value; must be numeric")
+    series: str | None = Field(
+        default=None, description="Column that splits the points into groups"
+    )
+    title: str | None = None
+    unit: str | None = Field(
+        default=None, description="Appended to value labels, e.g. 'x' or 'ng/mL'"
+    )
+    threshold: float | None = Field(
+        default=None,
+        description="Reference line; values below it are accented as shortfalls",
+    )
+
+
 # --- Data bindings ----------------------------------------------------------
 
 
@@ -204,6 +252,10 @@ class TemplateSection(BaseModel):
     data_bindings: list[DataBinding] = Field(default_factory=list)
     citation_policy: CitationPolicy = Field(default_factory=CitationPolicy)
     validation_rules: list[ValidationRule] = Field(default_factory=list)
+    #: An optional figure, always drawn from one of this section's bindings.
+    #: Declared on the template rather than chosen per run, so the same section
+    #: of every report of this type carries the same kind of figure.
+    visual: VisualSpec | None = None
 
 
 class TemplateMetadata(BaseModel):
