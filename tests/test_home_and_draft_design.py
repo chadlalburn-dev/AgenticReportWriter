@@ -32,11 +32,22 @@ def client() -> TestClient:
 
 @pytest.fixture(scope="module")
 def terminal_run() -> str:
+    """A terminal run that actually produced a draft.
+
+    "Terminal" alone is not enough: a run that failed is terminal and has no
+    draft at all, so `draft_view` returns None and every assertion below dies on
+    an AttributeError rather than saying what it wanted. That state is not
+    hypothetical — the first live runs on the real CLI failed, and this fixture
+    picked one.
+    """
     store = runs_module.get_store()
-    for summary in store.list_runs(limit=40):
-        if summary.terminal:
+    for summary in store.list_runs(limit=60):
+        if not summary.terminal:
+            continue
+        view = store.draft_view(summary.run_id)
+        if view is not None and view.sections:
             return summary.run_id
-    pytest.skip("no terminal run in the shared store")
+    pytest.skip("no terminal run with a rendered draft in the shared store")
 
 
 # --- home: real facts only --------------------------------------------------

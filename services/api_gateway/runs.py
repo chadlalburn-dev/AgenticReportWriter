@@ -1414,21 +1414,71 @@ def _stub_engine(*, hint: str, choice: str = "auto") -> EngineInfo:
     )
 
 
+#: How many CLI processes to keep warm. Overridable because the trade is real:
+#: each warm process is a booted Node runtime holding RSS, and on a memory-tight
+#: machine an operator may prefer the ~45s cold cost per call. `0` disables
+#: warming entirely.
+#:
+#: Tests use it to pin the cold path, which they need because the two paths use
+#: DIFFERENT subprocess functions — the cold one `run`, the pool one `Popen` —
+#: so a fake that patches one does not intercept the other.
+CLI_POOL_ENV = "REPORTGEN_CLI_POOL"
+CLI_POOL_DEFAULT = 3
+
+
+def _cli_pool_size() -> int:
+    raw = (os.environ.get(CLI_POOL_ENV) or "").strip()
+    if not raw:
+        return CLI_POOL_DEFAULT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        # A typo should not silently disable warming or crash a run.
+        return CLI_POOL_DEFAULT
+
+
+_CLI_CLIENT: ClaudeCliLlmClient | None = None
+_CLI_CLIENT_LOCK = threading.Lock()
+
+
 def build_llm_client() -> LlmClient:
     """The generation engine: the local Claude CLI if it is usable, else the stub.
 
     One swap point for all three phases. `VertexLlmClient` slots in here the
     same way when cloud access lands.
+
+    The CLI client is a SINGLETON, and that is a lifecycle requirement rather
+    than a micro-optimisation. It owns a pool of pre-warmed CLI processes, and
+    this function is called once per run; a fresh client per run would warm
+    three more processes and never reap them, so fifty runs would leave a
+    hundred and fifty CLI processes resident. Sharing one pool is also safe:
+    isolation lives at the level of a single process serving a single call, not
+    at the level of the client.
     """
-    if resolve_engine_now().kind == "cli":
-        return ClaudeCliLlmClient(
-            ClaudeCliConfig(
-                # Report sections are long; the default 240s covers a section
-                # comfortably without hanging a whole run on one stall.
-                timeout_s=240.0,
+    if resolve_engine_now().kind != "cli":
+        return build_stub_client()
+    global _CLI_CLIENT
+    with _CLI_CLIENT_LOCK:
+        if _CLI_CLIENT is None:
+            _CLI_CLIENT = ClaudeCliLlmClient(
+                ClaudeCliConfig(
+                    # Report sections are long; the default 240s covers a
+                    # section comfortably without hanging a whole run on one
+                    # stall.
+                    timeout_s=240.0,
+                    pool_size=_cli_pool_size(),
+                )
             )
-        )
-    return build_stub_client()
+        return _CLI_CLIENT
+
+
+def shutdown_llm_client() -> None:
+    """Reap the warm process pool. Called from the app's lifespan."""
+    global _CLI_CLIENT
+    with _CLI_CLIENT_LOCK:
+        if _CLI_CLIENT is not None:
+            _CLI_CLIENT.close()
+            _CLI_CLIENT = None
 
 
 def build_stub_client() -> StubLlmClient:

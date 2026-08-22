@@ -143,6 +143,12 @@ def cli_engine(monkeypatch) -> FakeCli:
     monkeypatch.setattr(subprocess, "run", fake)
     monkeypatch.setenv("REPORTGEN_CLAUDE_BIN", __file__)
     monkeypatch.setenv(runs_module.ENGINE_ENV, "cli")
+    # Cold path. This fake patches `subprocess.run`, and the warm pool uses
+    # `subprocess.Popen` — different functions on purpose, so patching one does
+    # not silence the other. Without this the app reaches real Popen and tries
+    # to execute this .py file. The pool has its own suite in test_cli_pool.py.
+    monkeypatch.setenv(runs_module.CLI_POOL_ENV, "0")
+    runs_module.shutdown_llm_client()
     runs_module.reset_engine_cache()
     # check() would otherwise consume a prompt that is not a generation prompt
     monkeypatch.setattr(ClaudeCliLlmClient, "check", lambda self: None)

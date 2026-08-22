@@ -68,6 +68,11 @@ async def _lifespan(_app: FastAPI):
     runs_module.prime_engine()
     yield
     ui_module.get_store().shutdown(wait=False)
+    # Reap the pre-warmed CLI processes. Without this they outlive the server:
+    # each is a booted Node runtime holding real memory, and they are daemon
+    # threads' children rather than the interpreter's, so nothing else collects
+    # them.
+    runs_module.shutdown_llm_client()
 
 
 app = FastAPI(

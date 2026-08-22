@@ -51,9 +51,11 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from shared.llm.claude_cli_pool import CliResult, WarmPool
 from shared.llm.client import (
     LlmClient,
     LlmRequest,
@@ -115,6 +117,14 @@ class ClaudeCliConfig:
     #: governance note in the module docstring.
     allow_real_data: bool = False
     cwd: str | None = None
+    #: How many CLI processes to keep booted. Startup is ~45s and is pure
+    #: overhead, so warming hides it; 0 disables the pool and every call pays
+    #: the cold cost. Each warm process is real RSS and makes no API call until
+    #: used, so the trade is memory, not money. See claude_cli_pool.
+    pool_size: int = 3
+    #: Deadline for a warm process before falling back to a cold spawn. Slow is
+    #: a better failure than stuck.
+    pool_wait_s: float = 8.0
 
 
 def find_claude_binary(explicit: str | None = None) -> str | None:
@@ -160,10 +170,37 @@ class ClaudeCliLlmClient(LlmClient):
                 "REPORTGEN_CLAUDE_BIN to its full path."
             )
         self._binary = binary
+        self._pool: WarmPool | None = None
+        self._pool_lock = threading.Lock()
 
     @property
     def binary(self) -> str:
         return self._binary
+
+    def _get_pool(self) -> WarmPool | None:
+        """Built on first use, not in __init__.
+
+        `resolve_engine()` constructs a client just to ask whether the CLI can
+        run, and on many pages. Booting three processes for that would spend
+        ~1GB answering a question about a chip in the header.
+        """
+        if self._config.pool_size <= 0:
+            return None
+        with self._pool_lock:
+            if self._pool is None:
+                self._pool = WarmPool(
+                    [self._binary],
+                    size=self._config.pool_size,
+                    cwd=self._config.cwd,
+                )
+            return self._pool
+
+    def close(self) -> None:
+        """Release warm processes. Safe to call more than once."""
+        with self._pool_lock:
+            if self._pool is not None:
+                self._pool.close()
+                self._pool = None
 
     # -- preflight ----------------------------------------------------------
 
@@ -221,17 +258,84 @@ class ClaudeCliLlmClient(LlmClient):
             )
 
         prompt = self._compose_prompt(request)
-        # The prompt goes on STDIN, not in argv. A report prompt carries the
-        # section instruction plus every retrieved chunk and table, so it runs
-        # to tens of thousands of characters — and the npm shim is a .cmd, which
-        # routes through cmd.exe and caps a command line at 8191 characters.
-        # Over that the call either dies with "The command line is too long" or,
-        # worse, arrives truncated: the first real run failed with the CLI
-        # replying "your message may have been cut off — I only received the
-        # template title", because that is all that fit.
-        #
-        # Measured: a 12,859-character prompt fails as an argument and succeeds
-        # on stdin with a marker placed at its very end.
+        pool = self._get_pool()
+        if pool is None:
+            raw, usage = self._generate_cold(prompt, request), None
+        else:
+            raw, usage = self._generate_pooled(pool, prompt, request)
+
+        if not raw:
+            raise StructuredOutputError("The Claude CLI returned no output.")
+
+        parsed: dict[str, object] | None = None
+        if request.response_schema_name:
+            body = _strip_fence(raw)
+            try:
+                loaded = json.loads(body)
+            except json.JSONDecodeError as exc:
+                # Head AND tail, with the length. A 200-character excerpt of
+                # the head cannot distinguish "the model wrote prose" from
+                # "the model wrote good JSON that got cut off" — and those need
+                # opposite fixes. The first live failure showed only a valid
+                # opening brace and was undiagnosable from the record.
+                raise StructuredOutputError(
+                    f"Expected JSON for {request.response_schema_name!r} and "
+                    f"could not parse {len(raw)} characters ("
+                    f"{exc.msg} at position {exc.pos}). "
+                    f"Head: {raw[:220]!r} ... Tail: {raw[-220:]!r}"
+                ) from exc
+            if not isinstance(loaded, dict):
+                raise StructuredOutputError(
+                    f"Expected a JSON object for {request.response_schema_name!r}, "
+                    f"got {type(loaded).__name__}."
+                )
+            parsed = loaded
+
+        return LlmResponse(
+            text=raw,
+            parsed_json=parsed,
+            model_version=self._config.models.get(request.tier) or "claude-code-cli",
+            stop_reason="end_turn",
+            usage=LlmUsage(
+                # Real numbers when the stream reports them. The single-shot
+                # path has no token accounting at all, and writing an estimate
+                # into an audit trail would be inventing a figure, so it stays
+                # at zero and the record carries the model_version instead.
+                input_tokens=usage.input_tokens if usage else 0,
+                output_tokens=usage.output_tokens if usage else 0,
+            ),
+        )
+
+    def _generate_pooled(
+        self, pool: WarmPool, prompt: str, request: LlmRequest
+    ) -> tuple[str, CliResult]:
+        """One warm process, one call, then discarded.
+
+        Discarded rather than reused, and that is the whole design: the CLI
+        treats a process as a single conversation and ignores a `session_id` on
+        the input message, so a reused process would carry the previous
+        section's retrieved chunks in its history. In a report whose claim is
+        that every value traces to a source it was given, that is a provenance
+        hole, not a saving.
+        """
+        proc = pool.acquire(wait_s=self._config.pool_wait_s)
+        try:
+            result = proc.ask(prompt, timeout_s=self._config.timeout_s)
+        except TimeoutError as exc:
+            raise ClaudeCliUnavailable(
+                f"The Claude CLI did not finish within {self._config.timeout_s:.0f}s."
+            ) from exc
+        except RuntimeError as exc:
+            raise ClaudeCliUnavailable(str(exc)) from exc
+        finally:
+            proc.close()
+
+        self._raise_if_unusable(result.text, 1 if result.is_error else 0)
+        return result.text.strip(), result
+
+    def _generate_cold(self, prompt: str, request: LlmRequest) -> str:
+        """One process per call, no warming. The fallback when the pool is
+        disabled, and the path every test exercises."""
         argv = [
             self._binary,
             "-p",
@@ -251,10 +355,11 @@ class ClaudeCliLlmClient(LlmClient):
         try:
             proc = subprocess.run(  # noqa: S603 - fixed binary, no shell
                 argv,
-                # `input` writes the prompt and closes the pipe, which also
-                # settles the reason stdin used to be DEVNULL: the CLI waits
-                # ~3s for piped input and warns into stdout if the pipe is left
-                # open. Sending the prompt and closing satisfies both.
+                # `input` writes the prompt and closes the pipe. The prompt must
+                # not go in argv: the npm shim is a .cmd, so the call routes
+                # through cmd.exe, which caps a command line at 8191 characters
+                # and truncates a report prompt into a fragment the model then
+                # politely answers.
                 input=prompt,
                 capture_output=True,
                 text=True,
@@ -268,39 +373,7 @@ class ClaudeCliLlmClient(LlmClient):
 
         raw = (proc.stdout or "").strip()
         self._raise_if_unusable(f"{raw}\n{proc.stderr}", proc.returncode)
-        if not raw:
-            raise StructuredOutputError("The Claude CLI returned no output.")
-
-        parsed: dict[str, object] | None = None
-        if request.response_schema_name:
-            body = _strip_fence(raw)
-            try:
-                loaded = json.loads(body)
-            except json.JSONDecodeError as exc:
-                raise StructuredOutputError(
-                    f"Expected JSON for {request.response_schema_name!r} but the "
-                    f"CLI returned prose: {raw[:200]!r}"
-                ) from exc
-            if not isinstance(loaded, dict):
-                raise StructuredOutputError(
-                    f"Expected a JSON object for {request.response_schema_name!r}, "
-                    f"got {type(loaded).__name__}."
-                )
-            parsed = loaded
-
-        return LlmResponse(
-            text=raw,
-            parsed_json=parsed,
-            model_version=self._config.models.get(request.tier) or "claude-code-cli",
-            stop_reason="end_turn",
-            usage=LlmUsage(
-                # The CLI's text output carries no token accounting. Estimating
-                # would put invented numbers in the audit trail, so both stay 0
-                # and the audit record shows the model_version instead.
-                input_tokens=0,
-                output_tokens=0,
-            ),
-        )
+        return raw
 
     def _compose_prompt(self, request: LlmRequest) -> str:
         """Flatten the request into one prompt.

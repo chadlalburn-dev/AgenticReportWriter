@@ -61,9 +61,17 @@ def _request(schema: str | None = "FillOutput", text: str = "draft a section") -
 
 @pytest.fixture
 def client(monkeypatch) -> ClaudeCliLlmClient:
-    """A client wired to a fake binary path so no real CLI is spawned."""
+    """A client on the COLD path, wired to a fake binary so nothing is spawned.
+
+    `pool_size=0` is load-bearing. These tests patch `subprocess.run`, and the
+    warm pool uses `subprocess.Popen` — a different function, deliberately, so
+    patching one does not silence the other. With pooling on by default they
+    reached the real Popen and tried to execute this .py file as a binary,
+    failing with WinError 193. Disabling the pool keeps each test on the path it
+    is actually about; the pooled path has its own suite in test_cli_pool.py.
+    """
     monkeypatch.setenv("REPORTGEN_CLAUDE_BIN", __file__)  # any existing file
-    return ClaudeCliLlmClient(ClaudeCliConfig(binary=__file__))
+    return ClaudeCliLlmClient(ClaudeCliConfig(binary=__file__, pool_size=0))
 
 
 # --- JSON extraction --------------------------------------------------------
@@ -229,7 +237,7 @@ def test_real_data_runs_when_explicitly_allowed(monkeypatch):
         subprocess, "run", lambda *a, **k: _Proc(stdout='{"paragraphs":[]}')
     )
     permissive = ClaudeCliLlmClient(
-        ClaudeCliConfig(binary=__file__, allow_real_data=True)
+        ClaudeCliConfig(binary=__file__, allow_real_data=True, pool_size=0)
     )
     assert permissive.generate(
         _request(text="data-classification: real")
@@ -453,7 +461,7 @@ def test_the_readiness_probe_has_its_own_ceiling():
 def test_the_probe_timeout_is_named_in_its_own_error(monkeypatch, tmp_path):
     """A timeout message stating the wrong number sends someone hunting a
     setting that does not exist."""
-    client = ClaudeCliLlmClient(ClaudeCliConfig(binary=__file__, check_timeout_s=7.0))
+    client = ClaudeCliLlmClient(ClaudeCliConfig(binary=__file__, check_timeout_s=7.0, pool_size=0))
 
     def boom(*a, **k):
         raise subprocess.TimeoutExpired(cmd="claude", timeout=7.0)
