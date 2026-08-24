@@ -790,10 +790,23 @@ def validate_draft(
     *,
     existing_keys: Sequence[str] = (),
     is_new: bool = True,
+    known_query_ids: Sequence[str] = (),
 ) -> list[DraftIssue]:
     """Pure. `existing_keys` are report_type stems already on disk, compared
     case-insensitively. Never raises. Performs no taxonomy checks — tag
-    conformance is decided against the taxonomy by the caller."""
+    conformance is decided against the taxonomy by the caller.
+
+    `known_query_ids` is the named-query registry's contents, passed in rather
+    than looked up so this module stays pure and testable. An empty sequence
+    means "do not check", not "nothing is registered" — a caller with no
+    registry to hand must not turn every query in a template into an error.
+
+    Why the check is here at all: sixteen `query_id` references across the
+    shipped template library resolve to nothing, and until now the only place
+    that said so was a run's preflight — which is to say, after someone had
+    chosen a template, filled in a compound and pressed go. Reporting it while
+    authoring is the difference between a typo and a wasted run.
+    """
     issues: list[DraftIssue] = []
     add = issues.append
 
@@ -936,7 +949,9 @@ def validate_draft(
     source_ids: list[str] = []
     live_keys = {s.key for s in draft.sources if s.key}
     for src in draft.sources:
-        issues.extend(_validate_source(src, source_ids, input_ids))
+        issues.extend(
+            _validate_source(src, source_ids, input_ids, known_query_ids)
+        )
         if src.id.strip():
             source_ids.append(src.id.strip())
 
@@ -957,8 +972,70 @@ def validate_draft(
     return issues
 
 
+def _unknown_query_issue(
+    src: DraftSource, base: str, known_query_ids: Sequence[str]
+) -> DraftIssue | None:
+    """Flag a `query_id` the registry does not have.
+
+    An empty registry means "nothing to check against", not "nothing exists".
+    Treating it as the latter would turn every query in every template into an
+    error the moment a caller forgot to pass the registry — a validator that
+    cries wolf gets switched off, and then it catches nothing.
+
+    The near-miss suggestion is what makes this actionable rather than
+    annoying: the live failure that motivated it was `pivotal_tox_summary_v2`
+    against a registry holding `pivotal_toxicology_summary_v2`, which is a typo
+    at a glance and a mystery without the candidate spelled out.
+    """
+    query_id = src.query_id.strip()
+    if not query_id or not known_query_ids:
+        return None
+    known = list(known_query_ids)
+    if query_id in known:
+        return None
+
+    suggestion = _closest(query_id, known)
+    fix = (
+        f"Did you mean {suggestion!r}?"
+        if suggestion
+        else "Add a YAML file for it to the named-query registry, or use inline SQL."
+    )
+    return DraftIssue(
+        f"{base}.query_id",
+        # A warning, not an error, and the distinction is load-bearing: errors
+        # block the save. Thirteen references across the shipped library point
+        # at queries nobody has written yet, and a template that names a
+        # planned query is a legitimate authored artifact — the registry is
+        # what is incomplete. Blocking the save would make every existing
+        # template unsavable and punish an author for a data gap they may not
+        # own. The section will still report having no data, which is the
+        # honest outcome at run time.
+        "warning",
+        "unknown_named_query",
+        f"No registered query is called {query_id!r}.",
+        fix,
+    )
+
+
+def _closest(needle: str, candidates: Sequence[str]) -> str:
+    """The nearest registered id, or "" when nothing is close.
+
+    Thresholded rather than always returning a best match: suggesting
+    `ae_summary_by_soc_v3` for `physchem_formulation_v1` is worse than
+    suggesting nothing, because a confident wrong answer sends someone off to
+    check it.
+    """
+    import difflib
+
+    hits = difflib.get_close_matches(needle, list(candidates), n=1, cutoff=0.6)
+    return hits[0] if hits else ""
+
+
 def _validate_source(
-    src: DraftSource, seen_ids: Sequence[str], input_ids: Sequence[str]
+    src: DraftSource,
+    seen_ids: Sequence[str],
+    input_ids: Sequence[str],
+    known_query_ids: Sequence[str] = (),
 ) -> list[DraftIssue]:
     base = f"source.{src.key}"
     issues: list[DraftIssue] = []
@@ -1047,6 +1124,9 @@ def _validate_source(
                     "Inline SQL needs per-run approval; a named query does not.",
                 )
             )
+        unknown = _unknown_query_issue(src, base, known_query_ids)
+        if unknown is not None:
+            add(unknown)
     elif src.kind == "oracle":
         if not src.query_id.strip() and not src.sql.strip():
             add(
@@ -1077,6 +1157,9 @@ def _validate_source(
                     "Inline SQL needs per-run approval; a named query does not.",
                 )
             )
+        unknown = _unknown_query_issue(src, base, known_query_ids)
+        if unknown is not None:
+            add(unknown)
     elif src.kind == "sharepoint":
         if not (src.site.strip() or src.folder.strip() or src.query.strip()):
             add(

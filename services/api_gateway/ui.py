@@ -604,6 +604,22 @@ def template_edit(request: Request, template_key: str) -> HTMLResponse:
             ),
         }
 
+    # Warnings on open, not only on save. A reference that resolves to nothing
+    # is worth knowing before you start editing, and the previous behaviour
+    # showed it only after pressing Save — by which point the reader has
+    # already decided the template was fine.
+    #
+    # Warnings only: errors are withheld until a save is attempted, because a
+    # template opened from disk has not been changed by anyone yet and greeting
+    # someone with a list of red on a file they just opened reads as "you broke
+    # this".
+    opening_issues = [
+        issue
+        for issue in runs_module.validate_template_draft(
+            draft, existing_keys=(), is_new=False
+        )
+        if getattr(issue, "severity", "") == "warning"
+    ]
     return _render_editor(
         request,
         runs_module.editor_context(
@@ -613,6 +629,7 @@ def template_edit(request: Request, template_key: str) -> HTMLResponse:
             base_sha=runs_module.read_sha256(path),
             banner=banner,
             taxonomy=taxonomy,
+            issues=opening_issues,
         ),
     )
 

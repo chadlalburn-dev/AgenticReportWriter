@@ -6118,7 +6118,18 @@ def validate_template_draft(
     survives a round trip instead of being silently dropped.
     """
     taxonomy = taxonomy if taxonomy is not None else load_taxonomy()
-    issues = list(validate_draft(draft, existing_keys=tuple(existing_keys), is_new=is_new))
+    issues = list(
+        validate_draft(
+            draft,
+            existing_keys=tuple(existing_keys),
+            is_new=is_new,
+            # The live registry, so a reference that resolves to nothing is
+            # visible while authoring rather than at run-setup — which is to
+            # say, after someone has picked a template, filled in a compound
+            # and pressed go.
+            known_query_ids=tuple(query_registry().ids()),
+        )
+    )
 
     for issue in taxonomy.validate(draft.tags):
         blocking = issue.code in ("missing_required", "cardinality")

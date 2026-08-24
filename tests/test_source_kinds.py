@@ -208,3 +208,98 @@ def test_a_tabular_kind_can_back_a_table_directive():
         "a deck is not a table; treating it as one would put a document listing "
         "where a reader expects measurements"
     )
+
+
+# --- a reference that resolves to nothing ----------------------------------
+#
+# Sixteen `query_id` references across the shipped template library point at
+# queries the registry does not have, and until this check existed the only
+# place that said so was a run's preflight — after someone had chosen a
+# template, filled in a compound and pressed go.
+
+
+def _sql_draft(**source_fields):
+    from services.template_service.report_doc_writer import DraftSource, blank_draft
+
+    draft = blank_draft(report_type="probe")
+    draft.title = "Probe"
+    draft.version = "0.1.0"
+    draft.description = "Fixture."
+    draft.owner = "test-team"
+    draft.inputs[0].id = "compound_id"
+    draft.inputs[0].prompt = "Compound"
+    draft.sections[0].heading = "Only section"
+    draft.sections[0].instruction = "Write something factual."
+    fields = {"key": "s1", "id": "src", "kind": "bigquery", "dataset": "ds"}
+    fields.update(source_fields)
+    draft.sources = [DraftSource(**fields)]
+    return draft
+
+
+def _unknown_query_issues(draft, known):
+    from services.template_service.report_doc_writer import validate_draft
+
+    return [
+        i
+        for i in validate_draft(draft, known_query_ids=known)
+        if i.code == "unknown_named_query"
+    ]
+
+
+KNOWN = ("pivotal_toxicology_summary_v2", "exposure_margin_v1")
+
+
+def test_an_unregistered_query_is_flagged_while_authoring():
+    issues = _unknown_query_issues(_sql_draft(query_id="no_such_query_v1"), KNOWN)
+    assert len(issues) == 1
+    assert "no_such_query_v1" in issues[0].message
+
+
+def test_a_registered_query_is_not_flagged():
+    assert _unknown_query_issues(_sql_draft(query_id="exposure_margin_v1"), KNOWN) == []
+
+
+def test_a_near_miss_gets_the_name_it_probably_meant():
+    """The live failure was `pivotal_tox_summary_v2` against a registry holding
+    `pivotal_toxicology_summary_v2` — a typo at a glance, a mystery without the
+    candidate spelled out."""
+    issues = _unknown_query_issues(_sql_draft(query_id="pivotal_tox_summary_v2"), KNOWN)
+    assert "pivotal_toxicology_summary_v2" in issues[0].fix_hint
+
+
+def test_an_unrelated_name_gets_no_invented_suggestion():
+    """Suggesting `exposure_margin_v1` for `physchem_formulation_v1` is worse
+    than suggesting nothing: a confident wrong answer sends someone off to
+    check it."""
+    issues = _unknown_query_issues(_sql_draft(query_id="physchem_formulation_v1"), KNOWN)
+    assert "Did you mean" not in issues[0].fix_hint
+    assert "registry" in issues[0].fix_hint
+
+
+def test_no_registry_means_no_check_not_everything_is_broken():
+    """An empty sequence is "nothing to compare against", not "nothing exists".
+    The other reading turns every query in every template into a finding the
+    moment a caller forgets the argument — and a validator that cries wolf gets
+    switched off, after which it catches nothing."""
+    from services.template_service.report_doc_writer import validate_draft
+
+    draft = _sql_draft(query_id="anything_at_all_v1")
+    assert not [
+        i for i in validate_draft(draft) if i.code == "unknown_named_query"
+    ]
+
+
+def test_it_is_a_warning_so_the_template_still_saves():
+    """Errors block the save. Thirteen references in the shipped library point
+    at queries nobody has written yet; a template naming a planned query is a
+    legitimate artifact and the registry is what is incomplete. Blocking would
+    make every existing template unsavable."""
+    issues = _unknown_query_issues(_sql_draft(query_id="not_yet_written_v1"), KNOWN)
+    assert issues[0].severity == "warning"
+
+
+def test_oracle_sources_are_checked_too():
+    """Same registry, same rule. An Oracle-backed section referencing a
+    nonexistent query fails exactly as quietly."""
+    draft = _sql_draft(kind="oracle", service="LIMSPRD", dataset="", query_id="ghost_v1")
+    assert len(_unknown_query_issues(draft, KNOWN)) == 1
