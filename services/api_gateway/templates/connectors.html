@@ -1,0 +1,90 @@
+{% extends "titanium_base.html" %}
+{% import "_icons.html" as ic %}
+
+{% block title %}Data connections · Report Generator{% endblock %}
+
+{#- Status vocabulary is the system's existing one, not a new one.
+
+    The dot has two states by design — `--on` for resolved, a hollow `--off`
+    ring for absence — and titanium.css says why at length: absence stays a
+    ring so the accent budget is spent on words rather than decoration, and a
+    third dot colour would be a fourth status vocabulary in an app that already
+    has three.
+
+    So the dot answers "usable or not" and `.ti-state--ok/--bad/--neutral`
+    carries the specific answer in words. That matters most for "Not checked",
+    which is neither good news nor bad and must not render as either. -#}
+{%- macro conn_row(c) %}
+<div class="ti-lrow ti-lrow--conn">
+  {#- `title` on the two truncatable columns. The suite enforces this: a class
+      that can ellipsis has to carry the full value somewhere recoverable, or a
+      clipped source id is a source nobody can identify. -#}
+  <span class="ti-lrow__title" title="{{ c.connector_id }}">
+    <span class="ti-dot ti-dot--{{ 'on' if c.usable else 'off' }}" aria-hidden="true"></span>
+    <span class="ti-code">{{ c.connector_id }}</span>
+  </span>
+  <span class="ti-lrow__sub" title="{{ c.kind }}">{{ c.kind }}</span>
+  <span class="ti-state ti-state--{{ c.state_class }}">
+    {{- c.label -}}
+  </span>
+  {#- Not `ti-lrow__sub`: that class's contract is "I truncate", and this column
+      deliberately wraps instead. Wearing it would be a claim about behaviour
+      the CSS then contradicts. -#}
+  <span class="ti-conn__detail">{{ c.detail }}</span>
+</div>
+{%- endmacro %}
+
+{% block content %}
+<div class="ti-page">
+
+  <div class="ti-sec-head">
+    <h2 class="ti-h2">Data connections</h2>
+  </div>
+
+  <p class="ti-page__lede">
+    Where report data can come from, and whether each one can be reached from
+    this machine. A template can name a source that is configured and still
+    unreachable — this page is where that shows, rather than as a half-drafted
+    report with empty sections.
+  </p>
+
+  <div class="ti-panel">
+    <div class="ti-thead ti-lrow--conn" role="row">
+      <span role="columnheader">source</span>
+      <span role="columnheader">type</span>
+      <span role="columnheader">status</span>
+      <span role="columnheader">detail</span>
+    </div>
+    {%- for c in connectors %}{{ conn_row(c) }}{% endfor %}
+  </div>
+
+  <div class="ti-sec-head" style="margin-top:var(--ti-32)">
+    <h2 class="ti-h2">Not wired up here</h2>
+  </div>
+
+  <p class="ti-page__lede">
+    These implement the same protocols as the sources above, so a template does
+    not change when one is swapped in. None can be reached from this machine,
+    and each says what it would need — stated here rather than left to be
+    discovered mid-run.
+  </p>
+
+  <div class="ti-panel">
+    <div class="ti-thead ti-lrow--conn" role="row">
+      <span role="columnheader">source</span>
+      <span role="columnheader">type</span>
+      <span role="columnheader">status</span>
+      <span role="columnheader">what it needs</span>
+    </div>
+    {%- for c in unavailable %}{{ conn_row(c) }}{% endfor %}
+  </div>
+
+  <p class="ti-footnote">
+    Reachability is not probed while a page renders. Asking a warehouse whether
+    it is awake on every click is what previously made every page here take
+    about sixteen seconds, so a source stays “not checked” until someone asks —
+    which is also why “not checked” is shown as neither working nor broken.
+  </p>
+
+</div>
+{% endblock %}

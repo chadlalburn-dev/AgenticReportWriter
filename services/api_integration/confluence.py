@@ -32,6 +32,7 @@ from services.api_integration.connector import (
     ApiConnector,
     ApiOperationError,
 )
+from shared.connectivity import ConnectorStatus
 
 _COLUMNS = ("page_id", "title", "space", "url", "excerpt")
 
@@ -105,6 +106,26 @@ _MOCK_PAGES: dict[str, _Page] = {
 class MockConfluenceConnector(ApiConnector):
     connector_id = "confluence"
     allowed_operations = frozenset({"search_pages", "get_page"})
+
+    def status(self) -> ConnectorStatus:
+        """An offline fixture, and it says so.
+
+        Reported rather than left blank: a source that shows "not checked" reads
+        as a thing someone forgot, and this one is working exactly as intended.
+        The distinction that matters to a reader is not whether it answered but
+        whether what it answered came from the real system — so the detail says
+        which it is.
+        """
+        return ConnectorStatus(
+            connector_id=self.connector_id,
+            kind='confluence',
+            configured=True,
+            reachable=True,
+            detail="Offline fixture seeded with the synthetic compound's pages. Nothing leaves this machine.",
+        )
+
+    def probe(self) -> ConnectorStatus:
+        return self.status()
 
     def call(self, operation_id: str, parameters: Mapping[str, Any]) -> ApiCallResult:
         if operation_id == "search_pages":

@@ -912,6 +912,32 @@ def _runs_url(*, q: str, group: bool) -> str:
     return "/runs?" + urlencode(params) if params else "/runs"
 
 
+@router.get(
+    "/connections",
+    response_class=HTMLResponse,
+    name="connections",
+    include_in_schema=False,
+)
+def connections(request: Request) -> HTMLResponse:
+    """Where report data can come from, and what can be reached from here.
+
+    Split into wired-up and not, because those are different questions for a
+    reader: one is "is this working", the other is "why can I not use this
+    yet". Collapsing them into a single list of red dots would bury the first
+    behind the second.
+    """
+    statuses = runs_module.connector_statuses()
+    return _render(
+        request,
+        "connectors.html",
+        {
+            "connectors": statuses,
+            "unavailable": runs_module.unwired_connector_statuses(),
+        },
+        nav_active="connections",
+    )
+
+
 @router.get("/runs", response_class=HTMLResponse, name="run_list", include_in_schema=False)
 def run_list(request: Request) -> HTMLResponse:
     store = get_store()

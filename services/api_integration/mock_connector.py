@@ -24,6 +24,7 @@ from services.api_integration.connector import (
     ApiConnector,
     ApiOperationError,
 )
+from shared.connectivity import ConnectorStatus
 
 
 # --- InMemoryApiConnector --------------------------------------------------
@@ -135,6 +136,26 @@ class MockChemblConnector(ApiConnector):
 
     connector_id = "mock_chembl"
     allowed_operations = frozenset({"target_search", "get_mechanism"})
+
+    def status(self) -> ConnectorStatus:
+        """An offline fixture, and it says so.
+
+        Reported rather than left blank: a source that shows "not checked" reads
+        as a thing someone forgot, and this one is working exactly as intended.
+        The distinction that matters to a reader is not whether it answered but
+        whether what it answered came from the real system — so the detail says
+        which it is.
+        """
+        return ConnectorStatus(
+            connector_id=self.connector_id,
+            kind='api',
+            configured=True,
+            reachable=True,
+            detail='Offline ChEMBL fixture. Deterministic, and nothing leaves this machine.',
+        )
+
+    def probe(self) -> ConnectorStatus:
+        return self.status()
 
     def call(
         self, operation_id: str, parameters: Mapping[str, Any]
@@ -295,6 +316,26 @@ class MockClinicalTrialsConnector(ApiConnector):
     allowed_operations = frozenset(
         {"search_trials", "get_trial_details", "search_by_sponsor"}
     )
+
+    def status(self) -> ConnectorStatus:
+        """An offline fixture, and it says so.
+
+        Reported rather than left blank: a source that shows "not checked" reads
+        as a thing someone forgot, and this one is working exactly as intended.
+        The distinction that matters to a reader is not whether it answered but
+        whether what it answered came from the real system — so the detail says
+        which it is.
+        """
+        return ConnectorStatus(
+            connector_id=self.connector_id,
+            kind='api',
+            configured=True,
+            reachable=True,
+            detail='Offline ClinicalTrials.gov fixture. Deterministic, and nothing leaves this machine.',
+        )
+
+    def probe(self) -> ConnectorStatus:
+        return self.status()
 
     def call(
         self, operation_id: str, parameters: Mapping[str, Any]

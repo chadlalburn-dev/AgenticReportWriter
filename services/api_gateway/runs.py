@@ -53,7 +53,9 @@ from services.api_integration import (
     MockClinicalTrialsConnector,
     MockConfluenceConnector,
 )
+from services.api_integration.sharepoint import MockSharePointConnector
 from services.audit import AuditEvent, AuditSink, AuditStore, InMemoryAuditStore
+from shared.connectivity import ConnectorStatus
 from services.audit.schema import AuditAction
 from services.data_integration import (
     NamedQueryRegistry,
@@ -1619,12 +1621,70 @@ def build_stub_client() -> StubLlmClient:
 
 
 def build_api_gate() -> ApiCallGate:
-    """Confluence + ChEMBL + ClinicalTrials mocks. All in-process, no network."""
+    """Confluence + ChEMBL + ClinicalTrials + SharePoint mocks. No network.
+
+    Mocks rather than the real connectors, and that choice is visible rather
+    than implied: `connector_statuses()` reports what each one actually is, so
+    a reader is never left to assume a fixture was the live system. Swapping in
+    `SharePointConnector` needs an Entra registration this app cannot provision,
+    and the real thing says so from configuration alone rather than failing
+    somewhere inside a run.
+    """
     registry = ApiConnectorRegistry()
     registry.register(MockConfluenceConnector())
     registry.register(MockChemblConnector())
     registry.register(MockClinicalTrialsConnector())
+    registry.register(MockSharePointConnector())
     return ApiCallGate(registry)
+
+
+def connector_statuses() -> list[ConnectorStatus]:
+    """Every configured source, and whether it can be used from here.
+
+    Configuration only — no network. A page render that probes a warehouse is
+    the mistake that made every page in this app take sixteen seconds, so
+    reachability stays unknown until someone asks for it explicitly.
+    """
+    out: list[ConnectorStatus] = []
+    gate_registry = ApiConnectorRegistry()
+    gate_registry.register(MockConfluenceConnector())
+    gate_registry.register(MockChemblConnector())
+    gate_registry.register(MockClinicalTrialsConnector())
+    gate_registry.register(MockSharePointConnector())
+    for cid in gate_registry.ids():
+        connector = gate_registry.get(cid)
+        report = getattr(connector, "status", None)
+        if callable(report):
+            out.append(report())
+        else:
+            # A connector with no opinion about itself gets the honest answer
+            # rather than an assumed one.
+            out.append(
+                ConnectorStatus(
+                    connector_id=cid,
+                    kind="api",
+                    configured=True,
+                    reachable=None,
+                    detail="This connector does not report its own status.",
+                )
+            )
+
+    # The named-query backend the app actually runs against.
+    out.append(
+        ConnectorStatus(
+            connector_id="local-sqlite",
+            kind="bigquery",
+            configured=QUERIES_DIR.is_dir(),
+            reachable=EDC_SQLITE.is_file() or None,
+            detail=(
+                f"Named queries run against {EDC_SQLITE.name} on this machine. "
+                "The BigQuery and Oracle executors implement the same protocol "
+                "and are not wired up here — neither is reachable from this "
+                "machine."
+            ),
+        )
+    )
+    return out
 
 
 _QUERY_REGISTRY: NamedQueryRegistry | None = None
@@ -6471,3 +6531,32 @@ __all__ = [
     "load_corpus",
     "query_registry",
 ]
+
+
+def unwired_connector_statuses() -> list[ConnectorStatus]:
+    """Sources implemented against the same protocols but not registered here.
+
+    Built by asking the real classes, not by writing prose about them. A
+    hand-maintained description drifts from the code it describes, and the
+    thing this page exists to prevent is a confident claim nobody checked.
+    """
+    from services.api_integration.sharepoint import SharePointConnector
+    from services.data_integration.oracle_executor import OracleQueryExecutor
+
+    return [
+        SharePointConnector().status(),
+        OracleQueryExecutor(service="oracle").status(),
+        ConnectorStatus(
+            connector_id="bigquery",
+            kind="bigquery",
+            configured=False,
+            reachable=None,
+            detail=(
+                "Needs a GCP project and Application Default Credentials. "
+                "GSK's VPC-SC perimeter blocks self-service access, so this is "
+                "a request to the cloud platform team rather than something "
+                "this app can provision."
+            ),
+            missing=("gcp-project", "application-default-credentials"),
+        ),
+    ]

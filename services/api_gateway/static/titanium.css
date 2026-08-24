@@ -2591,3 +2591,48 @@
   .ti-figure { break-inside: avoid; }
   .ti-figure__plot { max-width: 100%; }
 }
+
+/* ------------------------------------------------------- data connections --
+   Four columns: source, type, status, detail. The detail column takes the
+   remaining width because it carries the sentence that actually tells someone
+   what to do — the other three are labels, and a label needs no room to
+   breathe that a sentence does not need more.                               */
+
+.ti-lrow--conn {
+  grid-template-columns: minmax(9rem, 14rem) 7rem 10rem minmax(0, 1fr);
+  align-items: start;
+
+  /* Containment OFF for this list, deliberately.
+     ---------------------------------------------------------------------
+     `.ti-lrow` sets `contain-intrinsic-size: auto 61px`, which is right for
+     the runs and templates lists: fifty-odd rows, all one or two lines, all
+     about the same height. These rows measured 57, 57, 57, 57, 92, 129, 111
+     and 110px — they vary because the detail column wraps a sentence, and a
+     sentence is as tall as it needs to be. No single hint is correct for that
+     spread, so the browser would reserve 61px per off-screen row and re-lay
+     out on scroll, shifting content under whoever is reading it.
+
+     Content-visibility earns its keep on long lists. This one is a handful of
+     connectors and always will be, so the optimisation is a net loss and the
+     honest move is to stop claiming a height nobody can predict. */
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
+
+.ti-conn__detail {
+  /* Wraps rather than truncating, and therefore does NOT wear .ti-lrow__sub —
+     that class's contract is "I ellipsis", and an elided reason is a reason
+     nobody can act on. These sentences exist precisely to be acted on. */
+  white-space: normal;
+  line-height: 1.5;
+  max-width: 62ch;
+  font-size: var(--ti-12);
+  color: var(--ti-dim);
+}
+
+@media (max-width: 900px) {
+  /* Below this the four columns fight; stack instead of scrolling sideways,
+     since none of these values is a wide table that needs an axis. */
+  .ti-lrow--conn { grid-template-columns: 1fr; gap: var(--ti-4); }
+  .ti-thead.ti-lrow--conn { display: none; }
+}
