@@ -257,3 +257,125 @@ def test_a_run_recorded_before_typed_rows_existed_does_not_crash():
     assert row.typed_rows, "the fallback to rows did not happen"
     with pytest.raises(ChartDataError, match="not a number"):
         render_chart(_spec(), tuple(row.columns), tuple(tuple(c) for c in row.typed_rows))
+
+
+# --- line and scatter ------------------------------------------------------
+#
+# The shape of `nonclinical_pk_summary_v1`: numeric dose, numeric exposure, two
+# species. Real columns, so these break if the query changes under them.
+
+PK_COLUMNS = ("species", "dose_mg_per_kg", "auc_inf_ng_h_per_ml")
+PK_ROWS = (
+    ("Rat", 5.0, 580.0),
+    ("Rat", 25.0, 2900.0),
+    ("Rat", 100.0, 11400.0),
+    ("Dog", 1.0, 340.0),
+    ("Dog", 5.0, 1700.0),
+    ("Dog", 25.0, 8600.0),
+)
+
+
+def _pk(kind, **over):
+    fields = {
+        "kind": kind,
+        "binding_id": "pk",
+        "x": "dose_mg_per_kg",
+        "y": "auc_inf_ng_h_per_ml",
+        "series": "species",
+    }
+    fields.update(over)
+    return VisualSpec(**fields)
+
+
+def test_a_line_draws_one_path_per_series():
+    svg = render_chart(_pk(VisualKind.LINE), PK_COLUMNS, PK_ROWS)
+    assert svg.count("<path") == 2
+    assert svg.count("<circle") == 6
+
+
+def test_series_keep_the_order_the_query_returned_them_in():
+    """First-appearance order, not sorted. A query returning rat before dog
+    means it, and re-sorting here would quietly overrule the author — the same
+    reason a line takes x from row order rather than sorting it."""
+    svg = render_chart(_pk(VisualKind.LINE), PK_COLUMNS, PK_ROWS)
+    labels = re.findall(r'font-size="11">(Rat|Dog)</text>', svg)
+    assert labels == ["Rat", "Dog"]
+
+
+def test_a_scatter_refuses_a_categorical_x():
+    """A scatter's whole claim is that horizontal distance means something.
+    Spacing categories evenly and calling it a scatter would invent a
+    relationship the table does not contain."""
+    with pytest.raises(ChartDataError) as caught:
+        render_chart(_pk(VisualKind.SCATTER, x="species"), PK_COLUMNS, PK_ROWS)
+    message = str(caught.value)
+    assert "numeric x" in message
+    assert "Use a line" in message, "the message does not say what to do instead"
+
+
+def test_a_line_accepts_a_categorical_x():
+    """The counterpart. A line plots a sequence, and "28-day, 13-week, 26-week"
+    is a real sequence even though it is not a number."""
+    svg = render_chart(_pk(VisualKind.LINE, x="species", series=None), PK_COLUMNS, PK_ROWS)
+    assert "<path" in svg
+
+
+def test_a_scatter_positions_marks_on_both_axes():
+    """Distinct x positions, which is what separates a scatter from a line: if
+    every mark shared an x the plot would be saying nothing about dose."""
+    svg = render_chart(_pk(VisualKind.SCATTER), PK_COLUMNS, PK_ROWS)
+    xs = {x for x in re.findall(r'<circle cx="([\d.]+)"', svg)}
+    assert svg.count("<circle") == 6
+    assert len(xs) >= 4, f"marks collapsed onto {len(xs)} x positions"
+
+
+def test_identical_values_do_not_divide_by_zero():
+    """A column where every value is the same, or a single row. Draws a flat
+    line across the middle, which is exactly what the data says."""
+    flat = (("Rat", 1.0, 7.0), ("Rat", 2.0, 7.0))
+    assert "<path" in render_chart(_pk(VisualKind.LINE), PK_COLUMNS, flat)
+    assert "<circle" in render_chart(_pk(VisualKind.SCATTER), PK_COLUMNS, flat)
+
+
+def test_line_and_scatter_are_deterministic_too():
+    for kind in (VisualKind.LINE, VisualKind.SCATTER):
+        first = render_chart(_pk(kind), PK_COLUMNS, PK_ROWS)
+        assert first == render_chart(_pk(kind), PK_COLUMNS, PK_ROWS)
+
+
+def test_these_kinds_use_no_hardcoded_colours_either():
+    for kind in (VisualKind.LINE, VisualKind.SCATTER):
+        svg = render_chart(_pk(kind), PK_COLUMNS, PK_ROWS)
+        literals = re.findall(r'(?:fill|stroke)="(#[0-9a-fA-F]{3,8}|rgb[^"]*)"', svg)
+        assert not literals, f"{kind.value}: hardcoded colours {literals}"
+
+
+def test_they_are_announced_and_described_as_well():
+    for kind in (VisualKind.LINE, VisualKind.SCATTER):
+        svg = render_chart(_pk(kind), PK_COLUMNS, PK_ROWS)
+        assert 'role="img"' in svg
+        desc = re.search(r"<desc[^>]*>(.*?)</desc>", svg)
+        assert desc and "table below" in desc.group(1)
+
+
+def test_a_cropped_y_axis_is_allowed_here_but_never_on_bars():
+    """Not an inconsistency, and worth pinning so nobody "fixes" it.
+
+    A bar encodes its value as a length, so a clipped baseline makes a 6x margin
+    look like a third of a 15x one. A line encodes position against a labelled
+    axis the reader actually reads, and forcing zero onto a steady-state curve
+    flattens it against the top. Different encodings, different rules.
+    """
+    # `[\d,.]` — the line chart's padded bounds produce fractional ticks like
+    # "329.6", which a digits-and-commas pattern silently matches nothing of.
+    tick_re = r'>([\d,]+\.?\d*)</text>'
+
+    svg = render_chart(_pk(VisualKind.LINE), PK_COLUMNS, PK_ROWS)
+    ticks = [float(t.replace(",", "")) for t in re.findall(tick_re, svg)]
+    assert ticks, "no ticks found; the pattern no longer matches the markup"
+    assert min(ticks) > 0, "the line chart forced a zero baseline"
+
+    bars = render_chart(_spec(), COLUMNS, ROWS)
+    bar_ticks = [float(t.replace(",", "")) for t in re.findall(tick_re, bars)]
+    assert bar_ticks
+    assert min(bar_ticks) == 0, "the bar chart lost its zero baseline"
