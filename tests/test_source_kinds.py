@@ -176,6 +176,36 @@ def test_every_kind_survives_a_pass_through_the_editor():
     twice = draft_from_text(serialize_draft(once), report_type="kinds_probe")
 
     assert [s.kind for s in twice.sources] == [s.kind for s in once.sources]
+
+    # Assert the VALUES, not just that the two passes agree.
+    #
+    # This test passed while the reader silently dropped every Oracle and
+    # SharePoint setting, because both sides were empty and empty equals empty.
+    # A round-trip check that only compares before with after certifies a
+    # pipeline that loses the same data twice.
+    expected = {
+        "lims": {"service": "LIMSPRD", "query_id": "invivo_pk_summary_v1"},
+        "lims_adhoc": {"service": "LIMSPRD"},
+        "decks": {
+            "site": "Nonclinical-Safety",
+            "folder": "Programmes/XYZ-001/Tox",
+            "file_types": "pptx, docx",
+        },
+        "deck_search": {
+            "site": "Nonclinical-Safety",
+            "query": "26-week dog",
+            "file_types": "pptx",
+        },
+    }
+    by_id = {s.id: s for s in twice.sources}
+    for source_id, fields in expected.items():
+        for field, value in fields.items():
+            actual = getattr(by_id[source_id], field)
+            assert actual == value, (
+                f"source {source_id!r} lost {field!r}: expected {value!r}, "
+                f"got {actual!r}"
+            )
+
     for before, after in zip(once.sources, twice.sources):
         assert after.id == before.id
         for field in ("service", "site", "folder", "file_types", "query", "query_id"):

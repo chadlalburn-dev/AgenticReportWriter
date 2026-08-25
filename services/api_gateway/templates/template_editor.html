@@ -367,6 +367,51 @@
         {%- endif %}
 
         {# ------------------------------------------------ identity -#}
+
+        {#- ----------------------------------------------------- tabs -#}
+        {#- Radios, not buttons, and no JavaScript.
+
+            The form was one column about two thousand pixels tall, so
+            configuring a section meant scrolling past every source and
+            checking a source meant scrolling back.
+
+            Every panel stays inside this one <form> and every field is still
+            submitted — hidden or not — because the alternative is tabs that
+            navigate, and tabs that navigate throw away unsaved edits. `hidden`
+            here affects rendering only, exactly as the source rows' kind
+            fieldsets already do.
+
+            Radios rather than a JS tablist because core flows have to work
+            with scripting off. They also come with keyboard support and a
+            group role for free, which a div-and-onclick tablist would have to
+            reimplement and usually gets wrong.
+
+            The radios must precede the panels: the CSS selects a panel with
+            `:checked ~`, which only reaches later siblings. -#}
+        {%- for t in tabs %}
+        <input class="rg-tabs__radio" type="radio" name="ed_tab" id="ed-tab-{{ t.id }}"
+               value="{{ t.id }}"{% if t.active %} checked{% endif %}>
+        {%- endfor %}
+
+        <div class="rg-tabs__bar">
+          {%- for t in tabs %}
+          {#- The counts are the reason this is safe. A hidden panel can hold
+              the error that refused a save, so each tab carries its own count
+              and the server opens whichever tab holds the first error. -#}
+          <label class="rg-tabs__tab" for="ed-tab-{{ t.id }}"
+                 data-tab="{{ t.id }}">
+            <span>{{ t.label }}</span>
+            {%- if t.n_errors %}
+            <span class="rg-tabs__badge rg-tabs__badge--error">{{ t.n_errors }}</span>
+            <span class="rg-vh">{{ t.n_errors }} problem{{ '' if t.n_errors == 1 else 's' }} to fix</span>
+            {%- elif t.n_warnings %}
+            <span class="rg-tabs__badge">{{ t.n_warnings }}</span>
+            <span class="rg-vh">{{ t.n_warnings }} thing{{ '' if t.n_warnings == 1 else 's' }} to look at</span>
+            {%- endif %}
+          </label>
+          {%- endfor %}
+        </div>
+        <div class="rg-tabs__panel rg-tabs__panel--details">
         {% call ui.card('What this report is', 'The header of the file, and what the gallery shows.') %}
           <div class="rg-stack-16">
 
@@ -499,8 +544,10 @@
 
           </div>
         {% endcall %}
+        </div>
 
         {# -------------------------------------------------- inputs -#}
+        <div class="rg-tabs__panel rg-tabs__panel--inputs">
         {% call ui.card('What you are asked for', 'One field per input on the run form. Use {{inputs.the_id}} to drop the answer into a query, a search or a lookup below.') %}
           <div class="rg-stack-16">
 
@@ -539,8 +586,10 @@
 
           </div>
         {% endcall %}
+        </div>
 
         {# ------------------------------------------------- sources -#}
+        <div class="rg-tabs__panel rg-tabs__panel--sources">
         {% call ui.card('Where the data comes from', 'Each source is one place to read from. Sections below pick from this list — so a section can never point at something that is not here.') %}
           <div class="rg-stack-16">
 
@@ -718,8 +767,10 @@
 
           </div>
         {% endcall %}
+        </div>
 
         {# ------------------------------------------------ sections -#}
+        <div class="rg-tabs__panel rg-tabs__panel--sections">
         {% call ui.card('The sections', 'In order. Each one is written from its instruction and whatever its sources return.') %}
           <div class="rg-stack-16">
 
@@ -820,8 +871,10 @@
 
           </div>
         {% endcall %}
+        </div>
 
         {# ------------------------------------------------ citation -#}
+        <div class="rg-tabs__panel rg-tabs__panel--output">
         {% call ui.card('Citations', 'How closely the draft has to point back at its evidence.') %}
           <div class="rg-stack-16">
             {{ ed_check('citation_required', 'Every claim must carry a citation', citation.required,
@@ -870,6 +923,7 @@
             </p>
           </div>
         {% endcall %}
+        </div>
         {%- elif checked %}
         {{ ui.banner('ok', 'Checked — nothing to fix', 'This template is ready to save.') }}
         {%- endif %}

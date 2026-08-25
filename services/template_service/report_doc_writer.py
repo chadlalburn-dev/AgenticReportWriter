@@ -625,17 +625,26 @@ def draft_from_text(text: str, *, report_type: str = "") -> TemplateDraft:
             required=bool(
                 item.get("required", _KIND_REQUIRED_DEFAULT.get(kind, True))
             ),
-            dataset=str(item.get("dataset", "") or ""),
-            query_id=str(item.get("query_id", "") or ""),
             sql=str(item.get("sql", "") or "").rstrip("\n"),
-            space=str(item.get("space", "") or ""),
-            cql=str(item.get("cql", "") or ""),
-            page_id=str(item.get("page_id", "") or ""),
             filter_tags=[str(t) for t in (item.get("filter_tags") or [])],
-            connector=str(item.get("connector", "") or ""),
-            endpoint=str(item.get("endpoint", "") or ""),
             params={
                 str(k): str(v) for k, v in (item.get("params") or {}).items()
+            },
+            # Every remaining scalar comes from _KIND_FIELDS rather than a
+            # hand-written list. That list is how `service`, `site`, `folder`,
+            # `file_types` and `query` were silently dropped when the Oracle and
+            # SharePoint kinds arrived: the writer emitted them, the reader never
+            # looked for them, and an editor round trip wiped the one setting
+            # that says which database a figure came from.
+            #
+            # The round-trip test missed it because both sides were empty and so
+            # compared equal. Driving this from the same table the writer uses
+            # means a new kind cannot be half-wired again.
+            **{
+                name: str(item.get(name, "") or "")
+                for _kind, names in _KIND_FIELDS.items()
+                for name in names
+                if name not in ("sql", "filter_tags")
             },
         )
         draft.sources.append(src)

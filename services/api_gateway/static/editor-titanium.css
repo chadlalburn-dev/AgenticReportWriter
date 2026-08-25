@@ -316,3 +316,112 @@
 /* Sits directly above .rg-issues__row and reads as one block with it, so
    it takes the same measure rather than running the panel's full width. */
 .ti .rg-card__sub { max-width: var(--ti-measure); }
+
+/* --- Tabs --------------------------------------------------------------- */
+/* Radios and CSS, no JavaScript.
+   ---------------------------------------------------------------------------
+   The form was one column about two thousand pixels tall: configuring a section
+   meant scrolling past every source, and checking a source meant scrolling back.
+
+   Every panel stays inside the one <form> and every field is still submitted,
+   hidden or not. That is the whole reason this is CSS and not navigation —
+   tabs that navigate discard unsaved edits, which in an editor is worse than
+   scrolling.
+
+   `display: none` on a panel does not stop its inputs being submitted; only
+   detaching them from the form would, and nothing here does that. The source
+   rows' per-kind fieldsets already rely on the same fact. */
+
+.rg-tabs__radio {
+  /* Off-screen rather than display:none — a display:none radio is not
+     focusable, and these ARE the keyboard interface for the tab strip. Native
+     radios give arrow-key navigation and a group role for free, which is most
+     of why this is not a div-and-onclick tablist. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.rg-tabs__bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ti-4);
+  border-bottom: 1px solid var(--ti-line);
+  margin-bottom: var(--ti-16);
+}
+
+.rg-tabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ti-6);
+  padding: var(--ti-8) var(--ti-14);
+  font-size: var(--ti-14);
+  color: var(--ti-mut);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  /* Pulls the 2px rule down onto the bar's 1px border so the active tab reads
+     as joined to its panel rather than floating above it. */
+  margin-bottom: -1px;
+  white-space: nowrap;
+}
+
+.rg-tabs__tab:hover { color: var(--ti-ink); }
+
+.rg-tabs__panel { display: none; }
+
+/* One rule per tab. `:checked ~` only reaches later siblings, which is why the
+   radios sit above the bar and the panels in the markup. */
+#ed-tab-details:checked  ~ .rg-tabs__panel--details,
+#ed-tab-inputs:checked   ~ .rg-tabs__panel--inputs,
+#ed-tab-sources:checked  ~ .rg-tabs__panel--sources,
+#ed-tab-sections:checked ~ .rg-tabs__panel--sections,
+#ed-tab-output:checked   ~ .rg-tabs__panel--output { display: block; }
+
+#ed-tab-details:checked  ~ .rg-tabs__bar [data-tab="details"],
+#ed-tab-inputs:checked   ~ .rg-tabs__bar [data-tab="inputs"],
+#ed-tab-sources:checked  ~ .rg-tabs__bar [data-tab="sources"],
+#ed-tab-sections:checked ~ .rg-tabs__bar [data-tab="sections"],
+#ed-tab-output:checked   ~ .rg-tabs__bar [data-tab="output"] {
+  color: var(--ti-ink);
+  border-bottom-color: var(--ti-accent);
+  font-weight: 500;
+}
+
+/* The radio is off-screen, so the ring has to be drawn on its label or
+   keyboard users get no visible focus at all. Same treatment as every other
+   control, not a new one. */
+#ed-tab-details:focus-visible  ~ .rg-tabs__bar [data-tab="details"],
+#ed-tab-inputs:focus-visible   ~ .rg-tabs__bar [data-tab="inputs"],
+#ed-tab-sources:focus-visible  ~ .rg-tabs__bar [data-tab="sources"],
+#ed-tab-sections:focus-visible ~ .rg-tabs__bar [data-tab="sections"],
+#ed-tab-output:focus-visible   ~ .rg-tabs__bar [data-tab="output"] {
+  outline: 2px solid var(--ti-accent);
+  outline-offset: 2px;
+  border-radius: var(--ti-r-focus);
+}
+
+.rg-tabs__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  padding: 0 var(--ti-4);
+  border-radius: 999px;
+  background: var(--ti-field);
+  color: var(--ti-sec);
+  font-size: var(--ti-10);
+  font-family: var(--ti-mono);
+}
+
+/* A count of things that BLOCK a save reads differently from a count of things
+   worth a look, and a hidden panel is exactly where that difference matters. */
+.rg-tabs__badge--error { background: var(--ti-accent); color: #FFFFFF; }
+
+@media print {
+  /* Printing an editor should give the whole form, not whichever tab happened
+     to be open. */
+  .rg-tabs__panel { display: block !important; }
+  .rg-tabs__bar { display: none; }
+}

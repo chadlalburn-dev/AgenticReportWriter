@@ -6302,6 +6302,16 @@ def editor_context(
                 "cql": row.cql,
                 "page_id": row.page_id,
                 "filter_tags": ", ".join(row.filter_tags or []),
+                # The Oracle and SharePoint fields. Without these the row was
+                # seeded from SOURCE_FIELD_NAMES as empty strings and never
+                # filled, so opening an Oracle source showed a blank Service
+                # and saving wrote the blank back — a silent wipe of the one
+                # setting that says which database a figure came from.
+                "service": row.service,
+                "site": row.site,
+                "folder": row.folder,
+                "file_types": row.file_types,
+                "query": row.query,
                 "connector": row.connector,
                 "endpoint": row.endpoint,
                 "params": format_params_text(row.params or {}),
@@ -6408,6 +6418,9 @@ def editor_context(
             for i in ordered
         ],
         "field_errors": field_errors,
+        # Built from the same issue list the cards render, so a tab's badge and
+        # its panel can never disagree about how many problems are in there.
+        "tabs": editor_tabs(issue_list),
         "n_errors": sum(1 for i in issue_list if i.severity == "error"),
         "n_warnings": sum(1 for i in issue_list if i.severity != "error"),
         "banner": dict(banner) if banner else None,
@@ -6651,3 +6664,76 @@ def probe_connection(conn: Any) -> ConnectorStatus:
             f"was checked. The settings look complete."
         ),
     )
+
+
+#: The editor's tabs, in order. Each entry is (id, label, field prefixes).
+#:
+#: The form was one column roughly two thousand pixels tall, so configuring a
+#: section meant scrolling past every source, and checking a source meant
+#: scrolling back. Tabs cut that, but they introduce a failure the single column
+#: did not have: a validation error can land on a panel nobody is looking at.
+#:
+#: Hence the prefixes. They are what lets `editor_tabs` count problems per tab,
+#: put those counts on the labels, and open the tab holding the first error —
+#: so hiding a panel never hides the reason a save was refused.
+EDITOR_TABS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "details",
+        "Details",
+        ("report_type", "title", "description", "version", "owner", "doc_heading", "tags"),
+    ),
+    ("inputs", "Inputs", ("input",)),
+    ("sources", "Sources", ("source",)),
+    ("sections", "Sections", ("section",)),
+    ("output", "Output", ("citation", "passthrough")),
+)
+
+#: Where an issue goes when its field matches no prefix. Details rather than a
+#: silent drop: an unrouted problem still has to be counted somewhere a reader
+#: will look, or the tab bar would say everything is fine while the save fails.
+_FALLBACK_TAB = "details"
+
+
+def tab_for_field(field: str) -> str:
+    """Which tab a validation issue belongs on."""
+    head = str(field or "").split(".", 1)[0]
+    head = head.split("__", 1)[0]
+    for tab_id, _label, prefixes in EDITOR_TABS:
+        # Prefix, not equality. `citation_min` and `passthrough_yaml` are whole
+        # field names rather than dotted paths, and an exact match sent both to
+        # Details — counting an Output problem against the wrong tab, which is
+        # the one thing this mapping exists to get right.
+        if any(head == p or head.startswith(p + "_") for p in prefixes):
+            return tab_id
+    return _FALLBACK_TAB
+
+
+def editor_tabs(issues: Iterable[Any] = ()) -> list[dict[str, Any]]:
+    """The tab bar: label, counts, and which one starts open.
+
+    The open tab is the first one carrying an error, falling back to the first
+    tab. Re-rendering after a refused save onto a panel that hides the reason
+    would make the app look broken rather than strict.
+    """
+    errors: dict[str, int] = {}
+    warnings: dict[str, int] = {}
+    for issue in issues or ():
+        tab = tab_for_field(getattr(issue, "field", ""))
+        bucket = errors if getattr(issue, "severity", "") == "error" else warnings
+        bucket[tab] = bucket.get(tab, 0) + 1
+
+    first_with_error = next(
+        (tab_id for tab_id, _l, _p in EDITOR_TABS if errors.get(tab_id)), ""
+    )
+    active = first_with_error or EDITOR_TABS[0][0]
+
+    return [
+        {
+            "id": tab_id,
+            "label": label,
+            "n_errors": errors.get(tab_id, 0),
+            "n_warnings": warnings.get(tab_id, 0),
+            "active": tab_id == active,
+        }
+        for tab_id, label, _prefixes in EDITOR_TABS
+    ]
