@@ -6571,3 +6571,83 @@ def unwired_connector_statuses() -> list[ConnectorStatus]:
             missing=("gcp-project", "application-default-credentials"),
         ),
     ]
+
+
+def probe_connection(conn: Any) -> ConnectorStatus:
+    """Actually reach out to a configured connection.
+
+    The only function in this module that touches a network, and it runs only
+    when someone presses Test. Every `status()` above answers from configuration
+    alone, because a probe on a page render is what made every page in this app
+    take sixteen seconds — and because "not checked" has to mean nobody checked,
+    rather than "we checked quietly and did not say".
+
+    Credentials are read from the environment here, at the moment of use, using
+    the variable names the connection stores. They are never held on the
+    connection and never written to disk.
+    """
+    settings = dict(getattr(conn, "settings", {}) or {})
+    kind = str(getattr(conn, "kind", ""))
+    cid = str(getattr(conn, "id", ""))
+
+    base = conn.status()
+    if not base.configured:
+        return base
+
+    def env(name_key: str) -> str:
+        return os.environ.get(settings.get(name_key, ""), "")
+
+    # Check the variables THIS connection names, before handing off to an
+    # executor that would otherwise fall back to its own defaults and tell the
+    # reader to set a variable their connection does not use. A connection
+    # pointing at LIMS_PROD_DSN should not be told to set
+    # REPORTGEN_ORACLE_DSN.
+    env_keys = [k for k in settings if k.endswith("_env")]
+    empty = [settings[k] for k in sorted(env_keys) if not os.environ.get(settings[k], "")]
+    if empty:
+        return ConnectorStatus(
+            connector_id=cid,
+            kind=kind,
+            configured=False,
+            reachable=None,
+            detail=(
+                f"{', '.join(empty)} "
+                f"{'is' if len(empty) == 1 else 'are'} not set in this "
+                f"process's environment, so there is nothing to connect with. "
+                f"The connection itself is configured correctly."
+            ),
+            missing=tuple(empty),
+        )
+
+    if kind == "oracle":
+        from services.data_integration.oracle_executor import OracleQueryExecutor
+
+        return OracleQueryExecutor(
+            service=settings.get("service", cid),
+            dsn=env("dsn_env"),
+            user=env("user_env"),
+            password=env("password_env"),
+        ).probe()
+
+    if kind == "sharepoint":
+        from services.api_integration.sharepoint import SharePointConnector
+
+        return SharePointConnector(
+            tenant_id=env("tenant_env"),
+            client_id=env("client_env"),
+            client_secret=env("secret_env"),
+        ).probe()
+
+    # BigQuery and Confluence have no probe of their own yet. Saying so is the
+    # honest answer; inventing a green tick for an untested path is the exact
+    # failure this vocabulary exists to prevent.
+    return ConnectorStatus(
+        connector_id=cid,
+        kind=kind,
+        configured=True,
+        reachable=None,
+        detail=(
+            f"No connection test exists for a {kind} connection yet, so nothing "
+            f"was checked. The settings look complete."
+        ),
+    )

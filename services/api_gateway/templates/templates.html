@@ -26,15 +26,28 @@
 {% block page_title %}Templates — Report Generator{% endblock %}
 
 {% macro tpl_row(c) %}
-<a class="ti-lrow ti-lrow--tpl" href="/new/{{ c.key }}"
-   {% if c.tag_tokens %}data-tags="{{ c.tag_tokens | join(' ') }}"{% endif %}
-   aria-label="{{ c.title }} — set up a run{% if c.tag_aria %}. Tagged {{ c.tag_aria }}{% endif %}">
+{#- A row with two destinations, not one.
+
+    This was a single row-wide <a> pointing at /new/{key}, which meant the whole
+    templates page could only ever start a run. The editor existed, was routed,
+    was tested — and had no link anywhere in the UI, so the only way to reach it
+    was to type the URL. A feature nobody can navigate to is a feature that does
+    not exist.
+
+    The row is a <div> now because an <a> cannot contain another <a>. The title
+    link keeps the run destination, since that is what someone opening this page
+    usually wants; Configure is a sibling in its own grid cell, not nested. -#}
+<div class="ti-lrow ti-lrow--tpl"
+     {% if c.tag_tokens %}data-tags="{{ c.tag_tokens | join(' ') }}"{% endif %}>
   <div style="min-width:0">
-    <p class="ti-lrow__title" title="{{ c.title }}">{{ c.title }}</p>
+    <p class="ti-lrow__title" title="{{ c.title }}">
+      <a class="ti-lrow__link" href="/new/{{ c.key }}"
+         aria-label="{{ c.title }} — set up a run{% if c.tag_aria %}. Tagged {{ c.tag_aria }}{% endif %}">{{ c.title }}</a>
+    </p>
     {#- Scope first, before the owner. "Who else can see this" is the fact a
         reader needs and cannot infer from anything else on the row, and it is
-        the one that changes what pressing Edit means: on a shared template it
-        changes the report everyone else gets. -#}
+        the one that changes what pressing Configure means: on a shared template
+        it changes the report everyone else gets. -#}
     <p class="ti-lrow__sub" title="{{ 'Only you can see this' if c.scope == 'user' else 'Shared with everyone using this app' }} — {{ c.owner or 'unowned' }} — v{{ c.version }}">
       {%- if c.scope == 'user' %}Just me{% else %}Everyone{% endif %} &middot;
       {{ c.owner or 'unowned' }} &middot; v{{ c.version }}</p>
@@ -59,8 +72,13 @@
     </div>
   </div>
   <span class="ti-lrow__num">{{ c.n_sections }}</span>
-  <span class="ti-lrow__arrow">{{ ic.icon('arrow') }}</span>
-</a>
+  {#- Spelled "Configure", not "Edit". What is behind it is the sources, the
+      section guidance and the figures — editing the report's wiring, not its
+      prose — and "Edit" invites the reading that you are about to type on the
+      document itself. -#}
+  <a class="ti-lrow__act" href="/templates/{{ c.key }}/edit"
+     aria-label="Configure {{ c.title }} — sources, sections and figures">Configure</a>
+</div>
 {% endmacro %}
 
 {% macro tpl_panel(rows) %}
@@ -69,7 +87,7 @@
     <span role="columnheader">template &middot; who can see it &middot; owner</span>
     <span role="columnheader" style="justify-self:end">sources ready</span>
     <span role="columnheader">sections</span>
-    <span></span>
+    <span role="columnheader">configure</span>
   </div>
   {%- for c in rows %}{{ tpl_row(c) }}{% endfor %}
 </div>

@@ -6,7 +6,7 @@
 {#- Status vocabulary is the system's existing one, not a new one.
 
     The dot has two states by design — `--on` for resolved, a hollow `--off`
-    ring for absence — and titanium.css says why at length: absence stays a
+    ring for absence — and titanium.css explains why at length: absence stays a
     ring so the accent budget is spent on words rather than decoration, and a
     third dot colour would be a fourth status vocabulary in an app that already
     has three.
@@ -14,7 +14,7 @@
     So the dot answers "usable or not" and `.ti-state--ok/--bad/--neutral`
     carries the specific answer in words. That matters most for "Not checked",
     which is neither good news nor bad and must not render as either. -#}
-{%- macro conn_row(c) %}
+{%- macro conn_row(c, actions=false) %}
 <div class="ti-lrow ti-lrow--conn">
   {#- `title` on the two truncatable columns. The suite enforces this: a class
       that can ellipsis has to carry the full value somewhere recoverable, or a
@@ -24,13 +24,26 @@
     <span class="ti-code">{{ c.connector_id }}</span>
   </span>
   <span class="ti-lrow__sub" title="{{ c.kind }}">{{ c.kind }}</span>
-  <span class="ti-state ti-state--{{ c.state_class }}">
-    {{- c.label -}}
-  </span>
+  <span class="ti-state ti-state--{{ c.state_class }}">{{- c.label -}}</span>
   {#- Not `ti-lrow__sub`: that class's contract is "I truncate", and this column
       deliberately wraps instead. Wearing it would be a claim about behaviour
       the CSS then contradicts. -#}
-  <span class="ti-conn__detail">{{ c.detail }}</span>
+  <span class="ti-conn__detail">
+    {{ c.detail }}
+    {%- if actions %}
+    <span class="ti-conn__acts">
+      <a class="ti-lrow__act" href="/connections?edit={{ c.connector_id }}">Edit</a>
+      <form method="post" action="/connections/{{ c.connector_id }}/test" class="ti-inline-form">
+        <button class="ti-lrow__act" type="submit">Test</button>
+      </form>
+      <form method="post" action="/connections" class="ti-inline-form">
+        <input type="hidden" name="op" value="delete">
+        <input type="hidden" name="id" value="{{ c.connector_id }}">
+        <button class="ti-lrow__act" type="submit">Remove</button>
+      </form>
+    </span>
+    {%- endif %}
+  </span>
 </div>
 {%- endmacro %}
 
@@ -48,6 +61,113 @@
     report with empty sections.
   </p>
 
+  {%- if flash %}
+  <p class="ti-footnote">
+    {%- if flash == 'removed' %}Connection removed.
+    {%- elif flash == 'reachable' %}That connection answered.
+    {%- elif flash == 'unreachable' %}That connection did not answer — see the detail below.
+    {%- else %}Saved.{% endif %}
+  </p>
+  {%- endif %}
+
+  {# ------------------------------------------------------------ add/edit -#}
+  <div class="ti-sec-head" style="margin-top:var(--ti-24)">
+    <h2 class="ti-h2">{% if editing %}Edit “{{ editing }}”{% else %}Add a connection{% endif %}</h2>
+  </div>
+
+  {%- if errors %}
+  {#- Every problem at once. One-per-submission turns fixing four things into
+      four round trips. -#}
+  <div class="ti-panel" style="padding:var(--ti-12)">
+    <p class="ti-state ti-state--bad">This connection was not saved</p>
+    <ul class="ti-conn__errors">
+      {%- for e in errors %}<li>{{ e }}</li>{% endfor %}
+    </ul>
+  </div>
+  {%- endif %}
+
+  <form method="post" action="/connections" class="ti-panel ti-conn__form">
+    <input type="hidden" name="op" value="save">
+    <input type="hidden" name="editing" value="{{ editing }}">
+
+    <div class="ti-conn__grid">
+      <label class="ti-field">
+        <span class="ti-field__label">Id</span>
+        <input class="ti-input" name="id" value="{{ values.get('id', '') }}"
+               placeholder="lims_prod" required
+               {% if editing %}readonly{% endif %}>
+        <span class="ti-field__hint">
+          Lowercase letters, digits and underscores. Templates name a source by
+          this.{% if editing %} Fixed once created — renaming would orphan every
+          template pointing at it.{% endif %}
+        </span>
+      </label>
+
+      <label class="ti-field">
+        <span class="ti-field__label">Type</span>
+        <select class="ti-input" name="kind">
+          {%- for k in kinds %}
+          <option value="{{ k }}"{% if values.get('kind') == k %} selected{% endif %}>{{ k }}</option>
+          {%- endfor %}
+        </select>
+        <span class="ti-field__hint">Changing the type changes the settings below.</span>
+      </label>
+
+      <label class="ti-field">
+        <span class="ti-field__label">Label</span>
+        <input class="ti-input" name="label" value="{{ values.get('label', '') }}"
+               placeholder="LIMS production">
+        <span class="ti-field__hint">Optional. Shown instead of the id where there is room.</span>
+      </label>
+    </div>
+
+    {#- Every kind's fields are in the DOM at once, like the template editor's
+        source rows, so switching type back and forth never discards what was
+        typed. With JavaScript off they are all visible and all submitted —
+        only the chosen kind's are read, so the extra ones are inert rather
+        than harmful. -#}
+    {%- for kind, fields in kind_fields.items() %}
+    <fieldset class="ti-conn__kind" data-conn-kind="{{ kind }}"
+              {% if values.get('kind', kinds[0]) != kind %}hidden{% endif %}>
+      <legend class="ti-field__label">{{ kind }} settings</legend>
+      <div class="ti-conn__grid">
+        {%- for name, label, required in fields %}
+        <label class="ti-field">
+          <span class="ti-field__label">
+            {{ label }}{% if required %} <span class="ti-req">required</span>{% endif %}
+          </span>
+          <input class="ti-input" name="{{ name }}" value="{{ values.get(name, '') }}"
+                 {% if name in env_fields %}placeholder="REPORTGEN_ORACLE_PASSWORD"{% endif %}>
+          {%- if name in env_fields %}
+          {#- The single most important sentence on this page. Someone pasting
+              the secret here is the mistake the whole design is arranged to
+              prevent, and the form checks the shape for exactly that reason. -#}
+          <span class="ti-field__hint">
+            The <strong>name</strong> of an environment variable, not the value.
+            This app never stores the secret itself.
+          </span>
+          {%- endif %}
+        </label>
+        {%- endfor %}
+      </div>
+    </fieldset>
+    {%- endfor %}
+
+    <p class="ti-conn__submit">
+      <button class="ti-btn-primary" type="submit">
+        {% if editing %}Save changes{% else %}Add connection{% endif %}
+      </button>
+      {%- if editing %}
+      <a class="ti-lrow__act" href="/connections">Cancel</a>
+      {%- endif %}
+    </p>
+  </form>
+
+  {# --------------------------------------------------------- configured -#}
+  <div class="ti-sec-head" style="margin-top:var(--ti-32)">
+    <h2 class="ti-h2">Your connections</h2>
+  </div>
+  {%- if statuses %}
   <div class="ti-panel">
     <div class="ti-thead ti-lrow--conn" role="row">
       <span role="columnheader">source</span>
@@ -55,20 +175,41 @@
       <span role="columnheader">status</span>
       <span role="columnheader">detail</span>
     </div>
-    {%- for c in connectors %}{{ conn_row(c) }}{% endfor %}
+    {%- for c in statuses %}{{ conn_row(c, actions=true) }}{% endfor %}
+  </div>
+  <p class="ti-footnote">Stored in <span class="ti-code">{{ store_path }}</span> — settings only, never a credential.</p>
+  {%- else %}
+  <p class="ti-page__lede">None yet. Add one above.</p>
+  {%- endif %}
+
+  {# ------------------------------------------------------------ builtin -#}
+  <div class="ti-sec-head" style="margin-top:var(--ti-32)">
+    <h2 class="ti-h2">Built in</h2>
+  </div>
+  <p class="ti-page__lede">
+    Available without configuring anything. The offline fixtures say so in their
+    detail, because “reachable” alone would let a fixture pass for the real
+    system.
+  </p>
+  <div class="ti-panel">
+    <div class="ti-thead ti-lrow--conn" role="row">
+      <span role="columnheader">source</span>
+      <span role="columnheader">type</span>
+      <span role="columnheader">status</span>
+      <span role="columnheader">detail</span>
+    </div>
+    {%- for c in builtin %}{{ conn_row(c) }}{% endfor %}
   </div>
 
+  {# -------------------------------------------------------- unavailable -#}
   <div class="ti-sec-head" style="margin-top:var(--ti-32)">
     <h2 class="ti-h2">Not wired up here</h2>
   </div>
-
   <p class="ti-page__lede">
     These implement the same protocols as the sources above, so a template does
-    not change when one is swapped in. None can be reached from this machine,
-    and each says what it would need — stated here rather than left to be
-    discovered mid-run.
+    not change when one is swapped in. Each says what it would need — stated
+    here rather than left to be discovered mid-run.
   </p>
-
   <div class="ti-panel">
     <div class="ti-thead ti-lrow--conn" role="row">
       <span role="columnheader">source</span>
@@ -82,8 +223,8 @@
   <p class="ti-footnote">
     Reachability is not probed while a page renders. Asking a warehouse whether
     it is awake on every click is what previously made every page here take
-    about sixteen seconds, so a source stays “not checked” until someone asks —
-    which is also why “not checked” is shown as neither working nor broken.
+    about sixteen seconds, so a source stays “not checked” until you press Test
+    — which is also why “not checked” is shown as neither working nor broken.
   </p>
 
 </div>

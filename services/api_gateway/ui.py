@@ -18,7 +18,7 @@ import io
 import json
 import traceback
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Request
@@ -38,6 +38,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from services.api_gateway import compounds as compounds_module
 from services.api_gateway import identity as identity_module
 from services.api_gateway import runs as runs_module
+from services.api_gateway import connections as connections_module
 from services.api_gateway.runs import RunNotTerminal, get_store
 
 # ---------------------------------------------------------------------------
@@ -929,6 +930,39 @@ def _runs_url(*, q: str, group: bool) -> str:
     return "/runs?" + urlencode(params) if params else "/runs"
 
 
+CONNECTIONS_PATH = runs_module.REPO_ROOT / "var" / "connections.json"
+
+
+def _connection_store() -> connections_module.ConnectionStore:
+    return connections_module.ConnectionStore(CONNECTIONS_PATH)
+
+
+def _connections_context(
+    request: Request,
+    *,
+    errors: Sequence[str] = (),
+    form_values: Mapping[str, str] | None = None,
+    editing: str = "",
+    flash: str = "",
+) -> dict[str, Any]:
+    store = _connection_store()
+    configured = store.load()
+    return {
+        "configured": configured,
+        "statuses": [connections_module.effective_status(c) for c in configured],
+        "builtin": runs_module.connector_statuses(),
+        "unavailable": runs_module.unwired_connector_statuses(),
+        "kind_fields": connections_module.KIND_FIELDS,
+        "env_fields": connections_module.ENV_FIELDS,
+        "kinds": sorted(connections_module.KIND_FIELDS),
+        "errors": list(errors),
+        "values": dict(form_values or {}),
+        "editing": editing,
+        "flash": flash,
+        "store_path": str(store.path),
+    }
+
+
 @router.get(
     "/connections",
     response_class=HTMLResponse,
@@ -938,21 +972,101 @@ def _runs_url(*, q: str, group: bool) -> str:
 def connections(request: Request) -> HTMLResponse:
     """Where report data can come from, and what can be reached from here.
 
-    Split into wired-up and not, because those are different questions for a
-    reader: one is "is this working", the other is "why can I not use this
-    yet". Collapsing them into a single list of red dots would bury the first
-    behind the second.
+    Split three ways because they are three different questions: what someone
+    configured, what ships built in, and what exists in the code but cannot be
+    reached. Collapsing them into one list of red dots would bury the first
+    behind the third.
     """
-    statuses = runs_module.connector_statuses()
+    editing = str(request.query_params.get("edit") or "").strip()
+    values: dict[str, str] = {}
+    if editing:
+        existing = _connection_store().get(editing)
+        if existing is not None:
+            values = {"id": existing.id, "kind": existing.kind, "label": existing.label}
+            values.update(existing.settings)
     return _render(
         request,
         "connectors.html",
-        {
-            "connectors": statuses,
-            "unavailable": runs_module.unwired_connector_statuses(),
-        },
+        _connections_context(
+            request,
+            form_values=values,
+            editing=editing,
+            flash=str(request.query_params.get("saved") or ""),
+        ),
         nav_active="connections",
     )
+
+
+@router.post("/connections", name="connection_save", include_in_schema=False)
+async def connection_save(request: Request) -> Response:
+    form = await request.form()
+    action = str(form.get("op") or "save").strip()
+    store = _connection_store()
+
+    if action == "delete":
+        removed = str(form.get("id") or "").strip()
+        store.remove(removed)
+        connections_module.forget_probe(removed)
+        return RedirectResponse("/connections?saved=removed", status_code=303)
+
+    kind = str(form.get("kind") or "").strip()
+    conn = connections_module.Connection(
+        id=str(form.get("id") or "").strip().lower(),
+        kind=kind,
+        label=" ".join(str(form.get("label") or "").split()),
+        settings={
+            name: str(form.get(name) or "").strip()
+            for name, _label, _required in connections_module.KIND_FIELDS.get(kind, ())
+        },
+    )
+
+    # An edit keeps its own id out of the taken list, or saving a connection
+    # unchanged would report that it collides with itself.
+    editing = str(form.get("editing") or "").strip()
+    taken = tuple(c.id for c in store.load() if c.id != editing)
+    problems = connections_module.validate(conn, taken)
+
+    if problems:
+        values = {"id": conn.id, "kind": conn.kind, "label": conn.label}
+        values.update(conn.settings)
+        return _render(
+            request,
+            "connectors.html",
+            _connections_context(
+                request, errors=problems, form_values=values, editing=editing
+            ),
+            nav_active="connections",
+            status_code=422,
+        )
+
+    store.upsert(conn)
+    # A result obtained against the previous settings says nothing about these.
+    connections_module.forget_probe(conn.id)
+    return RedirectResponse("/connections?saved=1", status_code=303)
+
+
+@router.post("/connections/{connection_id}/test", name="connection_test", include_in_schema=False)
+def connection_test(request: Request, connection_id: str) -> Response:
+    """Actually reach out. Only from here, never from a page render.
+
+    This is the one place a probe happens, because probing on render is what
+    made every page in this app take sixteen seconds — and because a status
+    that says "not checked" has to mean nobody checked, not "we checked
+    quietly and are not telling you".
+    """
+    conn = _connection_store().get(connection_id)
+    if conn is None:
+        raise StarletteHTTPException(
+            status_code=404, detail=f"No connection called {connection_id!r}."
+        )
+    result = runs_module.probe_connection(conn)
+    connections_module.record_probe(connection_id, result)
+    return RedirectResponse(
+        f"/connections?saved={'reachable' if result.reachable else 'unreachable'}",
+        status_code=303,
+    )
+
+
 
 
 @router.get("/runs", response_class=HTMLResponse, name="run_list", include_in_schema=False)

@@ -339,12 +339,17 @@ def test_gxp_changes_nothing_about_a_template_card_except_its_tags(client, store
 def test_the_gxp_chip_is_visually_identical_to_every_other_tag_chip(client):
     submit(client, "/templates", draft_form("probe_gxp", **{"tags__compliance": "gxp"}))
     html = client.get("/templates?group=none").text
-    # Titanium renders each template as one <a class="ti-lrow"> row.
-    row = re.search(
-        r"<a[^>]*href=\"/new/probe_gxp\"(?:(?!</a>).)*?</a>", html, re.S
-    )
-    assert row, "probe_gxp row not found on the templates page"
-    card = row.group(0)
+    # A row is a <div class="ti-lrow ti-lrow--tpl"> holding two links: the title
+    # runs the template, Configure edits it. It used to be one row-wide <a>, and
+    # this locator matched that anchor — which now wraps only the title, so the
+    # chips fell outside the extracted card and the test reported "no GxP chip
+    # rendered" for markup that renders it perfectly well.
+    #
+    # Split on the row container instead of pattern-matching a tag whose shape
+    # is incidental to what is being asserted.
+    chunks = html.split('<div class="ti-lrow ti-lrow--tpl"')
+    card = next((c for c in chunks if 'href="/new/probe_gxp"' in c), "")
+    assert card, "probe_gxp row not found on the templates page"
     classes = re.findall(r'<span class="(ti-tag)"[^>]*>([^<]*)', card)
     gxp = [c for c, label in classes if label.strip() == "GxP"]
     others = [c for c, label in classes if label.strip() not in ("GxP", "")]

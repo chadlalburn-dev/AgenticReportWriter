@@ -123,3 +123,8 @@ design-export.zip
 # person. Someone's own drafts are theirs, and committing them would publish
 # to the repository the thing the scope exists to keep out of the shared list.
 report-templates/users/
+
+# Configured connections are machine state, not source.
+# Settings only — never a credential — but still per-machine: a DSN and a
+# service name are this deployment's, not the repository's.
+var/connections.json
