@@ -49,6 +49,7 @@ from services.api_integration.connector import (
     ApiOperationError,
 )
 from shared.connectivity import ConnectorStatus, unchecked, unconfigured
+from shared.http_transport import HttpTransport
 
 _COLUMNS = ("file_id", "name", "path", "modified", "excerpt")
 
@@ -249,12 +250,19 @@ class SharePointConnector(ApiConnector):
         tenant_id: str | None = None,
         client_id: str | None = None,
         client_secret: str | None = None,
-        timeout_s: int = 30,
+        transport: HttpTransport | None = None,
     ) -> None:
         self._tenant = tenant_id or os.environ.get(ENV_TENANT, "")
         self._client = client_id or os.environ.get(ENV_CLIENT, "")
         self._secret = client_secret or os.environ.get(ENV_SECRET, "")
-        self._timeout_s = timeout_s
+        #: Proxy, trust store and timeout. Without this every call went out with
+        #: no proxy and the default CA set, which on a GSK laptop fails against
+        #: the TLS-inspecting proxy before it ever reaches Graph.
+        self._transport = transport or HttpTransport()
+
+    @property
+    def _timeout_s(self) -> float:
+        return self._transport.timeout_s
 
     # -- connectivity -------------------------------------------------------
 
@@ -302,7 +310,10 @@ class SharePointConnector(ApiConnector):
             kind="sharepoint",
             configured=True,
             reachable=True,
-            detail="Graph issued a token for the configured registration.",
+            detail=(
+                f"Graph issued a token for the configured registration "
+                f"({self._transport.describe()})."
+            ),
         )
 
     # -- calls --------------------------------------------------------------
@@ -351,7 +362,8 @@ class SharePointConnector(ApiConnector):
         url = f"https://login.microsoftonline.com/{self._tenant}/oauth2/v2.0/token"
         req = urllib.request.Request(url, data=body, method="POST")
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
-        with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:  # noqa: S310
+        opener = self._transport.opener()
+        with opener.open(req, timeout=self._timeout_s) as resp:  # noqa: S310
             token = json.loads(resp.read().decode("utf-8")).get("access_token")
         if not token:
             raise ApiOperationError("Graph returned no access_token")
@@ -365,7 +377,8 @@ class SharePointConnector(ApiConnector):
         req.add_header("Authorization", f"Bearer {self._token()}")
         req.add_header("Accept", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:  # noqa: S310
+            opener = self._transport.opener()
+            with opener.open(req, timeout=self._timeout_s) as resp:  # noqa: S310
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:  # pragma: no cover - network dependent
             raise ApiOperationError(f"Graph request failed: {_short(exc)}") from exc

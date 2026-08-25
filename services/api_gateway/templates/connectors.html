@@ -131,14 +131,34 @@
               {% if values.get('kind', kinds[0]) != kind %}hidden{% endif %}>
       <legend class="ti-field__label">{{ kind }} settings</legend>
       <div class="ti-conn__grid">
-        {%- for name, label, required in fields %}
-        <label class="ti-field">
+        {#- Every field the kind can have is rendered, and the ones the current
+            auth mode does not use are marked. With JavaScript off they are all
+            visible and all submitted, which is deliberate: switching mode must
+            not discard what was already typed. `fields_for` decides what is
+            required; nothing decides what is thrown away. -#}
+        {%- set active = fields_for(kind, values) %}
+        {%- set active_names = active | map(attribute='name') | list %}
+        {%- for f in fields %}
+        <label class="ti-field{% if f.name not in active_names %} ti-field--dim{% endif %}">
           <span class="ti-field__label">
-            {{ label }}{% if required %} <span class="ti-req">required</span>{% endif %}
+            {{ f.label }}
+            {%- if f.required and f.name in active_names %} <span class="ti-req">required</span>{% endif %}
+            {%- if f.name not in active_names %} <span class="ti-field__na">not used by this mode</span>{% endif %}
           </span>
-          <input class="ti-input" name="{{ name }}" value="{{ values.get(name, '') }}"
-                 {% if name in env_fields %}placeholder="REPORTGEN_ORACLE_PASSWORD"{% endif %}>
-          {%- if name in env_fields %}
+          {%- if f.control == 'choice' %}
+          <select class="ti-input" name="{{ f.name }}">
+            {%- for cid, clabel in f.choices %}
+            <option value="{{ cid }}"
+                    {% if values.get(f.name, default_choice.get((kind, f.name), '')) == cid %}selected{% endif %}>
+              {{- clabel -}}
+            </option>
+            {%- endfor %}
+          </select>
+          {%- else %}
+          <input class="ti-input" name="{{ f.name }}" value="{{ values.get(f.name, '') }}"
+                 {% if f.name in env_fields %}placeholder="LIMS_PROD_PASSWORD"{% endif %}>
+          {%- endif %}
+          {%- if f.name in env_fields %}
           {#- The single most important sentence on this page. Someone pasting
               the secret here is the mistake the whole design is arranged to
               prevent, and the form checks the shape for exactly that reason. -#}
@@ -146,6 +166,8 @@
             The <strong>name</strong> of an environment variable, not the value.
             This app never stores the secret itself.
           </span>
+          {%- elif f.hint %}
+          <span class="ti-field__hint">{{ f.hint }}</span>
           {%- endif %}
         </label>
         {%- endfor %}

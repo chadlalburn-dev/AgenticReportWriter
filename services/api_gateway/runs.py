@@ -56,6 +56,7 @@ from services.api_integration import (
 from services.api_integration.sharepoint import MockSharePointConnector
 from services.audit import AuditEvent, AuditSink, AuditStore, InMemoryAuditStore
 from shared.connectivity import ConnectorStatus
+from shared.http_transport import HttpTransport
 from services.audit.schema import AuditAction
 from services.data_integration import (
     NamedQueryRegistry,
@@ -6615,7 +6616,13 @@ def probe_connection(conn: Any) -> ConnectorStatus:
     # reader to set a variable their connection does not use. A connection
     # pointing at LIMS_PROD_DSN should not be told to set
     # REPORTGEN_ORACLE_DSN.
-    env_keys = [k for k in settings if k.endswith("_env")]
+    # Only the variables this connection's chosen auth mode actually uses. A
+    # Kerberos Oracle connection has no username, so checking for one would
+    # report a correct connection as unconfigured.
+    from services.api_gateway.connections import fields_for
+
+    applicable = {f.name for f in fields_for(kind, settings)}
+    env_keys = [k for k in settings if k.endswith("_env") and k in applicable]
     empty = [settings[k] for k in sorted(env_keys) if not os.environ.get(settings[k], "")]
     if empty:
         return ConnectorStatus(
@@ -6640,6 +6647,8 @@ def probe_connection(conn: Any) -> ConnectorStatus:
             dsn=env("dsn_env"),
             user=env("user_env"),
             password=env("password_env"),
+            auth_mode=settings.get("auth_mode", "kerberos"),
+            wallet_dir=settings.get("wallet_dir", ""),
         ).probe()
 
     if kind == "sharepoint":
@@ -6649,11 +6658,19 @@ def probe_connection(conn: Any) -> ConnectorStatus:
             tenant_id=env("tenant_env"),
             client_id=env("client_env"),
             client_secret=env("secret_env"),
+            transport=HttpTransport.from_settings(settings),
         ).probe()
 
-    # BigQuery and Confluence have no probe of their own yet. Saying so is the
-    # honest answer; inventing a green tick for an untested path is the exact
-    # failure this vocabulary exists to prevent.
+    if kind == "bigquery":
+        # GSK signs in to GCP with Google SSO, so the question a probe answers
+        # is whether Application Default Credentials are present — that is the
+        # SSO session, not a key file. Checked without importing the BigQuery
+        # client, which lives in an optional extra.
+        return _probe_google_credentials(cid, settings)
+
+    # Confluence has no probe of its own yet. Saying so is the honest answer;
+    # inventing a green tick for an untested path is the exact failure this
+    # vocabulary exists to prevent.
     return ConnectorStatus(
         connector_id=cid,
         kind=kind,
@@ -6661,7 +6678,63 @@ def probe_connection(conn: Any) -> ConnectorStatus:
         reachable=None,
         detail=(
             f"No connection test exists for a {kind} connection yet, so nothing "
-            f"was checked. The settings look complete."
+            f"was checked. The settings look complete "
+            f"({HttpTransport.from_settings(settings).describe()})."
+        ),
+    )
+
+
+def _probe_google_credentials(cid: str, settings: dict[str, str]) -> ConnectorStatus:
+    """Are there usable Google credentials for this project?
+
+    Deliberately checks credentials rather than running a query. A SELECT would
+    also be a bill and a permission surface; "can this app prove who it is to
+    Google" is the question someone pressing Test is asking, and it is the one
+    that fails first.
+    """
+    mode = settings.get("auth_mode", "adc")
+    try:
+        import google.auth  # type: ignore[import-not-found]
+    except ImportError:
+        return ConnectorStatus(
+            connector_id=cid,
+            kind="bigquery",
+            configured=False,
+            reachable=None,
+            detail=(
+                "The google-auth library is not installed. Install the "
+                "project's [gcp] extra."
+            ),
+            missing=("google-auth",),
+        )
+    try:
+        _credentials, project = google.auth.default()
+    except Exception as exc:  # noqa: BLE001 - any failure is a failed probe
+        return ConnectorStatus(
+            connector_id=cid,
+            kind="bigquery",
+            configured=True,
+            reachable=False,
+            detail=(
+                f"No Google credentials on this machine: {str(exc).splitlines()[0][:150]} "
+                f"Run `gcloud auth application-default login` to sign in with SSO."
+            ),
+        )
+    named = settings.get("project", "")
+    note = ""
+    if named and project and named != project:
+        # Worth saying rather than silently proceeding: the credentials work,
+        # but they are for somewhere else, and the query would run against a
+        # project nobody configured.
+        note = f" Credentials default to {project!r}, not {named!r}."
+    return ConnectorStatus(
+        connector_id=cid,
+        kind="bigquery",
+        configured=True,
+        reachable=True,
+        detail=(
+            f"Google credentials present ({mode}).{note} This confirms sign-in "
+            f"only — VPC-SC may still refuse the query from this network."
         ),
     )
 

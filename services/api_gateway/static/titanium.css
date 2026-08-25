@@ -2724,3 +2724,15 @@ button.ti-lrow__act {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+
+/* A setting the current auth mode does not use. Dimmed rather than removed:
+   it is still in the DOM and still submitted, so switching mode back does not
+   find the field empty. Saying "not used by this mode" beats leaving someone
+   to guess why a field they filled in has no effect. */
+.ti-field--dim { opacity: 0.55; }
+.ti-field__na {
+  font-size: var(--ti-10);
+  color: var(--ti-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}

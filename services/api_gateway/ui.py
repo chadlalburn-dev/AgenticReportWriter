@@ -953,6 +953,8 @@ def _connections_context(
         "builtin": runs_module.connector_statuses(),
         "unavailable": runs_module.unwired_connector_statuses(),
         "kind_fields": connections_module.KIND_FIELDS,
+        "fields_for": connections_module.fields_for,
+        "default_choice": connections_module.DEFAULT_CHOICE,
         "env_fields": connections_module.ENV_FIELDS,
         "kinds": sorted(connections_module.KIND_FIELDS),
         "errors": list(errors),
@@ -1014,9 +1016,23 @@ async def connection_save(request: Request) -> Response:
         id=str(form.get("id") or "").strip().lower(),
         kind=kind,
         label=" ".join(str(form.get("label") or "").split()),
+        # Every field the kind can have, not only those the current mode uses:
+        # switching mode back and forth must not discard what was typed, which
+        # is the same rule the template editor's per-kind source fieldsets
+        # follow. `fields_for` decides what is *required*; this decides what is
+        # *kept*.
+        # Choice fields fall back to their documented default when the form
+        # omits them. Without this a posted connection that never mentioned
+        # `auth_mode` failed validation as "How it authenticates is required" —
+        # a required field the form had already answered by having a default.
         settings={
-            name: str(form.get(name) or "").strip()
-            for name, _label, _required in connections_module.KIND_FIELDS.get(kind, ())
+            **connections_module.default_settings(kind),
+            **{
+                f.name: value
+                for f in connections_module.KIND_FIELDS.get(kind, ())
+                if (value := str(form.get(f.name) or "").strip())
+                or f.control != "choice"
+            },
         },
     )
 

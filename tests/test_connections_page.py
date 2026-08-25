@@ -58,15 +58,30 @@ def post(client: TestClient, path: str, fields: list[tuple[str, str]]):
     )
 
 
+#: A password-mode Oracle connection. `auth_mode` is stated rather than left to
+#: the default: the default is now Kerberos, which needs no username at all, and
+#: a fixture that relies on an unstated default tests whatever the default
+#: happens to be that week.
 ORACLE = [
     ("op", "save"),
     ("id", "lims_prod"),
     ("kind", "oracle"),
     ("label", "LIMS production"),
     ("service", "LIMSPRD"),
+    ("auth_mode", "password"),
     ("dsn_env", "LIMS_PROD_DSN"),
     ("user_env", "LIMS_PROD_USER"),
     ("password_env", "LIMS_PROD_PW"),
+]
+
+#: Kerberos stores no credential at all, which is the point of offering it.
+ORACLE_KERBEROS = [
+    ("op", "save"),
+    ("id", "lims_sso"),
+    ("kind", "oracle"),
+    ("service", "LIMSPRD"),
+    ("auth_mode", "kerberos"),
+    ("dsn_env", "LIMS_PROD_DSN"),
 ]
 
 
@@ -82,6 +97,7 @@ def test_a_pasted_secret_is_refused():
         kind="oracle",
         settings={
             "service": "LIMSPRD",
+            "auth_mode": "password",
             "dsn_env": "host:1521/SVC",
             "user_env": "reader",
             "password_env": "hunter2",
@@ -214,5 +230,5 @@ def test_every_kind_offers_a_complete_form(store, client):
     new kind cannot arrive with a form that forgets one of its fields."""
     page = client.get("/connections").text
     for kind, fields in connections_module.KIND_FIELDS.items():
-        for name, _label, _required in fields:
-            assert f'name="{name}"' in page, f"{kind}: no input for {name}"
+        for f in fields:
+            assert f'name="{f.name}"' in page, f"{kind}: no input for {f.name}"

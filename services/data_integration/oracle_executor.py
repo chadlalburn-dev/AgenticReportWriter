@@ -73,7 +73,15 @@ class OracleQueryExecutor(QueryExecutor):
         source: str | None = None,
         max_rows: int = 10_000,
         connect_timeout_s: int = 10,
+        auth_mode: str = "kerberos",
+        wallet_dir: str = "",
     ) -> None:
+        #: How the session authenticates. `kerberos` stores no credential at
+        #: all — the OS ticket does the work, which is why it is the default:
+        #: a corporate Oracle estate is far likelier to use external
+        #: authentication than a username this application would have to hold.
+        self._auth_mode = auth_mode or "kerberos"
+        self._wallet_dir = wallet_dir
         self._service = service
         self._dsn = dsn or os.environ.get(ENV_DSN, "")
         self._user = user or os.environ.get(ENV_USER, "")
@@ -88,13 +96,22 @@ class OracleQueryExecutor(QueryExecutor):
     # -- connectivity -------------------------------------------------------
 
     def _missing(self) -> tuple[str, ...]:
+        """What this mode needs and does not have.
+
+        Mode-dependent on purpose. Asking a Kerberos connection for a password
+        would report a correctly configured service as broken, and no amount of
+        filling in that field would fix it.
+        """
         missing = []
         if not self._dsn:
             missing.append(ENV_DSN)
-        if not self._user:
-            missing.append(ENV_USER)
-        if not self._password:
-            missing.append(ENV_PASSWORD)
+        if self._auth_mode == "password":
+            if not self._user:
+                missing.append(ENV_USER)
+            if not self._password:
+                missing.append(ENV_PASSWORD)
+        elif self._auth_mode == "wallet" and not self._wallet_dir:
+            missing.append("wallet directory (TNS_ADMIN)")
         return tuple(missing)
 
     def status(self) -> ConnectorStatus:
@@ -161,7 +178,7 @@ class OracleQueryExecutor(QueryExecutor):
             kind="oracle",
             configured=True,
             reachable=True,
-            detail=f"Answered on {self._dsn}.",
+            detail=f"Answered on {self._dsn} using {self._auth_mode} authentication.",
         )
 
     # -- execution ----------------------------------------------------------
@@ -169,12 +186,26 @@ class OracleQueryExecutor(QueryExecutor):
     def _connect(self) -> Any:
         import oracledb  # type: ignore[import-not-found]
 
-        return oracledb.connect(
-            user=self._user,
-            password=self._password,
-            dsn=self._dsn,
-            tcp_connect_timeout=self._connect_timeout_s,
-        )
+        kwargs: dict[str, Any] = {
+            "dsn": self._dsn,
+            "tcp_connect_timeout": self._connect_timeout_s,
+        }
+        if self._auth_mode == "password":
+            kwargs["user"] = self._user
+            kwargs["password"] = self._password
+        elif self._auth_mode == "wallet":
+            # The wallet supplies the client certificate; `config_dir` is where
+            # tnsnames.ora and the wallet files live. No username or password
+            # is sent, which is the point of choosing this mode.
+            kwargs["config_dir"] = self._wallet_dir
+            kwargs["wallet_location"] = self._wallet_dir
+        else:
+            # Kerberos / external authentication: the driver takes the identity
+            # from the OS ticket. Passing `externalauth` rather than empty
+            # credentials, because empty strings are a different request that
+            # some servers accept as an anonymous login attempt.
+            kwargs["externalauth"] = True
+        return oracledb.connect(**kwargs)
 
     def execute(
         self, sql: str, parameters: Mapping[str, Any] | None = None

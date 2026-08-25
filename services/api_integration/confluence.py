@@ -33,6 +33,7 @@ from services.api_integration.connector import (
     ApiOperationError,
 )
 from shared.connectivity import ConnectorStatus
+from shared.http_transport import HttpTransport
 
 _COLUMNS = ("page_id", "title", "space", "url", "excerpt")
 
@@ -194,10 +195,21 @@ class ConfluenceConnector(ApiConnector):
     connector_id = "confluence"
     allowed_operations = frozenset({"search_pages", "get_page"})
 
-    def __init__(self, base_url: str, token: str, *, auth_scheme: str = "Bearer") -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        *,
+        auth_scheme: str = "Bearer",
+        transport: "HttpTransport | None" = None,
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._token = token
         self._auth_scheme = auth_scheme
+        #: Same reason as the SharePoint connector: bare urlopen uses no proxy
+        #: and the default trust store, which fails against a TLS-inspecting
+        #: corporate proxy before the request reaches Confluence.
+        self._transport = transport or HttpTransport()
 
     def call(self, operation_id: str, parameters: Mapping[str, Any]) -> ApiCallResult:
         if operation_id == "search_pages":
@@ -219,7 +231,8 @@ class ConfluenceConnector(ApiConnector):
         req.add_header("Authorization", f"{self._auth_scheme} {self._token}")
         req.add_header("Accept", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - internal host
+            opener = self._transport.opener()
+            with opener.open(req, timeout=self._transport.timeout_s) as resp:  # noqa: S310
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:  # pragma: no cover - network dependent
             raise ApiOperationError(f"Confluence request failed: {exc}") from exc

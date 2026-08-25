@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -37,39 +38,224 @@ from shared.connectivity import ConnectorStatus, unchecked, unconfigured
 
 CONNECTION_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,48}$")
 
-#: Which settings each kind asks for, and which of those are required. The
-#: editor renders from this rather than from hand-written markup per kind, so a
-#: new kind cannot arrive with a form that forgets one of its fields.
-KIND_FIELDS: dict[str, tuple[tuple[str, str, bool], ...]] = {
-    "bigquery": (
-        ("project", "GCP project", True),
-        ("dataset", "Default dataset", False),
-        ("location", "Location", False),
+@dataclass(frozen=True)
+class SettingField:
+    """One setting on a connection form.
+
+    `only_when` is what lets a kind have variants without a second kind. An
+    Oracle service authenticating with Kerberos has no username and no password
+    — asking for them would be asking for something that does not exist, and
+    marking them required would make a correct connection unsaveable.
+    """
+
+    name: str
+    label: str
+    required: bool = True
+    control: str = "text"  # "text" | "choice"
+    choices: tuple[tuple[str, str], ...] = ()
+    #: (field, value) — this setting applies only when that field holds that
+    #: value. Evaluated against the connection's own settings.
+    only_when: tuple[str, str] | None = None
+    hint: str = ""
+
+    def applies(self, settings: Mapping[str, str], default_mode: str = "") -> bool:
+        if self.only_when is None:
+            return True
+        field, value = self.only_when
+        current = str(settings.get(field, "") or default_mode)
+        return current == value
+
+
+#: Proxy and CA, on every kind that makes an HTTPS call.
+#:
+#: Not optional polish. GSK's TLS-inspecting proxy presents its own CA, which is
+#: why `npm install` in this repo fails with SELF_SIGNED_CERT_IN_CHAIN until
+#: `--use-system-ca` is set — and why the SSH remote is the only working git
+#: path. Every connector here calls urllib with no proxy and no CA bundle, so
+#: each one meets that same wall on first contact with a real endpoint. Per
+#: connection rather than global because a warehouse behind the proxy and an
+#: internal host that bypasses it are both normal.
+_NETWORK_FIELDS: tuple[SettingField, ...] = (
+    SettingField(
+        "proxy_url",
+        "Proxy URL",
+        required=False,
+        hint="Leave blank to go direct. e.g. http://proxy.gsk.com:8080",
     ),
+    SettingField(
+        "ca_bundle",
+        "CA bundle path",
+        required=False,
+        hint=(
+            "A PEM file for the proxy's own certificate authority. Leave blank "
+            "to use the operating system's trust store."
+        ),
+    ),
+    SettingField(
+        "timeout_s",
+        "Timeout (seconds)",
+        required=False,
+        hint="Blank means 30.",
+    ),
+)
+
+ORACLE_AUTH_MODES: tuple[tuple[str, str], ...] = (
+    ("kerberos", "Kerberos / external authentication"),
+    ("wallet", "Wallet (mTLS)"),
+    ("password", "Username and password"),
+)
+
+#: The default when a connection does not say. Kerberos first because it stores
+#: no credential at all, which is the outcome this module is arranged around —
+#: and because a corporate Oracle estate is far likelier to use external
+#: authentication than a username this app would have to hold.
+DEFAULT_ORACLE_AUTH = "kerberos"
+
+KIND_FIELDS: dict[str, tuple[SettingField, ...]] = {
+    # GSK authenticates to GCP with Google SSO, so Application Default
+    # Credentials is not a fallback here — it IS the sign-in. `gcloud auth
+    # application-default login` runs the SSO flow and leaves short-lived
+    # credentials the client picks up; in Cloud Run, workload identity does the
+    # same with no login at all.
+    #
+    # There is deliberately no field for a service-account key file. A key is a
+    # long-lived credential that outlives the person who made it, which is the
+    # onboarding and offboarding problem GSK already has with API keys — and it
+    # is the reason the CLI engine in this repo refuses one too.
+    "bigquery": (
+        SettingField("project", "GCP project"),
+        SettingField(
+            "auth_mode",
+            "How it authenticates",
+            control="choice",
+            choices=(
+                ("adc", "Google SSO (application-default credentials)"),
+                ("impersonate", "Google SSO, then impersonate a service account"),
+                ("workload_identity", "Workload identity (running in GCP)"),
+            ),
+            hint=(
+                "Run `gcloud auth application-default login` once for the "
+                "first two. No key file is ever read."
+            ),
+        ),
+        SettingField(
+            "impersonate_sa",
+            "Service account to impersonate",
+            only_when=("auth_mode", "impersonate"),
+            hint="e.g. reportgen-reader@my-project.iam.gserviceaccount.com",
+        ),
+        SettingField("dataset", "Default dataset", required=False),
+        SettingField("location", "Location", required=False, hint="Blank means EU."),
+    )
+    + _NETWORK_FIELDS,
     "oracle": (
-        ("service", "Service or schema", True),
-        ("dsn_env", "Env var holding the DSN", True),
-        ("user_env", "Env var holding the username", True),
-        ("password_env", "Env var holding the password", True),
+        SettingField("service", "Service or schema"),
+        SettingField(
+            "auth_mode",
+            "How it authenticates",
+            control="choice",
+            choices=ORACLE_AUTH_MODES,
+            hint="Changing this changes which settings below apply.",
+        ),
+        SettingField(
+            "dsn_env",
+            "Env var holding the DSN",
+            hint="e.g. LIMS_PROD_DSN. The name, not the value.",
+        ),
+        SettingField(
+            "wallet_dir",
+            "Wallet directory (TNS_ADMIN)",
+            only_when=("auth_mode", "wallet"),
+            hint="The directory holding tnsnames.ora and the wallet files.",
+        ),
+        SettingField(
+            "user_env", "Env var holding the username", only_when=("auth_mode", "password")
+        ),
+        SettingField(
+            "password_env",
+            "Env var holding the password",
+            only_when=("auth_mode", "password"),
+        ),
     ),
     "sharepoint": (
-        ("site", "Default site or drive", False),
-        ("tenant_env", "Env var holding the tenant id", True),
-        ("client_env", "Env var holding the client id", True),
-        ("secret_env", "Env var holding the client secret", True),
-    ),
+        SettingField("site", "Default site or drive", required=False),
+        SettingField(
+            "auth_mode",
+            "How it authenticates",
+            control="choice",
+            choices=(
+                ("certificate", "Certificate"),
+                ("secret", "Client secret"),
+            ),
+        ),
+        SettingField("tenant_env", "Env var holding the tenant id"),
+        SettingField("client_env", "Env var holding the client id"),
+        SettingField(
+            "secret_env",
+            "Env var holding the client secret",
+            only_when=("auth_mode", "secret"),
+        ),
+        SettingField(
+            "cert_path",
+            "Certificate path (PEM)",
+            only_when=("auth_mode", "certificate"),
+        ),
+        SettingField(
+            "cert_thumbprint_env",
+            "Env var holding the certificate thumbprint",
+            only_when=("auth_mode", "certificate"),
+        ),
+    )
+    + _NETWORK_FIELDS,
     "confluence": (
-        ("base_url", "Base URL", True),
-        ("token_env", "Env var holding the API token", True),
-    ),
+        SettingField("base_url", "Base URL"),
+        SettingField(
+            "auth_scheme",
+            "Authorization scheme",
+            control="choice",
+            choices=(("Bearer", "Bearer (personal access token)"), ("Basic", "Basic")),
+            hint="The connector sends this verbatim in the Authorization header.",
+        ),
+        SettingField("token_env", "Env var holding the API token"),
+    )
+    + _NETWORK_FIELDS,
 }
 
-#: Fields whose value is the NAME of an environment variable. Rendered with a
-#: different hint, and checked for looking like a variable rather than like a
-#: secret — someone pasting the password straight in is the mistake this whole
-#: module is arranged to prevent, so it is worth catching in the form.
+#: The default choice for any `control="choice"` field, so a form rendered
+#: before anything is typed still describes a valid connection.
+DEFAULT_CHOICE = {
+    ("bigquery", "auth_mode"): "adc",
+    ("oracle", "auth_mode"): DEFAULT_ORACLE_AUTH,
+    ("sharepoint", "auth_mode"): "certificate",
+    ("confluence", "auth_scheme"): "Bearer",
+}
+
+
+def default_settings(kind: str) -> dict[str, str]:
+    return {
+        field.name: DEFAULT_CHOICE.get((kind, field.name), "")
+        for field in KIND_FIELDS.get(kind, ())
+        if field.control == "choice"
+    }
+
+
+def fields_for(kind: str, settings: Mapping[str, str] | None = None) -> list[SettingField]:
+    """The settings that apply to this connection as configured."""
+    current = dict(settings or {})
+    for (k, name), value in DEFAULT_CHOICE.items():
+        if k == kind:
+            current.setdefault(name, value)
+    return [f for f in KIND_FIELDS.get(kind, ()) if f.applies(current)]
+
+#: Fields whose value is the NAME of an environment variable, derived from
+#: the table above rather than listed twice. A second hand-kept list is how
+#: a new credential field arrives without the check that stops someone
+#: pasting the secret itself.
 ENV_FIELDS = frozenset(
-    {"dsn_env", "user_env", "password_env", "tenant_env", "client_env", "secret_env", "token_env"}
+    f.name
+    for fields in KIND_FIELDS.values()
+    for f in fields
+    if f.name.endswith('_env')
 )
 
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -85,11 +271,16 @@ class Connection:
     settings: dict[str, str] = field(default_factory=dict)
 
     def missing(self) -> tuple[str, ...]:
-        """Required settings with nothing in them."""
+        """Required settings with nothing in them, for this auth mode.
+
+        `fields_for` rather than the whole table: a Kerberos Oracle connection
+        has no username, so counting one as missing would make a correct
+        connection permanently unsaveable.
+        """
         return tuple(
-            name
-            for name, _label, required in KIND_FIELDS.get(self.kind, ())
-            if required and not str(self.settings.get(name, "")).strip()
+            f.name
+            for f in fields_for(self.kind, self.settings)
+            if f.required and not str(self.settings.get(f.name, "")).strip()
         )
 
     def status(self) -> ConnectorStatus:
@@ -135,10 +326,16 @@ def validate(conn: Connection, existing_ids: tuple[str, ...] = ()) -> list[str]:
         )
         return problems
 
-    for name, label, required in KIND_FIELDS[conn.kind]:
+    for f in fields_for(conn.kind, conn.settings):
+        name, label, required = f.name, f.label, f.required
         value = str(conn.settings.get(name, "")).strip()
         if required and not value:
             problems.append(f"{label} is required.")
+        if f.control == "choice" and value and value not in {c for c, _ in f.choices}:
+            problems.append(
+                f"{label}: {value!r} is not one of "
+                f"{', '.join(c for c, _ in f.choices)}."
+            )
         if name in ENV_FIELDS and value and not _ENV_NAME_RE.match(value):
             # The likeliest way to get this wrong is to paste the secret itself,
             # which would then be written to disk and rendered back onto a page.
