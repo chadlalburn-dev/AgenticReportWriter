@@ -293,3 +293,71 @@ def test_a_forced_cli_failure_is_not_hidden_by_the_cache(monkeypatch):
     second = runs_module.resolve_engine()
     assert second.kind == first.kind
     assert second.hint == first.hint == "not signed in"
+
+
+def test_an_expired_cache_does_not_block_the_page(monkeypatch):
+    """The half of the fix that was missing, and the reason the app still felt
+    slow after the first one.
+
+    Reading the cache stopped the probe running on every render. It left the
+    probe running on whichever render arrived after the TTL — so one page load a
+    minute took twenty-one seconds and the rest took twenty milliseconds.
+    Intermittent, which is why curl never caught it: every curl had hit a warm
+    cache. The browser's own timing did — TTFB 21,097ms against a 3ms download.
+
+    The earlier test counted probes across twelve renders inside one TTL, so it
+    passed against exactly this bug.
+
+    Asserted on the thread the probe runs on, not on elapsed time. A wall-clock
+    assertion said the same thing and failed one run in three on a busy machine,
+    and a test that fails for reasons unrelated to its subject gets ignored.
+    """
+    import threading
+
+    from services.api_gateway import runs as runs_module
+
+    caller = threading.get_ident()
+    ran_on: list[int] = []
+
+    def probe(choice: str):
+        ran_on.append(threading.get_ident())
+        return runs_module._stub_engine(hint="", choice=choice)
+
+    monkeypatch.setenv(runs_module.ENGINE_ENV, "cli")
+    monkeypatch.setattr(runs_module, "_probe_engine", probe)
+    runs_module.reset_engine_cache()
+
+    # The first render is allowed to wait: an operator who forced `cli` needs a
+    # real failure now rather than a placeholder claim they might act on.
+    runs_module.resolve_engine()
+    assert ran_on == [caller], "the first answer should be synchronous"
+
+    monkeypatch.setattr(runs_module, "ENGINE_TTL_S", 0.0)
+    for _ in range(5):
+        runs_module.resolve_engine()
+
+    assert caller not in ran_on[1:], (
+        "a render with an expired cache probed on its own thread; that is the "
+        "twenty-one second page load"
+    )
+
+
+def test_a_stale_answer_is_the_last_real_one_not_a_guess(monkeypatch):
+    """Serving stale is only defensible if what is served was actually observed.
+    Substituting a stub while the refresh runs would be the app claiming
+    placeholder prose about real Claude output, or the reverse."""
+    from services.api_gateway import runs as runs_module
+
+    def probe(choice: str):
+        return runs_module._stub_engine(hint="observed", choice=choice)
+
+    monkeypatch.setenv(runs_module.ENGINE_ENV, "cli")
+    monkeypatch.setattr(runs_module, "_probe_engine", probe)
+    runs_module.reset_engine_cache()
+
+    fresh = runs_module.resolve_engine()
+    monkeypatch.setattr(runs_module, "ENGINE_TTL_S", 0.0)
+    stale = runs_module.resolve_engine()
+
+    assert stale.kind == fresh.kind
+    assert stale.hint == fresh.hint == "observed"

@@ -1283,6 +1283,27 @@ def resolve_engine() -> EngineInfo:
         cached = _cached_engine(choice)
         if cached is not None:
             return cached
+        # Expired, but we have answered before: serve the last answer and
+        # refresh behind the page.
+        #
+        # This is the half of the fix that was missing. Reading the cache stopped
+        # the probe running on *every* render, and left it running on the render
+        # that happened to arrive after the TTL — so one page load a minute took
+        # twenty-one seconds while the rest took twenty milliseconds. Measured in
+        # the browser rather than with curl, which had only ever hit a warm
+        # cache: TTFB 21,097ms against a 3ms download and a 62ms stylesheet.
+        #
+        # A stale answer for a few seconds is the right trade. The thing it can
+        # be stale about is whether someone has signed the CLI in since the last
+        # check, and being a minute late to notice costs nothing; blocking a page
+        # render for twenty seconds costs the person using it.
+        stale = _last_engine(choice)
+        if stale is not None:
+            _refresh_engine_async(choice)
+            return stale
+        # Nothing has ever answered, so this is the first render of the process.
+        # Synchronous here, because an operator who forced `cli` needs a real
+        # failure now rather than a placeholder claim they might act on.
         return _cache_engine(choice, _probe_engine(choice))
 
     cached = _cached_engine(choice)
@@ -1376,6 +1397,20 @@ def reset_engine_cache() -> None:
     """Forget the cached engine. For tests, and for an explicit re-check."""
     with _ENGINE_LOCK:
         globals()["_ENGINE_CACHE"] = None
+
+
+def _last_engine(choice: str) -> EngineInfo | None:
+    """The last answer for this choice, however old.
+
+    Separate from `_cached_engine`, which enforces the TTL. The TTL decides
+    when to go and look again; it should never decide whether there is anything
+    to show meanwhile.
+    """
+    with _ENGINE_LOCK:
+        cached = _ENGINE_CACHE
+    if cached is None or cached[1] != choice:
+        return None
+    return cached[2]
 
 
 def _cached_engine(choice: str) -> EngineInfo | None:
@@ -1769,9 +1804,50 @@ class _ScannedDoc:
     tags: tuple[str, ...]
 
 
+#: Recent scans, keyed by folder. Small and short-lived on purpose — see below.
+_SCAN_CACHE: dict[str, tuple[float, list["_ScannedDoc"]]] = {}
+_SCAN_CACHE_LOCK = threading.Lock()
+
+#: How long a scan is reused. Long enough that one page render never walks the
+#: same tree eight times; short enough that dropping a file in the folder shows
+#: up before anyone wonders why it has not.
+SCAN_TTL_S = 5.0
+
+
 def scan_evidence_folder(folder: str | Path) -> list[_ScannedDoc]:
-    """Cheap metadata-only walk (no bytes read) used by preflight."""
+    """Cheap metadata-only walk (no bytes read) used by preflight.
+
+    Cached for a few seconds, because "cheap" was measured per call and this is
+    called once per template card, on every render of every page that lists
+    templates. Profiling the templates page found 720 rglob calls and 1,180
+    stats behind 40 card builds — the same directory walked eight times to
+    render one page, at about 17ms per card.
+
+    A TTL rather than an mtime check: a directory's mtime moves when entries are
+    added or removed but not when a nested file changes, so it would answer a
+    slightly different question than the one being asked.
+    """
     root = Path(folder)
+    key = str(root)
+    now = time.monotonic()
+    with _SCAN_CACHE_LOCK:
+        hit = _SCAN_CACHE.get(key)
+        if hit is not None and now - hit[0] < SCAN_TTL_S:
+            return list(hit[1])
+
+    scanned = _scan_evidence_folder_uncached(root)
+    with _SCAN_CACHE_LOCK:
+        _SCAN_CACHE[key] = (now, scanned)
+    return list(scanned)
+
+
+def reset_scan_cache() -> None:
+    """Forget every cached scan. For tests, and for an explicit re-read."""
+    with _SCAN_CACHE_LOCK:
+        _SCAN_CACHE.clear()
+
+
+def _scan_evidence_folder_uncached(root: Path) -> list[_ScannedDoc]:
     if not root.is_dir():
         return []
     out: list[_ScannedDoc] = []
