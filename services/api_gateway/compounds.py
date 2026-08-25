@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from services.api_gateway import runs as runs_module
-from services.api_gateway.runs import RunStore, SourceSpec, _Dict
+from services.api_gateway.runs import RunStore, SourceSpec, _Dict, run_list_view
 
 # ---------------------------------------------------------------------------
 # repo layout
@@ -100,6 +100,21 @@ class RunRow(_Dict):
 
 
 @dataclass
+class RunRowGroup(_Dict):
+    """Recent runs of one report type.
+
+    Grouped because the row title IS the report name: three runs of the same
+    report read as three identical lines, and the thing that distinguishes them
+    — when, and how much is evidenced — is what the eye should land on. The
+    heading says it once.
+    """
+
+    label: str
+    sub: str
+    rows: list[RunRow]
+
+
+@dataclass
 class RelatedChip(_Dict):
     label: str
     url: str
@@ -120,6 +135,7 @@ class CompoundView(_Dict):
     bindings: list[BindingRow] = field(default_factory=list)
     reports: list[ReportOption] = field(default_factory=list)
     runs: list[RunRow] = field(default_factory=list)
+    run_groups: list[RunRowGroup] = field(default_factory=list)
     related: list[RelatedChip] = field(default_factory=list)
 
     bindings_ready: int = 0
@@ -616,19 +632,33 @@ def build_compound_view(
     )
 
     # --- runs for this compound -----------------------------------------
-    run_rows: list[RunRow] = []
     all_runs = store.list_runs(limit=400)
     mine = [s for s in all_runs if (s.primary_input or "").strip() == compound_id]
-    for summary in mine[:3]:
-        run_rows.append(
-            RunRow(
-                run_id=summary.run_id,
-                report_name=summary.template_title,
-                evidenced_text=f"{summary.n_claims_cited}/{summary.n_claims}",
-                when_text=summary.created_human,
-                url=f"/runs/{summary.run_id}",
-            )
+
+    def _row(summary: Any) -> RunRow:
+        return RunRow(
+            run_id=summary.run_id,
+            report_name=summary.template_title,
+            evidenced_text=f"{summary.n_claims_cited}/{summary.n_claims}",
+            when_text=summary.created_human,
+            url=f"/runs/{summary.run_id}",
         )
+
+    # Grouped by report type, newest first, using the same view model the runs
+    # list uses — one definition of "grouped by template" rather than two that
+    # can disagree.
+    grouped = run_list_view(mine, group="template", sort="newest")
+    run_groups = [
+        RunRowGroup(
+            label=g.label,
+            sub=g.sub,
+            rows=[_row(s) for s in g.runs[:3]],
+        )
+        for g in grouped.groups[:3]
+    ]
+    # Kept flat as well: the empty-state check and anything reading `runs`
+    # should not have to know about grouping.
+    run_rows = [row for group in run_groups for row in group.rows]
 
     # --- identity --------------------------------------------------------
     seed = _seed_compound()
@@ -675,6 +705,7 @@ def build_compound_view(
         bindings=rows,
         reports=options,
         runs=run_rows,
+        run_groups=run_groups,
         related=related,
         bindings_ready=ready_total,
         bindings_total=len(rows),

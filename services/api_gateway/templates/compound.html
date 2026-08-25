@@ -188,12 +188,26 @@
       </div>
       <div class="ti-panel">
         {%- if view.runs %}
-          {%- for run in view.runs %}
+          {#- Grouped by report type. The row title was the report name, so
+              three runs of the same report read as three identical lines and
+              the things that actually differ — when, and how much is
+              evidenced — had to compete with a repeated title. The heading
+              says it once. -#}
+          {%- for g in view.run_groups %}
+          <div class="ti-thead ti-thead--group">
+            <span>{{ g.label }}</span>
+            {%- if g.sub %}<span class="ti-code">{{ g.sub }}</span>{% endif %}
+            <span style="justify-self:end">{{ g.rows|length }}</span>
+          </div>
+          {%- for run in g.rows %}
           <a class="ti-qrow" href="{{ run.url }}">
-            <span class="ti-qrow__name">{{ run.report_name }}</span>
+            <span class="ti-qrow__name">{{ run.when_text }}</span>
             <span class="ti-qrow__evidenced">{{ run.evidenced_text }}</span>
-            <span class="ti-qrow__when">{{ run.when_text }}</span>
+            <span class="ti-qrow__when">
+              <span class="ti-sr">{{ run.report_name }}, </span>open
+            </span>
           </a>
+          {%- endfor %}
           {%- endfor %}
         {%- else %}
           <div class="ti-empty">

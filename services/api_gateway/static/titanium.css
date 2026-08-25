@@ -2913,3 +2913,13 @@ a.ti-tag[aria-current='true'] {
   border-color: var(--ti-dim);
   color: var(--ti-ink);
 }
+
+/* The auth-mode select clipped its longest option ("Google SSO
+   (application-default credentials)") to about two thirds. A select cannot
+   size to its content the way a block can, so it needs a floor — and the floor
+   has to hold on the narrow third column the connection form uses. */
+.ti-conn__kind .ti-select { min-width: 100%; }
+
+/* "not used by this mode" wrapped under its own label and read as part of it.
+   Its own line, at caption size, so the label stays one phrase. */
+.ti-field__na { display: block; margin-top: var(--ti-2); }

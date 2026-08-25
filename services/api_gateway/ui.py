@@ -404,6 +404,12 @@ def home(request: Request) -> HTMLResponse:
             # Continuity for a returning user: what happened last, across the
             # whole portfolio, without going to the Runs tab.
             "recent": store.recent(6),
+            # Grouped by report type, through the same view model the runs list
+            # uses. The rail's rows lead with the template title, so several
+            # runs of one report read as a column of the same sentence.
+            "recent_groups": runs_module.run_list_view(
+                store.recent(12), group="template", sort="newest"
+            ).groups[:4],
             "portfolio": portfolio,
         },
         nav_active="compounds",

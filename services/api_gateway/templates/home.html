@@ -193,19 +193,33 @@
         <a class="ti-sec-head__link" href="/runs">all runs</a>
       </div>
       <div class="ti-panel">
-        {%- for r in recent %}
+        {#- Grouped by report type. Every row led with the template title, so
+            four runs of one report were four copies of the same sentence and
+            the compound — the thing that differs — sat in the meta line
+            underneath. The heading carries the title once. -#}
+        {%- for g in recent_groups %}
+        <div class="ti-thead ti-thead--group">
+          <span>{{ g.label }}</span>
+          <span></span>
+          {#- The rendered count, not the group's total. Saying "12" above three
+              rows promises nine more below; the "all runs" link at the top is
+              where the rest lives. -#}
+          <span style="justify-self:end">{{ g.runs[:3]|length }}</span>
+        </div>
+        {%- for r in g.runs[:3] %}
         <a class="ti-rrun" href="/runs/{{ r.run_id }}">
-          <span class="ti-rrun__title">{{ r.template_title }}</span>
-          <span class="ti-rrun__meta">
-            {%- if r.primary_input %}<span translate="no">{{ r.primary_input }}</span> &middot; {% endif %}
-            {{ r.created_human }}
-          </span>
+          <span class="ti-rrun__title">{{ r.primary_input or r.template_title }}</span>
+          {#- The compound moved up to the title when the heading took the
+              report name, so repeating it here read as "XYZ-001 XYZ-001 · 25
+              Aug". The meta line is now just when. -#}
+          <span class="ti-rrun__meta">{{ r.created_human }}</span>
           {%- if r.n_claims %}
           <span class="ti-rrun__ratio {{ 'has-gaps' if r.n_claims_cited < r.n_claims }}">
             {{ r.n_claims_cited }}/{{ r.n_claims }}
           </span>
           {%- endif %}
         </a>
+        {%- endfor %}
         {%- endfor %}
       </div>
       {%- endif %}
