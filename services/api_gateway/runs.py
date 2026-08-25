@@ -1656,25 +1656,92 @@ def build_stub_client() -> StubLlmClient:
     return stub
 
 
-def build_api_gate() -> ApiCallGate:
-    """Confluence + ChEMBL + ClinicalTrials + SharePoint mocks. No network.
+#: The connectors that exist without anyone configuring anything. Offline
+#: fixtures, so a template that pulls a page or a deck resolves on a laptop with
+#: no network — and so the demo runs.
+#:
+#: Defaults, not fixtures-forever: a connection saved with the same id replaces
+#: the one here. That is what makes them configurable rather than decorative.
+BUILTIN_CONNECTORS: tuple[str, ...] = (
+    "confluence",
+    "mock_chembl",
+    "mock_clinicaltrials",
+    "sharepoint",
+)
 
-    Mocks rather than the real connectors, and that choice is visible rather
-    than implied: `connector_statuses()` reports what each one actually is, so
-    a reader is never left to assume a fixture was the live system. Swapping in
-    `SharePointConnector` needs an Entra registration this app cannot provision,
-    and the real thing says so from configuration alone rather than failing
-    somewhere inside a run.
+
+def _builtin_connector(connector_id: str) -> Any:
+    if connector_id == "confluence":
+        return MockConfluenceConnector()
+    if connector_id == "mock_chembl":
+        return MockChemblConnector()
+    if connector_id == "mock_clinicaltrials":
+        return MockClinicalTrialsConnector()
+    return MockSharePointConnector()
+
+
+def _configured_connector(conn: Any) -> Any | None:
+    """The real connector for a saved connection, or None if it cannot be built.
+
+    None rather than a raise: a half-configured connection must not take down
+    the page that exists to fix it, and falling back to the built-in keeps the
+    app usable while someone finishes filling the form in.
     """
+    settings = dict(getattr(conn, "settings", {}) or {})
+    kind = str(getattr(conn, "kind", ""))
+    if not conn.status().configured:
+        return None
+
+    def env(name_key: str) -> str:
+        return os.environ.get(settings.get(name_key, ""), "")
+
+    try:
+        if kind == "confluence":
+            from services.api_integration.confluence import ConfluenceConnector
+
+            return ConfluenceConnector(
+                settings.get("base_url", ""),
+                env("token_env"),
+                auth_scheme=settings.get("auth_scheme", "Bearer"),
+                transport=HttpTransport.from_settings(settings),
+            )
+        if kind == "sharepoint":
+            from services.api_integration.sharepoint import SharePointConnector
+
+            return SharePointConnector(
+                tenant_id=env("tenant_env"),
+                client_id=env("client_env"),
+                client_secret=env("secret_env"),
+                transport=HttpTransport.from_settings(settings),
+            )
+    except Exception:  # noqa: BLE001 - a bad connection is not a broken app
+        return None
+    return None
+
+
+def build_api_gate(connections: Sequence[Any] = ()) -> ApiCallGate:
+    """The connectors a run may call.
+
+    Each built-in is a default. A saved connection with the same id replaces it,
+    which is what "configurable" has to mean — otherwise the Connections page
+    would record settings that nothing reads, and this application has already
+    shipped one of those.
+
+    Which one is in force is never implied. `connector_statuses()` says of each
+    whether it is the offline fixture or a configured system, because a reader
+    comparing two reports needs to know whether the evidence came from the real
+    thing, and "reachable" alone would let a fixture pass for Confluence.
+    """
+    by_id = {str(getattr(c, "id", "")): c for c in connections or ()}
     registry = ApiConnectorRegistry()
-    registry.register(MockConfluenceConnector())
-    registry.register(MockChemblConnector())
-    registry.register(MockClinicalTrialsConnector())
-    registry.register(MockSharePointConnector())
+    for connector_id in BUILTIN_CONNECTORS:
+        override = by_id.get(connector_id)
+        built = _configured_connector(override) if override is not None else None
+        registry.register(built or _builtin_connector(connector_id))
     return ApiCallGate(registry)
 
 
-def connector_statuses() -> list[ConnectorStatus]:
+def connector_statuses(connections: Sequence[Any] = ()) -> list[ConnectorStatus]:
     """Every configured source, and whether it can be used from here.
 
     Configuration only — no network. A page render that probes a warehouse is
@@ -1682,13 +1749,26 @@ def connector_statuses() -> list[ConnectorStatus]:
     reachability stays unknown until someone asks for it explicitly.
     """
     out: list[ConnectorStatus] = []
-    gate_registry = ApiConnectorRegistry()
-    gate_registry.register(MockConfluenceConnector())
-    gate_registry.register(MockChemblConnector())
-    gate_registry.register(MockClinicalTrialsConnector())
-    gate_registry.register(MockSharePointConnector())
-    for cid in gate_registry.ids():
-        connector = gate_registry.get(cid)
+    by_id = {str(getattr(c, "id", "")): c for c in connections or ()}
+    for cid in BUILTIN_CONNECTORS:
+        override = by_id.get(cid)
+        if override is not None and _configured_connector(override) is not None:
+            # A configured connection is in force, so report ITS status rather
+            # than the fixture's. Showing the fixture's "reachable" here would
+            # be the page vouching for a system nobody has contacted.
+            status = override.status()
+            out.append(
+                ConnectorStatus(
+                    connector_id=cid,
+                    kind=status.kind,
+                    configured=status.configured,
+                    reachable=status.reachable,
+                    detail=f"Configured, replacing the built-in. {status.detail}",
+                    missing=status.missing,
+                )
+            )
+            continue
+        connector = _builtin_connector(cid)
         report = getattr(connector, "status", None)
         if callable(report):
             out.append(report())
@@ -6669,6 +6749,67 @@ def unwired_connector_statuses() -> list[ConnectorStatus]:
             missing=("gcp-project", "application-default-credentials"),
         ),
     ]
+
+
+def probe_any(connector_id: str, connections: Sequence[Any] = ()) -> ConnectorStatus:
+    """Test whichever connector is actually in force for this id.
+
+    Every row on the Connections page can be tested, built-in or not. A test
+    that only works on the rows someone added leaves the ones that ship
+    unverifiable — and "is this the fixture or the real system" is exactly the
+    question a test is being pressed to answer.
+
+    A configured connection wins, because that is the one a run would use.
+    Testing the built-in while an override is in force would report on
+    something the app is not going to call.
+    """
+    override = next(
+        (c for c in connections or () if str(getattr(c, "id", "")) == connector_id),
+        None,
+    )
+    if override is not None:
+        return probe_connection(override)
+
+    if connector_id in BUILTIN_CONNECTORS:
+        connector = _builtin_connector(connector_id)
+        probe = getattr(connector, "probe", None)
+        if callable(probe):
+            return probe()
+
+    if connector_id == "local-sqlite":
+        # The one backend that actually answers queries here. Checked by opening
+        # the file rather than by asserting it exists, because an unreadable or
+        # truncated database passes the second test and fails the first.
+        try:
+            import sqlite3
+
+            with sqlite3.connect(f"file:{EDC_SQLITE}?mode=ro", uri=True) as conn:
+                tables = conn.execute(
+                    "SELECT count(*) FROM sqlite_master WHERE type='table'"
+                ).fetchone()[0]
+        except Exception as exc:  # noqa: BLE001
+            return ConnectorStatus(
+                connector_id=connector_id,
+                kind="bigquery",
+                configured=True,
+                reachable=False,
+                detail=f"Could not read {EDC_SQLITE.name}: {str(exc)[:140]}",
+            )
+        return ConnectorStatus(
+            connector_id=connector_id,
+            kind="bigquery",
+            configured=True,
+            reachable=True,
+            detail=f"{EDC_SQLITE.name} opened read-only; {tables} tables.",
+        )
+
+    return ConnectorStatus(
+        connector_id=connector_id,
+        kind="api",
+        configured=False,
+        reachable=None,
+        detail=f"No connector called {connector_id!r}.",
+    )
 
 
 def probe_connection(conn: Any) -> ConnectorStatus:

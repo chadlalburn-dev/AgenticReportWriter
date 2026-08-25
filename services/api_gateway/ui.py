@@ -1052,6 +1052,7 @@ def _connections_context(
     errors: Sequence[str] = (),
     form_values: Mapping[str, str] | None = None,
     editing: str = "",
+    adding: bool = False,
     flash: str = "",
 ) -> dict[str, Any]:
     store = _connection_store()
@@ -1059,7 +1060,14 @@ def _connections_context(
     return {
         "configured": configured,
         "statuses": [connections_module.effective_status(c) for c in configured],
-        "builtin": runs_module.connector_statuses(),
+        # A remembered probe result per connector id, so a built-in that was
+        # tested shows what it found rather than reverting to its description.
+        "probed": {
+            cid: connections_module.last_probe(cid)
+            for cid in runs_module.BUILTIN_CONNECTORS + ("local-sqlite",)
+            if connections_module.last_probe(cid) is not None
+        },
+        "builtin": runs_module.connector_statuses(configured),
         "unavailable": runs_module.unwired_connector_statuses(),
         "kind_fields": connections_module.KIND_FIELDS,
         "fields_for": connections_module.fields_for,
@@ -1069,6 +1077,10 @@ def _connections_context(
         "errors": list(errors),
         "values": dict(form_values or {}),
         "editing": editing,
+        # The form is a disclosure. It opens when there is something to act on —
+        # an edit, a configure, or errors from a refused save — because hiding
+        # the reason a save failed is worse than the scrolling it saves.
+        "form_open": bool(editing or adding or errors),
         "flash": flash,
         "store_path": str(store.path),
     }
@@ -1117,7 +1129,12 @@ def connections(request: Request) -> HTMLResponse:
     behind the third.
     """
     editing = str(request.query_params.get("edit") or "").strip()
+    adding = str(request.query_params.get("add") or "").strip()
     values: dict[str, str] = {}
+    if adding:
+        # Configuring a built-in: the id is fixed, because a connection only
+        # replaces a built-in by carrying its id.
+        values = {"id": adding, "kind": str(request.query_params.get("kind") or "")}
     if editing:
         existing = _connection_store().get(editing)
         if existing is not None:
@@ -1130,6 +1147,7 @@ def connections(request: Request) -> HTMLResponse:
             request,
             form_values=values,
             editing=editing,
+            adding=bool(adding),
             flash=str(request.query_params.get("saved") or ""),
         ),
         nav_active="connections",
@@ -1207,12 +1225,12 @@ def connection_test(request: Request, connection_id: str) -> Response:
     that says "not checked" has to mean nobody checked, not "we checked
     quietly and are not telling you".
     """
-    conn = _connection_store().get(connection_id)
-    if conn is None:
-        raise StarletteHTTPException(
-            status_code=404, detail=f"No connection called {connection_id!r}."
-        )
-    result = runs_module.probe_connection(conn)
+    # Any connector, built-in or configured. A test that only works on the rows
+    # someone added leaves the ones that ship unverifiable, and "is this the
+    # fixture or the real system" is exactly what a test is pressed to answer.
+    result = runs_module.probe_any(connection_id, _connection_store().load())
+    if not result.configured and result.detail.startswith("No connector"):
+        raise StarletteHTTPException(status_code=404, detail=result.detail)
     connections_module.record_probe(connection_id, result)
     return RedirectResponse(
         f"/connections?saved={'reachable' if result.reachable else 'unreachable'}",

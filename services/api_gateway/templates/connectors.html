@@ -14,7 +14,7 @@
     So the dot answers "usable or not" and `.ti-state--ok/--bad/--neutral`
     carries the specific answer in words. That matters most for "Not checked",
     which is neither good news nor bad and must not render as either. -#}
-{%- macro conn_row(c, actions=false) %}
+{%- macro conn_row(c, actions=false, configurable=false) %}
 <div class="ti-lrow ti-lrow--conn">
   {#- `title` on the two truncatable columns. The suite enforces this: a class
       that can ellipsis has to carry the full value somewhere recoverable, or a
@@ -30,19 +30,30 @@
       the CSS then contradicts. -#}
   <span class="ti-conn__detail">
     {{ c.detail }}
-    {%- if actions %}
+    {#- Test is on every row, built-in or not. A test that only works on the
+        rows someone added leaves the ones that ship unverifiable — and whether
+        a row is the offline fixture or the real system is exactly what someone
+        presses Test to find out. -#}
     <span class="ti-conn__acts">
+      {%- if actions %}
       <a class="ti-lrow__act" href="/connections?edit={{ c.connector_id }}">Edit</a>
+      {%- elif configurable %}
+      {#- A built-in is a default. Configuring one creates a connection that
+          carries its id, which is what replaces it. -#}
+      <a class="ti-lrow__act"
+         href="/connections?add={{ c.connector_id }}&amp;kind={{ c.kind }}">Configure</a>
+      {%- endif %}
       <form method="post" action="/connections/{{ c.connector_id }}/test" class="ti-inline-form">
         <button class="ti-lrow__act" type="submit">Test</button>
       </form>
+      {%- if actions %}
       <form method="post" action="/connections" class="ti-inline-form">
         <input type="hidden" name="op" value="delete">
         <input type="hidden" name="id" value="{{ c.connector_id }}">
         <button class="ti-lrow__act" type="submit">Remove</button>
       </form>
+      {%- endif %}
     </span>
-    {%- endif %}
   </span>
 </div>
 {%- endmacro %}
@@ -71,9 +82,16 @@
   {%- endif %}
 
   {# ------------------------------------------------------------ add/edit -#}
-  <div class="ti-sec-head" style="margin-top:var(--ti-24)">
-    <h2 class="ti-h2">{% if editing %}Edit “{{ editing }}”{% else %}Add a connection{% endif %}</h2>
-  </div>
+  {#- A disclosure, not a permanently open form. The form is the tallest thing
+      on this page and most visits are to read a status, not to add a source.
+
+      `open` when there is something to act on — an edit, a configure, or errors
+      from a refused save. Hiding the reason a save failed would be worse than
+      the scrolling it saves, which is the same rule the editor's tabs follow. -#}
+  <details class="ti-disclose"{% if form_open %} open{% endif %}>
+    <summary class="ti-disclose__summary">
+      {% if editing %}Edit “{{ editing }}”{% else %}Add a connection{% endif %}
+    </summary>
 
   {%- if errors %}
   {#- Every problem at once. One-per-submission turns fixing four things into
@@ -184,6 +202,7 @@
       {%- endif %}
     </p>
   </form>
+  </details>
 
   {# --------------------------------------------------------- configured -#}
   <div class="ti-sec-head" style="margin-top:var(--ti-32)">
@@ -220,7 +239,7 @@
       <span role="columnheader">status</span>
       <span role="columnheader">detail</span>
     </div>
-    {%- for c in builtin %}{{ conn_row(c) }}{% endfor %}
+    {%- for c in builtin %}{{ conn_row(probed.get(c.connector_id, c), configurable=true) }}{% endfor %}
   </div>
 
   {# -------------------------------------------------------- unavailable -#}

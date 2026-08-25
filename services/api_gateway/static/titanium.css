@@ -2940,3 +2940,39 @@ a.ti-tag[aria-current='true'] {
    and a 9px circle with no shrink guard is compressed to a 2px sliver by a
    long neighbour — which reads as a stray vertical rule rather than a state. */
 .ti-lrow__title .ti-dot { flex: 0 0 auto; }
+
+/* A disclosure for a form that is tall and usually not what someone came for.
+   <details> rather than a JS toggle: it opens with scripting off, and the
+   server can force it open by rendering the `open` attribute when a save was
+   refused. */
+.ti-disclose { margin-top: var(--ti-24); }
+
+.ti-disclose__summary {
+  cursor: pointer;
+  padding: var(--ti-8) 0;
+  font-size: var(--ti-14);
+  color: var(--ti-ink);
+  list-style: none;
+}
+.ti-disclose__summary::-webkit-details-marker { display: none; }
+
+/* An explicit marker, because removing the native one leaves nothing to say
+   this can be opened. Rotates when open. */
+.ti-disclose__summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1.1em;
+  color: var(--ti-mut);
+  transition: transform var(--ti-dur) var(--ti-ease);
+}
+.ti-disclose[open] > .ti-disclose__summary::before { transform: rotate(90deg); }
+
+.ti-disclose__summary:focus-visible {
+  outline: 2px solid var(--ti-accent);
+  outline-offset: 2px;
+  border-radius: var(--ti-r-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ti-disclose__summary::before { transition: none; }
+}

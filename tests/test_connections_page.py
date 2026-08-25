@@ -232,3 +232,135 @@ def test_every_kind_offers_a_complete_form(store, client):
     for kind, fields in connections_module.KIND_FIELDS.items():
         for f in fields:
             assert f'name="{f.name}"' in page, f"{kind}: no input for {f.name}"
+
+
+# --- built-ins are defaults, not fixtures forever --------------------------
+
+
+def test_a_configured_connection_replaces_the_builtin(store, client):
+    """What "configurable" has to mean. Otherwise the page records settings that
+    nothing reads, and this application has already shipped one of those."""
+    from services.api_gateway.runs import build_api_gate
+
+    conn = connections_module.Connection(
+        id="confluence",
+        kind="confluence",
+        settings={
+            "base_url": "https://confluence.example",
+            "auth_scheme": "Bearer",
+            "token_env": "CONF_TOKEN",
+        },
+    )
+    gate = build_api_gate([conn])
+    built = gate._registry.get("confluence")
+    assert type(built).__name__ == "ConfluenceConnector", (
+        f"the gate still holds {type(built).__name__}; configuring did nothing"
+    )
+
+
+def test_without_a_configuration_the_builtin_still_answers(store):
+    """The default has to keep working, or a laptop with no network loses the
+    demo and every offline test with it."""
+    from services.api_gateway.runs import build_api_gate
+
+    gate = build_api_gate([])
+    assert type(gate._registry.get("confluence")).__name__ == "MockConfluenceConnector"
+
+
+def test_a_half_configured_connection_falls_back_rather_than_breaking(store):
+    """A connection missing its settings must not take down the page that exists
+    to fix it."""
+    from services.api_gateway.runs import build_api_gate
+
+    broken = connections_module.Connection(id="confluence", kind="confluence", settings={})
+    gate = build_api_gate([broken])
+    assert type(gate._registry.get("confluence")).__name__ == "MockConfluenceConnector"
+
+
+def test_the_status_says_which_one_is_in_force(store):
+    """A reader comparing two reports needs to know whether the evidence came
+    from the real system. "Reachable" alone would let a fixture pass for
+    Confluence."""
+    from services.api_gateway.runs import connector_statuses
+
+    plain = {s.connector_id: s for s in connector_statuses()}
+    assert "fixture" in plain["confluence"].detail.lower()
+
+    conn = connections_module.Connection(
+        id="confluence",
+        kind="confluence",
+        settings={
+            "base_url": "https://confluence.example",
+            "auth_scheme": "Bearer",
+            "token_env": "CONF_TOKEN",
+        },
+    )
+    overridden = {s.connector_id: s for s in connector_statuses([conn])}
+    assert "replacing the built-in" in overridden["confluence"].detail
+
+
+# --- every row can be tested ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "connector_id", ["confluence", "mock_chembl", "sharepoint", "local-sqlite"]
+)
+def test_every_connector_can_be_tested(store, client, connector_id: str):
+    """A test that only works on the rows someone added leaves the ones that
+    ship unverifiable."""
+    response = post(client, f"/connections/{connector_id}/test", [])
+    assert response.status_code == 303
+
+
+def test_testing_the_local_database_opens_it(store):
+    """Checked by opening the file, not by asserting it exists: an unreadable or
+    truncated database passes the second test and fails the first."""
+    from services.api_gateway.runs import probe_any
+
+    result = probe_any("local-sqlite")
+    assert result.reachable is True
+    assert "tables" in result.detail
+
+
+def test_testing_an_unknown_connector_is_a_404(store, client):
+    assert post(client, "/connections/not-a-connector/test", []).status_code == 404
+
+
+def test_a_test_probes_the_override_not_the_builtin(store):
+    """The configured connection is the one a run would call. Testing the
+    fixture while an override is in force would report on something the app is
+    not going to use."""
+    from services.api_gateway.runs import probe_any
+
+    conn = connections_module.Connection(
+        id="confluence", kind="confluence", settings={}
+    )
+    result = probe_any("confluence", [conn])
+    assert "fixture" not in result.detail.lower(), result.detail
+
+
+# --- the form is a disclosure ---------------------------------------------
+
+
+def test_the_add_form_is_closed_by_default(store, client):
+    """It is the tallest thing on the page and most visits are to read a status,
+    not to add a source."""
+    body = client.get("/connections").text
+    assert '<details class="ti-disclose">' in body
+    assert '<details class="ti-disclose" open>' not in body
+
+
+def test_the_form_opens_when_a_save_was_refused(store, client):
+    """Hiding the reason a save failed would be worse than the scrolling it
+    saves — the same rule the editor's tabs follow."""
+    response = post(client, "/connections", [("op", "save"), ("id", "X!"), ("kind", "oracle")])
+    assert response.status_code == 422
+    assert '<details class="ti-disclose" open>' in response.text
+
+
+def test_configuring_a_builtin_opens_the_form_with_its_id(store, client):
+    """A connection replaces a built-in only by carrying its id, so the link
+    fixes it rather than leaving someone to retype it exactly."""
+    body = client.get("/connections?add=confluence&kind=confluence").text
+    assert '<details class="ti-disclose" open>' in body
+    assert 'value="confluence"' in body
