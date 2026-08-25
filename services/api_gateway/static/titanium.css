@@ -2894,3 +2894,22 @@ button.ti-lrow__act {
 /* The mirror of [data-js-only]: shown only when scripting is off, so the
    appearance panel explains itself rather than looking broken. */
 [data-nojs-only] { display: none; }
+
+/* A .ti-thead used as a group heading inside a panel: three columns rather
+   than the list's own, and a rule above so consecutive groups separate. */
+.ti-thead--group {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--ti-8);
+  border-top: 1px solid var(--ti-line);
+}
+.ti-panel > div:first-child > .ti-thead--group { border-top: 0; }
+
+/* A .ti-tag that is a link rather than a checkbox label. Same chip, same
+   counts; aria-current marks the active one because these are mutually
+   exclusive filters, not toggles. */
+a.ti-tag { text-decoration: none; }
+a.ti-tag[aria-current='true'] {
+  background: var(--ti-seg-on);
+  border-color: var(--ti-dim);
+  color: var(--ti-ink);
+}

@@ -6810,3 +6810,216 @@ def editor_tabs(issues: Iterable[Any] = ()) -> list[dict[str, Any]]:
         }
         for tab_id, label, _prefixes in EDITOR_TABS
     ]
+
+
+# ---------------------------------------------------------------------------
+# Runs list: grouping, sorting, filtering
+# ---------------------------------------------------------------------------
+#
+# This was one boolean — `group=1` meant "by compound" and nothing else — plus
+# a text box. Fifty runs of the same report type read as fifty identical rows,
+# which is what made the list hard to use: the thing you scan for is the report
+# type, and it was the one axis you could not organise by.
+#
+# Shaped like `gallery_view` on purpose. The templates page already had
+# grouping, sorting and facets with a settled vocabulary; a second, different
+# mechanism for the same three ideas would be two things to learn and two
+# places to fix.
+
+RUN_GROUP_OPTIONS: list[tuple[str, str]] = [
+    ("template", "Report type"),
+    ("compound", "Compound"),
+    ("status", "State"),
+    ("day", "Day"),
+    (GROUP_NONE, "Nothing (one flat list)"),
+]
+
+RUN_SORT_OPTIONS: list[tuple[str, str]] = [
+    ("newest", "Newest first"),
+    ("oldest", "Oldest first"),
+    ("template", "Report type (A–Z)"),
+    ("compound", "Compound (A–Z)"),
+    ("duration", "Longest first"),
+    ("cited", "Most citations"),
+]
+
+_RUN_GROUP_IDS = frozenset(k for k, _ in RUN_GROUP_OPTIONS)
+_RUN_SORT_IDS = frozenset(k for k, _ in RUN_SORT_OPTIONS)
+
+#: Grouping by report type is the default. It is what the list is scanned by,
+#: and an ungrouped page of near-identical rows is the state this replaced.
+DEFAULT_RUN_GROUP = "template"
+
+
+@dataclass
+class RunGroup(_Dict):
+    key: str
+    label: str
+    sub: str
+    count: int
+    heading_id: str
+    runs: list[Any]
+
+
+@dataclass
+class RunListView(_Dict):
+    groups: list[RunGroup]
+    runs: list[Any]
+    n_total: int
+    n_shown: int
+    group: str
+    sort: str
+    q: str
+    state: str
+    group_options: list[tuple[str, str]]
+    sort_options: list[tuple[str, str]]
+    states: list[dict[str, Any]]
+    grouped: bool
+
+
+def _haystack(summary: Any) -> str:
+    """Everything a text filter should match on for one run."""
+    parts = (
+        summary.title,
+        summary.template_title,
+        summary.primary_input,
+        summary.status_label,
+        summary.run_id,
+        summary.created_human,
+    )
+    return " ".join(str(p or "") for p in parts).lower()
+
+
+def _run_sort_key(sort: str) -> Any:
+    if sort == "oldest":
+        return lambda s: (s.created_at, s.template_title.casefold())
+    if sort == "template":
+        return lambda s: (s.template_title.casefold(), _desc(s.created_at))
+    if sort == "compound":
+        return lambda s: ((s.primary_input or "￿").casefold(), _desc(s.created_at))
+    if sort == "duration":
+        # Negated rather than reversed, so the tie-break stays ascending by
+        # title instead of flipping with it.
+        return lambda s: (-(s.duration_s or 0.0), s.template_title.casefold())
+    if sort == "cited":
+        return lambda s: (-(s.n_sections_cited or 0), s.template_title.casefold())
+    return lambda s: (_desc(s.created_at), s.template_title.casefold())
+
+
+def _desc(value: str) -> tuple[int, ...]:
+    """A descending sort key for an ISO timestamp, without reverse=True.
+
+    `reverse=True` would also flip every tie-break, so two runs started in the
+    same second would come back in reverse alphabetical order. Inverting the
+    codepoints inverts only this field.
+    """
+    return tuple(-ord(c) for c in value)
+
+
+def _run_group_of(summary: Any, group: str) -> tuple[str, str, str]:
+    """(key, label, sub) for the bucket this run belongs in."""
+    if group == "template":
+        return (
+            summary.template_key or "untitled",
+            summary.template_title or summary.template_key,
+            f"v{summary.template_version}" if summary.template_version else "",
+        )
+    if group == "compound":
+        value = summary.primary_input or ""
+        return (value or UNTAGGED, value or "No compound", "")
+    if group == "status":
+        return (summary.status, summary.status_label or summary.status, "")
+    if group == "day":
+        day = (summary.created_at or "")[:10]
+        return (day or UNTAGGED, day or "No date", "")
+    return ("all", "All runs", "")
+
+
+def run_list_view(
+    summaries: Sequence[Any],
+    *,
+    group: str | None = None,
+    sort: str | None = None,
+    q: str = "",
+    state: str = "",
+) -> RunListView:
+    """Everything `GET /runs` renders, filtered, grouped and sorted server-side.
+
+    Non-matching runs are omitted rather than rendered-then-hidden, so there is
+    one predicate in one language — the same rule the template gallery follows.
+    """
+    n_total = len(summaries)
+
+    active_group = str(group or "").strip().lower()
+    if active_group not in _RUN_GROUP_IDS:
+        active_group = DEFAULT_RUN_GROUP
+    active_sort = str(sort or "").strip().lower()
+    if active_sort not in _RUN_SORT_IDS:
+        active_sort = "newest"
+
+    needle = q.strip().lower()
+    wanted_state = str(state or "").strip().lower()
+
+    # Counts are taken before the state filter so the chips can say how many
+    # each one would show. A facet whose count reflects the filter it applies
+    # always reads "1" once clicked, which tells nobody anything.
+    state_counts: dict[str, int] = {}
+    for summary in summaries:
+        state_counts[summary.status] = state_counts.get(summary.status, 0) + 1
+
+    shown = [
+        s
+        for s in summaries
+        if (not needle or needle in _haystack(s))
+        and (not wanted_state or s.status == wanted_state)
+    ]
+    shown = sorted(shown, key=_run_sort_key(active_sort))
+
+    groups: list[RunGroup] = []
+    if active_group != GROUP_NONE:
+        buckets: dict[str, list[Any]] = {}
+        meta: dict[str, tuple[str, str]] = {}
+        for summary in shown:
+            key, label, sub = _run_group_of(summary, active_group)
+            buckets.setdefault(key, []).append(summary)
+            meta.setdefault(key, (label, sub))
+        used: set[str] = set()
+        # Group order follows the chosen sort: whatever is first inside a
+        # bucket decides where the bucket sits, so "newest first" puts the
+        # report type with the newest run at the top rather than sorting the
+        # headings alphabetically and burying it.
+        for key in sorted(buckets, key=lambda k: _run_sort_key(active_sort)(buckets[k][0])):
+            label, sub = meta[key]
+            groups.append(
+                RunGroup(
+                    key=key,
+                    label=label,
+                    sub=sub,
+                    count=len(buckets[key]),
+                    heading_id=_heading_id("run", key, used),
+                    runs=buckets[key],
+                )
+            )
+
+    return RunListView(
+        groups=groups,
+        runs=shown,
+        n_total=n_total,
+        n_shown=len(shown),
+        group=active_group,
+        sort=active_sort,
+        q=q,
+        state=wanted_state,
+        group_options=list(RUN_GROUP_OPTIONS),
+        sort_options=list(RUN_SORT_OPTIONS),
+        states=[
+            {
+                "id": status,
+                "label": STATUS_LABEL.get(status, status),
+                "count": count,
+                "selected": status == wanted_state,
+            }
+            for status, count in sorted(state_counts.items(), key=lambda kv: -kv[1])
+        ],
+        grouped=active_group != GROUP_NONE,
+    )

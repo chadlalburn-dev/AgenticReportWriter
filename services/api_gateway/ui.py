@@ -922,11 +922,15 @@ def template_raw(request: Request, template_key: str) -> Response:
     )
 
 
-def _runs_url(*, q: str, group: bool) -> str:
-    """A /runs URL that keeps whichever state the caller is not changing."""
-    params = [("q", q)] if q else []
-    if group:
-        params.append(("group", "1"))
+def _runs_url(*, q: str = "", group: str = "", sort: str = "", state: str = "") -> str:
+    """A /runs URL that keeps whichever state the caller is not changing.
+
+    Every control carries the others. The grouping links used to be the
+    literals "/runs" and "/runs?group=1", so switching grouping silently threw
+    away the search — and with four controls instead of two, hand-built links
+    would lose three things at a time.
+    """
+    params = [(k, v) for k, v in (("q", q), ("group", group), ("sort", sort), ("state", state)) if v]
     return "/runs?" + urlencode(params) if params else "/runs"
 
 
@@ -1115,52 +1119,40 @@ def connection_test(request: Request, connection_id: str) -> Response:
 
 @router.get("/runs", response_class=HTMLResponse, name="run_list", include_in_schema=False)
 def run_list(request: Request) -> HTMLResponse:
-    store = get_store()
-    filter_q = (request.query_params.get("q") or "").strip()
-    group = request.query_params.get("group") in ("1", "true", "yes", "on")
+    """Grouped, sorted and filtered server-side.
 
-    summaries = store.list_runs(limit=200)
-    if filter_q:
-        needle = filter_q.lower()
-        summaries = [s for s in summaries if needle in _haystack(s)]
-    if group:
-        summaries = sorted(
-            summaries,
-            key=lambda s: ((s.primary_input or "￿").lower(), s.created_at),
-            reverse=False,
-        )
-        # newest first inside each group
-        grouped: list[Any] = []
-        bucket: list[Any] = []
-        current: str | None = None
-        for s in summaries:
-            key = s.primary_input or ""
-            if key != current:
-                grouped.extend(sorted(bucket, key=lambda x: x.created_at, reverse=True))
-                bucket = []
-                current = key
-            bucket.append(s)
-        grouped.extend(sorted(bucket, key=lambda x: x.created_at, reverse=True))
-        summaries = grouped
-
+    Non-matching runs are omitted rather than rendered-then-hidden, so there is
+    one predicate in one language — the rule the template gallery already
+    follows.
+    """
+    params = request.query_params
+    view = runs_module.run_list_view(
+        get_store().list_runs(limit=500),
+        group=params.get("group"),
+        sort=params.get("sort"),
+        q=(params.get("q") or "").strip(),
+        state=(params.get("state") or "").strip(),
+    )
     return _render(
         request,
         "runs.html",
         {
-            "runs": summaries,
-            "filter_q": filter_q,
-            "group_by_compound": group,
-            # The two grouping links used to be the literals "/runs" and
-            # "/runs?group=1", so switching grouping silently threw away the
-            # search. The form already carried `group` the other way, which is
-            # what let the asymmetry survive — one direction was handled and
-            # nobody clicked the other. Built with urlencode so a query holding
-            # an "&" or a space survives the round trip.
-            "newest_url": _runs_url(q=filter_q, group=False),
-            "grouped_url": _runs_url(q=filter_q, group=True),
-            # "clear" drops the query and keeps the grouping — that is what
-            # clearing a search means, not resetting the whole view.
-            "clear_url": _runs_url(q="", group=group),
+            "view": view,
+            # One URL per state chip, each keeping the search, grouping and
+            # sort. Built here rather than in the template so the "keep what
+            # you are not changing" rule lives in one place.
+            "state_urls": {
+                "": _runs_url(q=view.q, group=view.group, sort=view.sort),
+                **{
+                    s["id"]: _runs_url(
+                        q=view.q, group=view.group, sort=view.sort, state=s["id"]
+                    )
+                    for s in view.states
+                },
+            },
+            # Clearing drops the query and the state facet, and keeps how the
+            # list is arranged — that is what clearing a search means.
+            "clear_url": _runs_url(group=view.group, sort=view.sort),
         },
         nav_active="runs",
     )

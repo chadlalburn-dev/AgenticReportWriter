@@ -124,62 +124,84 @@ def test_every_page_offers_a_skip_link(client: TestClient):
 
 
 @pytest.mark.parametrize(
-    ("q", "group", "expected"),
+    ("kwargs", "expected"),
     [
-        ("", False, "/runs"),
-        ("", True, "/runs?group=1"),
-        ("tox", False, "/runs?q=tox"),
-        ("tox", True, "/runs?q=tox&group=1"),
-        # a query holding the characters that break naive concatenation
-        ("a & b", True, "/runs?q=a+%26+b&group=1"),
-        ("100%", False, "/runs?q=100%25"),
+        ({}, "/runs"),
+        ({"group": "template"}, "/runs?group=template"),
+        ({"q": "tox"}, "/runs?q=tox"),
+        ({"q": "tox", "group": "compound"}, "/runs?q=tox&group=compound"),
+        (
+            {"q": "tox", "group": "template", "sort": "duration", "state": "failed"},
+            "/runs?q=tox&group=template&sort=duration&state=failed",
+        ),
+        # queries holding the characters that break naive concatenation
+        ({"q": "a & b", "group": "template"}, "/runs?q=a+%26+b&group=template"),
+        ({"q": "100%"}, "/runs?q=100%25"),
     ],
 )
-def test_the_url_builder_encodes_and_keeps_both_axes(q: str, group: bool, expected: str):
-    assert _runs_url(q=q, group=group) == expected
+def test_the_url_builder_keeps_every_axis(kwargs: dict, expected: str):
+    """Grouping used to be a boolean and the links were the literals "/runs"
+    and "/runs?group=1", so switching it discarded the search. There are four
+    controls now — text, grouping, sorting and the state facet — and a
+    hand-built link would lose three at a time."""
+    assert _runs_url(**kwargs) == expected
 
 
-@pytest.mark.parametrize("label", ["by compound", "newest"])
-def test_switching_the_grouping_keeps_the_search(client: TestClient, label: str):
-    """The round trip a user actually makes: search, then change the grouping."""
-    start = "/runs?q=nonclinical" + ("&group=1" if label == "newest" else "")
-    body = client.get(start).text
-    links = dict(
-        (text.strip(), href)
-        for href, text in re.findall(
-            r'class="ti-seg__btn" href="([^"]*)"[^>]*>([^<]*)<', body
-        )
-    )
-    target = next((h for t, h in links.items() if label in t), None)
-    assert target, f"no {label!r} link on {start}: {list(links)}"
-    landed = client.get(target.replace("&amp;", "&"))
+@pytest.mark.parametrize("axis", ["group", "sort"])
+def test_changing_one_control_keeps_the_search(client: TestClient, axis: str):
+    """The select carries the others through the form; this checks the round
+    trip rather than the markup."""
+    landed = client.get(f"/runs?q=nonclinical&{axis}=" + ("status" if axis == "group" else "oldest"))
     assert landed.status_code == 200
-    assert 'id="ti-runs-q"' in landed.text
     value = re.search(r'id="ti-runs-q"[^>]*value="([^"]*)"', landed.text)
     assert value and value.group(1) == "nonclinical", (
-        f"clicking {label!r} discarded the search"
+        f"changing {axis} discarded the search"
     )
 
 
-def test_clear_drops_the_search_and_keeps_the_grouping(client: TestClient):
+def test_a_state_chip_keeps_the_search_and_the_arrangement(client: TestClient):
+    """Each chip is a link, so it has to rebuild the whole query itself.
+
+    Asked for with a state already selected. The facet hides when every run
+    shares one state — "All 49 / Completed 49" is two ways of saying the same
+    number — so a request without one renders no chips and this would pass
+    against an empty list.
+    """
+    body = client.get(
+        "/runs?q=nonclinical&group=status&sort=oldest&state=completed"
+    ).text
+    hrefs = re.findall(r'class="ti-tag" href="([^"]*)"', body)
+    assert hrefs, "no state chips rendered"
+    for href in hrefs:
+        assert "q=nonclinical" in href, f"{href} dropped the search"
+        assert "group=status" in href, f"{href} dropped the grouping"
+        assert "sort=oldest" in href, f"{href} dropped the sort"
+
+
+def test_clear_drops_the_search_and_keeps_the_arrangement(client: TestClient):
     """Clearing a search means clearing the search, not resetting the view."""
-    body = client.get("/runs?q=nonclinical&group=1").text
-    clear = re.search(r'class="ti-seg__btn" href="([^"]*)"[^>]*>\s*clear\s*<', body)
+    body = client.get("/runs?q=nonclinical&group=status&sort=oldest").text
+    clear = re.search(r'href="([^"]*)"[^>]*>\s*clear\s*<', body)
     assert clear, "no clear link when a search is active"
-    assert clear.group(1) == "/runs?group=1"
+    target = clear.group(1).replace("&amp;", "&")
+    assert "q=" not in target
+    assert "group=status" in target and "sort=oldest" in target
 
 
-def test_the_search_form_still_carries_the_grouping(client: TestClient):
-    """The direction that already worked. Kept under test so fixing the links
-    does not quietly break the form."""
-    body = client.get("/runs?group=1").text
-    # `ti-toolbar`, not `role="search"`: the header carries a global search form
-    # with the same role on every page, and grabbing that one instead is the
-    # same trap that once broke six form-scraping tests at once.
-    form = body[body.index('class="ti-toolbar"') :][:600]
-    assert 'type="hidden"' in form and 'name="group"' in form
-
-
+def test_the_search_form_carries_the_arrangement(client: TestClient):
+    """Submitting the search must not reset grouping or sorting. They are real
+    selects inside the same form, which is also what makes the whole toolbar
+    work with scripting off."""
+    body = client.get("/runs?q=nonclinical&group=status&sort=oldest").text
+    form = re.search(r'<form[^>]*action="/runs"[^>]*>(.*?)</form>', body, re.S)
+    assert form, "no /runs search form"
+    inner = form.group(1)
+    assert re.search(r'name="group"[^>]*>.*?value="status"[^>]*selected', inner, re.S), (
+        "the form does not carry the current grouping"
+    )
+    assert re.search(r'name="sort"[^>]*>.*?value="oldest"[^>]*selected', inner, re.S), (
+        "the form does not carry the current sort"
+    )
 def test_an_unknown_query_param_is_ignored_not_an_error(client: TestClient):
     """A stale bookmark must still open. /runs takes q and group; anything else
     widens rather than 500s."""

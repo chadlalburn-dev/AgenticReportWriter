@@ -9,50 +9,13 @@
 {#- next to the state rather than being buried in a stat strip.             -#}
 {#- ---------------------------------------------------------------------- -#}
 
-{% block page_title %}Runs — Report Generator{% endblock %}
-
-{% block content %}
-<div class="ti-page">
-
-  <div class="ti-sec-head">
-    <h2 class="ti-h2" id="ti-runs-head">Runs</h2>
-    <div class="ti-seg" role="group" aria-labelledby="ti-runs-head">
-      {#- These carry the current search. Hard-coded "/runs" and "/runs?group=1"
-          meant switching the grouping discarded whatever you had typed. -#}
-      <a class="ti-seg__btn" href="{{ newest_url }}"
-         {% if not group_by_compound %}aria-current="true"{% endif %}>newest {{ runs|length }}</a>
-      <a class="ti-seg__btn" href="{{ grouped_url }}"
-         {% if group_by_compound %}aria-current="true"{% endif %}>by compound</a>
-    </div>
-  </div>
-
-  <form class="ti-toolbar" action="/runs" method="get" role="search">
-    {%- if group_by_compound %}<input type="hidden" name="group" value="1">{% endif %}
-    <label class="ti-search" for="ti-runs-q">
-      <span class="ti-search__glyph">{{ ic.icon('search') }}</span>
-      <span class="ti-sr">Filter runs</span>
-      <input class="ti-search__input" id="ti-runs-q" name="q" type="search"
-             value="{{ filter_q|default('') }}" autocomplete="off"
-             placeholder="Filter by report, compound or state…">
-    </label>
-    {%- if filter_q %}
-    <a class="ti-seg__btn" href="{{ clear_url }}">clear</a>
-    {%- endif %}
-  </form>
-
-  <div class="ti-panel">
-    <div class="ti-thead ti-lrow--run" role="row">
-      <span role="columnheader">report &middot; compound</span>
-      <span role="columnheader">state</span>
-      <span role="columnheader">cited</span>
-      <span role="columnheader" style="justify-self:end">started</span>
-      <span></span>
-    </div>
-
-    {%- if runs %}
-      {%- for r in runs %}
+{#- The row, unchanged. It carries the placeholder-prose marker, the state
+    glyph (colour is never the only signal) and the cited ratio, each with
+    its own reason — so grouping was built around it rather than through
+    it. -#}
+{% macro run_row(r) %}
       <a class="ti-lrow ti-lrow--run" href="/runs/{{ r.run_id }}">
-        <div style="min-width:0">
+  <div style="min-width:0">
           <p class="ti-lrow__title" title="{{ r.template_title }}">{{ r.template_title }}</p>
           {#- The title names the compound only. The placeholder-prose chip
               inside this line is its own element with its own tooltip, so
@@ -88,14 +51,120 @@
         <span class="ti-lrow__meta">{{ r.created_human }}</span>
         <span class="ti-lrow__arrow">{{ ic.icon('arrow') }}</span>
       </a>
+{% endmacro %}
+
+{% block page_title %}Runs — Report Generator{% endblock %}
+
+{% block content %}
+<div class="ti-page">
+
+  <div class="ti-sec-head">
+    <h2 class="ti-h2" id="ti-runs-head">Runs</h2>
+    <p class="ti-lrow__meta">
+      {%- if view.n_shown == view.n_total %}{{ view.n_total }} runs
+      {%- else %}{{ view.n_shown }} of {{ view.n_total }} runs{% endif -%}
+    </p>
+  </div>
+
+  {#- One GET form for everything: text, grouping, sorting and the state facet.
+      Real selects with a real submit, so the whole toolbar works with scripting
+      off — the same rule the rest of this app follows. `data-js-only` on the
+      submit is what lets the selects auto-apply when JavaScript is there
+      without stranding anyone when it is not. -#}
+  <form class="ti-toolbar" action="/runs" method="get" role="search">
+    <label class="ti-search" for="ti-runs-q">
+      <span class="ti-search__glyph">{{ ic.icon('search') }}</span>
+      <span class="ti-sr">Filter runs</span>
+      <input class="ti-search__input" id="ti-runs-q" name="q" type="search"
+             value="{{ view.q|default('') }}" autocomplete="off"
+             placeholder="Filter by report, compound or state…">
+    </label>
+
+    {#- Same controls as the templates page, same classes. A second set of
+        names for group-and-sort would be two things to learn and two places to
+        fix, and the invented ones had no styles at all. -#}
+    <label class="ti-sr" for="ti-runs-group">Group by</label>
+    <select class="ti-select" id="ti-runs-group" name="group">
+      {%- for gid, glabel in view.group_options %}
+      <option value="{{ gid }}"{% if view.group == gid %} selected{% endif %}>{{ glabel }}</option>
       {%- endfor %}
+    </select>
+
+    <label class="ti-sr" for="ti-runs-sort">Sort</label>
+    <select class="ti-select" id="ti-runs-sort" name="sort">
+      {%- for sid, slabel in view.sort_options %}
+      <option value="{{ sid }}"{% if view.sort == sid %} selected{% endif %}>{{ slabel }}</option>
+      {%- endfor %}
+    </select>
+
+    <button class="ti-btn-ghost" type="submit">Apply</button>
+    {%- if view.q or view.state %}
+    <a class="ti-seg__btn" href="{{ clear_url }}">clear</a>
+    {%- endif %}
+  </form>
+
+  {#- The state facet as links rather than another select, because these are the
+      filter someone reaches for most and a link shows its count. Counts are
+      taken before the state filter is applied: a facet whose count reflects the
+      filter it applies always reads "1" once clicked, which tells nobody
+      anything. -#}
+  {#- The state filter as links, using the same .ti-tag chip the tag filters
+      use. Links rather than checkboxes because these are mutually exclusive
+      and each one shows its count.
+
+      Counts are taken before the state filter is applied: a facet whose count
+      reflects the filter it applies always reads "1" once clicked, which tells
+      nobody anything. -#}
+  {%- if view.states|length > 1 or view.state %}
+  <div class="ti-facet__values" role="group" aria-label="Filter by state">
+    <a class="ti-tag" href="{{ state_urls[''] }}"
+       {% if not view.state %}aria-current="true"{% endif %}>
+      <span>All</span>
+      <span class="ti-tag__count">{{ view.n_total }}<span class="ti-sr"> runs</span></span>
+    </a>
+    {%- for s in view.states %}
+    <a class="ti-tag" href="{{ state_urls[s.id] }}"
+       {% if s.selected %}aria-current="true"{% endif %}>
+      <span>{{ s.label }}</span>
+      <span class="ti-tag__count">{{ s.count }}<span class="ti-sr"> runs</span></span>
+    </a>
+    {%- endfor %}
+  </div>
+  {%- endif %}
+
+  <div class="ti-panel">
+    <div class="ti-thead ti-lrow--run" role="row">
+      <span role="columnheader">report &middot; compound</span>
+      <span role="columnheader">state</span>
+      <span role="columnheader">cited</span>
+      <span role="columnheader" style="justify-self:end">started</span>
+      <span></span>
+    </div>
+
+    {%- if view.runs %}
+      {%- if view.grouped %}
+        {%- for g in view.groups %}
+        <div role="group" aria-labelledby="{{ g.heading_id }}">
+          {#- .ti-thead is already "the band above a list of rows", which is
+              exactly what a group heading is. -#}
+          <div class="ti-thead ti-thead--group">
+            <span id="{{ g.heading_id }}">{{ g.label }}</span>
+            {%- if g.sub %}<span class="ti-code">{{ g.sub }}</span>{% endif %}
+            <span style="justify-self:end">{{ g.count }}</span>
+          </div>
+          {%- for r in g.runs %}{{ run_row(r) }}{% endfor %}
+        </div>
+        {%- endfor %}
+      {%- else %}
+        {%- for r in view.runs %}{{ run_row(r) }}{% endfor %}
+      {%- endif %}
     {%- else %}
       <div class="ti-empty">
         <p class="ti-empty__title">
-          {%- if filter_q %}Nothing matches “{{ filter_q }}”{% else %}No runs yet{% endif %}
+          {%- if view.q %}Nothing matches “{{ view.q }}”{% else %}No runs yet{% endif %}
         </p>
         <p class="ti-empty__body">
-          {%- if filter_q %}
+          {%- if view.q %}
           <a href="{{ clear_url }}">Clear the filter</a> to see every run.
           {%- else %}
           Nothing has been drafted on this machine yet. Pick a report type and
@@ -107,7 +176,7 @@
             with no runs — both offer a primary action, and this one asked the
             reader to find "Compounds" mid-paragraph. Same situation, same
             affordance. -#}
-        {%- if not filter_q %}
+        {%- if not view.q %}
         <p class="ti-empty__body">
           <a class="ti-btn-primary" href="/templates">Choose a report type</a>
         </p>

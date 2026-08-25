@@ -84,12 +84,16 @@ def test_an_empty_list_and_a_failed_search_are_different_states(empty: TestClien
 def test_clearing_a_filter_keeps_the_grouping(empty: TestClient):
     """The same asymmetry that broke the segment links: clearing the search must
     not silently reset the view."""
-    body = empty.get("/runs?q=zz&group=1").text
+    # `group` is a named axis now, not a boolean flag. Same property: the empty
+    # state's clear link has to rebuild the arrangement, not reset it.
+    body = empty.get("/runs?q=zz&group=status&sort=oldest").text
     clear = re.search(r'ti-empty__body">\s*<a href="([^"]*)"', body)
     assert clear, "no clear link in the no-match state"
-    assert "group=1" in clear.group(1), (
-        f"clearing the filter dropped the grouping: {clear.group(1)}"
+    target = clear.group(1).replace("&amp;", "&")
+    assert "group=status" in target and "sort=oldest" in target, (
+        f"clearing the filter dropped the arrangement: {target}"
     )
+    assert "q=" not in target, f"clearing the filter kept the search: {target}"
 
 
 def test_the_compound_page_survives_a_compound_with_no_runs(empty: TestClient):

@@ -93,10 +93,10 @@
     <div class="ti-conn__grid">
       <label class="ti-field">
         <span class="ti-field__label">Id</span>
-        <input class="ti-input" name="id" value="{{ values.get('id', '') }}"
+        <input class="ti-field__input" name="id" value="{{ values.get('id', '') }}"
                placeholder="lims_prod" required
                {% if editing %}readonly{% endif %}>
-        <span class="ti-field__hint">
+        <span class="ti-field__msg">
           Lowercase letters, digits and underscores. Templates name a source by
           this.{% if editing %} Fixed once created — renaming would orphan every
           template pointing at it.{% endif %}
@@ -105,19 +105,19 @@
 
       <label class="ti-field">
         <span class="ti-field__label">Type</span>
-        <select class="ti-input" name="kind">
+        <select class="ti-field__input" name="kind">
           {%- for k in kinds %}
           <option value="{{ k }}"{% if values.get('kind') == k %} selected{% endif %}>{{ k }}</option>
           {%- endfor %}
         </select>
-        <span class="ti-field__hint">Changing the type changes the settings below.</span>
+        <span class="ti-field__msg">Changing the type changes the settings below.</span>
       </label>
 
       <label class="ti-field">
         <span class="ti-field__label">Label</span>
-        <input class="ti-input" name="label" value="{{ values.get('label', '') }}"
+        <input class="ti-field__input" name="label" value="{{ values.get('label', '') }}"
                placeholder="LIMS production">
-        <span class="ti-field__hint">Optional. Shown instead of the id where there is room.</span>
+        <span class="ti-field__msg">Optional. Shown instead of the id where there is room.</span>
       </label>
     </div>
 
@@ -146,7 +146,7 @@
             {%- if f.name not in active_names %} <span class="ti-field__na">not used by this mode</span>{% endif %}
           </span>
           {%- if f.control == 'choice' %}
-          <select class="ti-input" name="{{ f.name }}">
+          <select class="ti-field__input" name="{{ f.name }}">
             {%- for cid, clabel in f.choices %}
             <option value="{{ cid }}"
                     {% if values.get(f.name, default_choice.get((kind, f.name), '')) == cid %}selected{% endif %}>
@@ -155,19 +155,19 @@
             {%- endfor %}
           </select>
           {%- else %}
-          <input class="ti-input" name="{{ f.name }}" value="{{ values.get(f.name, '') }}"
+          <input class="ti-field__input" name="{{ f.name }}" value="{{ values.get(f.name, '') }}"
                  {% if f.name in env_fields %}placeholder="LIMS_PROD_PASSWORD"{% endif %}>
           {%- endif %}
           {%- if f.name in env_fields %}
           {#- The single most important sentence on this page. Someone pasting
               the secret here is the mistake the whole design is arranged to
               prevent, and the form checks the shape for exactly that reason. -#}
-          <span class="ti-field__hint">
+          <span class="ti-field__msg">
             The <strong>name</strong> of an environment variable, not the value.
             This app never stores the secret itself.
           </span>
           {%- elif f.hint %}
-          <span class="ti-field__hint">{{ f.hint }}</span>
+          <span class="ti-field__msg">{{ f.hint }}</span>
           {%- endif %}
         </label>
         {%- endfor %}
