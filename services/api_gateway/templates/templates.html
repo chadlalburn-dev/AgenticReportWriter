@@ -76,8 +76,12 @@
       section guidance and the figures — editing the report's wiring, not its
       prose — and "Edit" invites the reading that you are about to type on the
       document itself. -#}
-  <a class="ti-lrow__act" href="/templates/{{ c.key }}/edit"
-     aria-label="Configure {{ c.title }} — sources, sections and figures">Configure</a>
+  <span class="ti-conn__acts">
+    <a class="ti-lrow__act" href="/templates/{{ c.key }}/edit"
+       aria-label="Configure {{ c.title }} — sources, sections and figures">Configure</a>
+    <a class="ti-lrow__act" href="/templates/{{ c.key }}/history"
+       aria-label="Version history for {{ c.title }}">History</a>
+  </span>
 </div>
 {% endmacro %}
 

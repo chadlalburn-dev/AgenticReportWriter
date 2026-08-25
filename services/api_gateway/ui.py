@@ -39,6 +39,7 @@ from services.api_gateway import compounds as compounds_module
 from services.api_gateway import identity as identity_module
 from services.api_gateway import runs as runs_module
 from services.api_gateway import connections as connections_module
+from services.template_service import report_doc_writer
 from services.api_gateway.runs import RunNotTerminal, get_store
 
 # ---------------------------------------------------------------------------
@@ -909,6 +910,104 @@ def template_undelete(request: Request, template_key: str) -> Response:
             detail=f"{key} could not be put back: {exc}",
         )
     return _see_other(f"/?restored={quote(key, safe='')}")
+
+
+@router.get(
+    "/templates/{template_key}/history",
+    response_class=HTMLResponse,
+    name="template_history",
+    include_in_schema=False,
+)
+def template_history(request: Request, template_key: str) -> HTMLResponse:
+    """Every saved state of a template, newest first."""
+    store = get_store()
+    key = _key_or_404(template_key)
+    if not store.template_exists(key, _uid(request)):
+        raise StarletteHTTPException(
+            status_code=404, detail=f"No report template named {key!r}."
+        )
+    card = store.get_template(key, _uid(request))
+    return _render(
+        request,
+        "template_history.html",
+        {
+            "key": key,
+            "title": card.title or key,
+            "versions": runs_module.template_versions(
+                key,
+                backups_dir=runs_module.TEMPLATE_BACKUPS_DIR,
+                current=store.template_path(key, _uid(request)),
+            ),
+            # From the writer, which owns the retention rule. Restating the
+            # number here would let the page and the pruning disagree.
+            "keep": report_doc_writer.BACKUP_KEEP,
+            "flash": (request.query_params.get("restored") or "").strip(),
+        },
+        nav_active="templates",
+    )
+
+
+@router.get(
+    "/templates/{template_key}/history/{handle}",
+    name="template_history_view",
+    include_in_schema=False,
+)
+def template_history_view(
+    request: Request, template_key: str, handle: str
+) -> Response:
+    """One saved state, as text.
+
+    Served as plain text rather than rendered: this is the file, and the point
+    of looking at an old version is seeing exactly what it said.
+    """
+    key = _key_or_404(template_key)
+    if not get_store().template_exists(key, _uid(request)):
+        raise StarletteHTTPException(status_code=404, detail="No such template.")
+    try:
+        text = runs_module.template_version_text(
+            key, handle, backups_dir=runs_module.TEMPLATE_BACKUPS_DIR
+        )
+    except KeyError as exc:
+        raise StarletteHTTPException(status_code=404, detail=str(exc))
+    return PlainTextResponse(text, media_type="text/plain; charset=utf-8")
+
+
+@router.post(
+    "/templates/{template_key}/history/{handle}/restore",
+    name="template_history_restore",
+    include_in_schema=False,
+)
+def template_history_restore(
+    request: Request, template_key: str, handle: str
+) -> Response:
+    """Copy a saved state back over the live template.
+
+    A POST, not a link: a crawler, a prefetch or a stray middle-click must not
+    be able to overwrite a template, and the whole point of a history is that
+    nothing in it changes by accident.
+
+    The current state is backed up first, so a restore is itself reversible —
+    which is the difference between a history and a trapdoor.
+    """
+    store = get_store()
+    key = _key_or_404(template_key)
+    user = _uid(request)
+    if not store.template_exists(key, user):
+        raise StarletteHTTPException(status_code=404, detail="No such template.")
+    try:
+        text = runs_module.template_version_text(
+            key, handle, backups_dir=runs_module.TEMPLATE_BACKUPS_DIR
+        )
+    except KeyError as exc:
+        raise StarletteHTTPException(status_code=404, detail=str(exc))
+
+    path = store.template_path(key, user)
+    runs_module.backup_template(path, runs_module.TEMPLATE_BACKUPS_DIR)
+    path.write_text(text, encoding="utf-8")
+    store.invalidate_template(key)
+    return RedirectResponse(
+        f"/templates/{key}/history?restored={handle}", status_code=303
+    )
 
 
 @router.get("/templates/{template_key}/raw", name="template_raw", include_in_schema=False)

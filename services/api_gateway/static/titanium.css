@@ -2923,3 +2923,20 @@ a.ti-tag[aria-current='true'] {
 /* "not used by this mode" wrapped under its own label and read as part of it.
    Its own line, at caption size, so the label stays one phrase. */
 .ti-field__na { display: block; margin-top: var(--ti-2); }
+
+/* Version history: when, version, owner, size, actions. */
+.ti-lrow--ver {
+  grid-template-columns: minmax(0, 1fr) 6rem minmax(0, 12rem) 5rem auto;
+  align-items: center;
+}
+
+@media (max-width: 900px) {
+  .ti-lrow--ver { grid-template-columns: minmax(0, 1fr) auto; }
+  .ti-lrow--ver > :nth-child(n+3):nth-child(-n+4) { display: none; }
+  .ti-thead.ti-lrow--ver { display: none; }
+}
+
+/* A dot inside a row title must not shrink. `.ti-lrow__title` is a flex line,
+   and a 9px circle with no shrink guard is compressed to a 2px sliver by a
+   long neighbour — which reads as a stray vertical rule rather than a state. */
+.ti-lrow__title .ti-dot { flex: 0 0 auto; }

@@ -1,0 +1,73 @@
+{% extends "titanium_base.html" %}
+{% import "_icons.html" as ic %}
+
+{% block title %}History — {{ title }} · Report Generator{% endblock %}
+
+{% block content %}
+<div class="ti-page">
+
+  <div class="ti-sec-head">
+    <h2 class="ti-h2">{{ title }}</h2>
+    <a class="ti-sec-head__link" href="/templates/{{ key }}/edit">Configure</a>
+  </div>
+
+  <p class="ti-page__lede">
+    Every save of this template, newest first. A copy is written before each
+    save, so this is what the file actually said at the time rather than a
+    reconstruction.
+  </p>
+
+  {%- if flash %}
+  <p class="ti-footnote">Restored the version from {{ flash }}. The state before
+    restoring was saved too, so this is reversible.</p>
+  {%- endif %}
+
+  <div class="ti-panel">
+    <div class="ti-thead ti-lrow--ver" role="row">
+      <span role="columnheader">when</span>
+      <span role="columnheader">version</span>
+      <span role="columnheader">owner</span>
+      <span role="columnheader">size</span>
+      <span role="columnheader">actions</span>
+    </div>
+
+    {%- for v in versions %}
+    <div class="ti-lrow ti-lrow--ver">
+      <span class="ti-lrow__title" title="{{ v.when_human }}">
+        <span class="ti-dot ti-dot--{{ 'on' if v.is_current else 'off' }}" aria-hidden="true"></span>
+        {{ v.when_human }}{% if v.is_current %} <span class="ti-code">current</span>{% endif %}
+      </span>
+      <span class="ti-lrow__sub" title="{{ v.version }}">v{{ v.version or '—' }}</span>
+      <span class="ti-lrow__sub" title="{{ v.owner }}">{{ v.owner or '—' }}</span>
+      <span class="ti-lrow__sub" title="{{ v.size }} bytes">{{ v.size }}b</span>
+      <span class="ti-conn__acts">
+        {%- if not v.is_current %}
+        <a class="ti-lrow__act" href="/templates/{{ key }}/history/{{ v.handle }}">View</a>
+        {#- Restore is a POST. A link would let a crawler, a prefetch or a
+            stray middle-click overwrite the live template, and the whole point
+            of a history is that nothing here changes by accident. -#}
+        <form method="post" action="/templates/{{ key }}/history/{{ v.handle }}/restore"
+              class="ti-inline-form">
+          <button class="ti-lrow__act" type="submit">Restore</button>
+        </form>
+        {%- else %}
+        <a class="ti-lrow__act" href="/templates/{{ key }}/raw">View</a>
+        {%- endif %}
+      </span>
+    </div>
+    {%- endfor %}
+  </div>
+
+  {%- if versions|length <= 1 %}
+  <p class="ti-footnote">
+    No earlier versions yet — a copy is kept each time this template is saved.
+  </p>
+  {%- else %}
+  <p class="ti-footnote">
+    The last {{ keep }} saves are kept. Restoring copies a version back over the
+    live file and keeps the state before it, so a restore can itself be undone.
+  </p>
+  {%- endif %}
+
+</div>
+{% endblock %}

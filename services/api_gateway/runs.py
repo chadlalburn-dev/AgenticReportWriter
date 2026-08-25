@@ -2558,6 +2558,14 @@ class RunStore:
     def trash_dir(self) -> Path:
         return self._trash_dir
 
+    @property
+    def backups_dir(self) -> Path:
+        """Where each save's previous state is kept. Exposed because the version
+        history reads it, and a caller that has the store should not have to
+        reach for a module-level constant that may not be the one this store
+        was built with."""
+        return self._backups_dir
+
     def template_path(
         self, key: str, user_id: str | None = None, *, scope: str | None = None
     ) -> Path:
@@ -7023,3 +7031,115 @@ def run_list_view(
         ],
         grouped=active_group != GROUP_NONE,
     )
+
+
+# ---------------------------------------------------------------------------
+# Template version history
+# ---------------------------------------------------------------------------
+#
+# The history already existed and nothing showed it. `backup_template` has been
+# copying every save into `var/template-backups/<key>/<stamp>.md` and keeping
+# the newest ten, so the versions are on disk — there was simply no way to see
+# what a template used to say, or to put it back.
+#
+# This reads those files rather than introducing a second store. A parallel
+# history would be a second thing to keep correct, and the one that already
+# runs on every save is the one that is actually true.
+
+
+@dataclass
+class TemplateVersion(_Dict):
+    """One saved state of a template."""
+
+    stamp: str
+    when_human: str
+    version: str
+    owner: str
+    updated: str
+    size: int
+    is_current: bool
+    #: Opaque handle for the restore route. The raw timestamp, validated on the
+    #: way back in — a filename from a URL is exactly where a traversal lives.
+    handle: str
+
+
+_STAMP_RE = re.compile(r"^\d{8}T\d{6}Z$")
+
+
+def _front_matter_value(text: str, key: str) -> str:
+    match = re.search(rf"^{key}:\s*(.+)$", text, re.M)
+    return match.group(1).strip().strip("'\"") if match else ""
+
+
+def template_versions(
+    key: str, *, backups_dir: Path, current: Path | None = None
+) -> list[TemplateVersion]:
+    """Saved states of one template, newest first, with the live file on top.
+
+    The live file is included and marked, because "what does it say now" is the
+    first thing a reader comparing versions needs and the least convenient thing
+    to have to find somewhere else.
+    """
+    out: list[TemplateVersion] = []
+
+    if current is not None and current.is_file():
+        text = current.read_text(encoding="utf-8", errors="replace")
+        out.append(
+            TemplateVersion(
+                stamp="current",
+                when_human="now",
+                version=_front_matter_value(text, "version"),
+                owner=_front_matter_value(text, "owner"),
+                updated=_front_matter_value(text, "updated"),
+                size=len(text.encode("utf-8")),
+                is_current=True,
+                handle="",
+            )
+        )
+
+    folder = Path(backups_dir) / key
+    if not folder.is_dir():
+        return out
+
+    for path in sorted(folder.glob("*.md"), reverse=True):
+        stamp = path.stem
+        if not _STAMP_RE.match(stamp):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        out.append(
+            TemplateVersion(
+                stamp=stamp,
+                when_human=_stamp_human(stamp),
+                version=_front_matter_value(text, "version"),
+                owner=_front_matter_value(text, "owner"),
+                updated=_front_matter_value(text, "updated"),
+                size=len(text.encode("utf-8")),
+                is_current=False,
+                handle=stamp,
+            )
+        )
+    return out
+
+
+def _stamp_human(stamp: str) -> str:
+    """`20260825T140116Z` -> `25 Aug 2026, 14:01`."""
+    try:
+        moment = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ")
+    except ValueError:
+        return stamp
+    return moment.strftime("%d %b %Y, %H:%M")
+
+
+def template_version_text(key: str, handle: str, *, backups_dir: Path) -> str:
+    """The bytes of one saved state.
+
+    `handle` comes off a URL, so it is matched against the stamp pattern rather
+    than trusted. A filename from a query string is precisely where a path
+    traversal would live, and `..` does not match eight digits.
+    """
+    if not _STAMP_RE.match(handle or ""):
+        raise KeyError(f"not a version handle: {handle!r}")
+    path = Path(backups_dir) / key / f"{handle}.md"
+    if not path.is_file():
+        raise KeyError(f"no saved version {handle!r} for {key!r}")
+    return path.read_text(encoding="utf-8", errors="replace")
