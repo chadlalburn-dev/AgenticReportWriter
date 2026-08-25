@@ -65,10 +65,23 @@ def _ratio(fg: str, bg: str) -> float:
 
 @pytest.fixture(scope="module")
 def tokens() -> dict[str, str]:
+    """The light tokens, from the `:root` block only.
+
+    Scoped rather than regexed over the whole file. It used to read everything,
+    which was harmless while `:root` was the only place tokens were defined —
+    and the moment a dark block was added, the dict comprehension kept the LAST
+    match and every light assertion below started measuring dark colours. They
+    failed loudly, which was lucky; a palette close enough to pass would have
+    left this suite quietly testing the wrong theme.
+    """
     source = CSS.read_text(encoding="utf-8")
+    start = source.index(":root {")
+    end = source.index(chr(10) + chr(125), start)
     return {
         m.group(1): m.group(2)
-        for m in re.finditer(r"(--ti-[a-z0-9-]+):\s*(#[0-9A-Fa-f]{6})", source)
+        for m in re.finditer(
+            r"(--ti-[a-z0-9-]+):\s*(#[0-9A-Fa-f]{6})", source[start:end]
+        )
     }
 
 
@@ -149,3 +162,90 @@ def test_every_ratio_a_comment_claims_is_true(tokens: dict[str, str], token: str
         assert abs(actual - float(value)) < 0.06, (
             f"{token} claims {value} on the {surface} but measures {actual:.2f}"
         )
+
+
+# --- the dark theme, held to the same arithmetic ---------------------------
+#
+# The light tokens document a ratio beside almost every colour and the tests
+# above prove each claim. A dark theme picked by eye would be the one part of
+# this stylesheet where the numbers were guessed, so it gets the same treatment.
+
+
+DARK_SURFACES = {"field": "#15181B", "panel": "#1F2429"}
+
+
+@pytest.fixture(scope="module")
+def dark_tokens() -> dict[str, str]:
+    """Tokens from the `[data-theme='dark']` block only.
+
+    Parsed from that block rather than the whole file, or the light values
+    above would win and this suite would silently re-test the light theme —
+    a test that passes while measuring the wrong thing.
+    """
+    source = CSS.read_text(encoding="utf-8")
+    start = source.index("[data-theme='dark'] {")
+    end = source.index("}", start)
+    block = source[start:end]
+    return {
+        m.group(1): m.group(2)
+        for m in re.finditer(r"(--ti-[a-z0-9-]+):\s*(#[0-9A-Fa-f]{6})", block)
+    }
+
+
+def test_the_dark_block_actually_defines_the_tokens(dark_tokens: dict[str, str]):
+    """Guards the fixture. If the block moves or is renamed, everything below
+    would pass against an empty dict."""
+    for token in TEXT_TOKENS + INDICATOR_TOKENS + ("--ti-field", "--ti-panel"):
+        assert token in dark_tokens, f"{token} is not defined in the dark block"
+
+
+def test_the_dark_surfaces_are_what_this_file_assumes(dark_tokens: dict[str, str]):
+    assert dark_tokens["--ti-field"].upper() == DARK_SURFACES["field"]
+    assert dark_tokens["--ti-panel"].upper() == DARK_SURFACES["panel"]
+
+
+@pytest.mark.parametrize("token", TEXT_TOKENS)
+@pytest.mark.parametrize("surface", sorted(DARK_SURFACES))
+def test_dark_text_tokens_clear_45_on_both_surfaces(
+    dark_tokens: dict[str, str], token: str, surface: str
+):
+    got = _ratio(dark_tokens[token], DARK_SURFACES[surface])
+    assert got >= 4.5, f"{token} on the dark {surface} is {got:.2f}:1"
+
+
+@pytest.mark.parametrize("token", INDICATOR_TOKENS)
+@pytest.mark.parametrize("surface", sorted(DARK_SURFACES))
+def test_dark_indicator_tokens_clear_3_on_both_surfaces(
+    dark_tokens: dict[str, str], token: str, surface: str
+):
+    got = _ratio(dark_tokens[token], DARK_SURFACES[surface])
+    assert got >= 3.0, f"{token} on the dark {surface} is {got:.2f}:1"
+
+
+def test_the_dark_text_accent_is_lighter_than_the_indicator_accent(
+    dark_tokens: dict[str, str],
+):
+    """`--ti-accent-dark` names a role, not a lightness. In the light theme the
+    text accent is darker than the indicator; on a dark surface it has to be
+    lighter, and inverting the hue steps mechanically would have produced an
+    illegible one. Same for the greens."""
+    panel = DARK_SURFACES["panel"]
+    assert _ratio(dark_tokens["--ti-accent-dark"], panel) > _ratio(
+        dark_tokens["--ti-accent"], panel
+    )
+    assert _ratio(dark_tokens["--ti-ok-dark"], panel) > _ratio(
+        dark_tokens["--ti-ok"], panel
+    )
+
+
+def test_the_dark_greys_are_legal_on_both_surfaces(dark_tokens: dict[str, str]):
+    """A deliberate difference from light, recorded rather than assumed.
+
+    There, `--ti-dim` is panel-only — 4.29 on the field, which fails, and six
+    classes using it for text on the field were a real bug. Here it clears 4.5
+    on both. That is a property of this palette, not a rule to reproduce, so
+    this asserts the fact instead of importing the light theme's constraint.
+    """
+    for surface in DARK_SURFACES.values():
+        got = _ratio(dark_tokens["--ti-dim"], surface)
+        assert got >= 4.5, f"--ti-dim on dark {surface} is {got:.2f}:1"

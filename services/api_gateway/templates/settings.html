@@ -1,0 +1,116 @@
+{% extends "titanium_base.html" %}
+{% import "_icons.html" as ic %}
+
+{% block title %}Settings · Report Generator{% endblock %}
+
+{% block content %}
+<div class="ti-page">
+
+  <div class="ti-sec-head">
+    <h2 class="ti-h2">Settings</h2>
+  </div>
+
+  <p class="ti-page__lede">
+    How this app looks to you, and what it is allowed to read from.
+  </p>
+
+  {# ------------------------------------------------------- appearance -#}
+  <div class="ti-sec-head" style="margin-top:var(--ti-24)">
+    <h2 class="ti-h2">Appearance</h2>
+  </div>
+
+  {#- These are per-person and per-browser, kept in localStorage rather than on
+      the server. Two reasons: nobody should have to wait for a round trip to
+      change a theme, and the choice belongs to the machine someone is sitting
+      at — the same person on a bright screen and a dark one wants different
+      answers, and a server-side preference would fight that.
+
+      They are the one part of this app that needs JavaScript. Everything a
+      report depends on works without it; a theme toggle is a preference, and
+      the density control has always been marked `data-js-only` for the same
+      reason. -#}
+  <div class="ti-panel ti-settings">
+
+    <div class="ti-settings__row">
+      <div>
+        <p class="ti-settings__label">Theme</p>
+        <p class="ti-settings__hint">
+          System follows your operating system. The dark palette is measured
+          against the same contrast thresholds as the light one, not picked by
+          eye.
+        </p>
+      </div>
+      <div class="ti-seg" role="group" aria-label="Theme" data-js-only>
+        <button class="ti-seg__btn" type="button" data-theme-set="system" aria-pressed="false">System</button>
+        <button class="ti-seg__btn" type="button" data-theme-set="light" aria-pressed="false">Light</button>
+        <button class="ti-seg__btn" type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+
+    <div class="ti-settings__row">
+      <div>
+        <p class="ti-settings__label">Row density</p>
+        <p class="ti-settings__hint">
+          Comfortable adds height to every list row. Compact fits more on a
+          screen, which matters most on the runs list.
+        </p>
+      </div>
+      <div class="ti-seg" role="group" aria-label="Row density" data-js-only>
+        <button class="ti-seg__btn" type="button" data-density-set="compact" aria-pressed="false">Compact</button>
+        <button class="ti-seg__btn" type="button" data-density-set="comfortable" aria-pressed="false">Comfortable</button>
+      </div>
+    </div>
+
+    <p class="ti-settings__note" data-nojs-only>
+      Theme and density need JavaScript, so they are not available here. Nothing
+      a report depends on does.
+    </p>
+  </div>
+
+  {# ------------------------------------------------------ connections -#}
+  <div class="ti-sec-head" style="margin-top:var(--ti-32)">
+    <h2 class="ti-h2">Data connections</h2>
+  </div>
+
+  <p class="ti-page__lede">
+    Where report data can come from, and whether each one can be reached from
+    this machine. These are shared: a connection added here is the app's, not
+    yours alone.
+  </p>
+
+  <div class="ti-panel ti-settings">
+    <div class="ti-settings__row">
+      <div>
+        <p class="ti-settings__label">
+          {{ n_connections }} configured
+          {%- if n_unreachable %}, {{ n_unreachable }} not usable{% endif %}
+        </p>
+        <p class="ti-settings__hint">
+          Add, edit and test connections — BigQuery, Oracle, SharePoint and
+          Confluence. Credentials are never stored here; a connection records
+          which environment variable holds one.
+        </p>
+      </div>
+      <a class="ti-btn-primary" href="/connections">Manage connections</a>
+    </div>
+  </div>
+
+  {# ---------------------------------------------------------- library -#}
+  <div class="ti-sec-head" style="margin-top:var(--ti-32)">
+    <h2 class="ti-h2">Template library</h2>
+  </div>
+
+  <div class="ti-panel ti-settings">
+    <div class="ti-settings__row">
+      <div>
+        <p class="ti-settings__label">{{ n_templates }} templates</p>
+        <p class="ti-settings__hint">
+          Report types, their sources, section guidance and figures.
+        </p>
+      </div>
+      <a class="ti-btn-primary" href="/templates">Open the library</a>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

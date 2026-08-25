@@ -966,6 +966,34 @@ def _connections_context(
 
 
 @router.get(
+    "/settings",
+    response_class=HTMLResponse,
+    name="settings",
+    include_in_schema=False,
+)
+def settings(request: Request) -> HTMLResponse:
+    """Appearance, and the things an admin points the app at.
+
+    Appearance lives in the browser rather than on the server: a theme should
+    not need a round trip, and the right answer differs between the machine
+    someone uses in a bright lab and the one at their desk. Connections are the
+    opposite — shared, and the same for everyone using this app.
+    """
+    statuses = [c.status() for c in _connection_store().load()]
+    runnable, unavailable = get_store().list_templates(_uid(request))
+    return _render(
+        request,
+        "settings.html",
+        {
+            "n_connections": len(statuses),
+            "n_unreachable": sum(1 for s in statuses if not s.usable),
+            "n_templates": len(runnable) + len(unavailable),
+        },
+        nav_active="settings",
+    )
+
+
+@router.get(
     "/connections",
     response_class=HTMLResponse,
     name="connections",

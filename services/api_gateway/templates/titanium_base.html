@@ -36,10 +36,18 @@
       if (d === 'comfortable' || d === 'compact') {
         document.documentElement.setAttribute('data-density', d);
       }
-    } catch (e) { /* private mode — compact default is fine */ }
+      /* Theme, before first paint for the same reason but more urgently: a
+         white flash before a script runs is the single most visible bug a dark
+         theme can have. 'system' sets no attribute, so the CSS media query
+         decides and the very first paint is already right. */
+      var th = localStorage.getItem('ti-theme');
+      if (th === 'light' || th === 'dark') {
+        document.documentElement.setAttribute('data-theme', th);
+      }
+    } catch (e) { /* private mode — the system default is fine */ }
   })();
 </script>
-<noscript><style>[data-js-only]{display:none !important}</style></noscript>
+<noscript><style>[data-js-only]{display:none !important}[data-nojs-only]{display:block !important}</style></noscript>
 </head>
 <body class="ti">
 <a class="ti-skip" href="#ti-main">Skip to content</a>
@@ -71,8 +79,8 @@
        {% if nav_active|default('') == 'runs' %}aria-current="page"{% endif %}>Runs</a>
     <a class="ti-nav__link" href="/templates"
        {% if nav_active|default('') == 'templates' %}aria-current="page"{% endif %}>Templates</a>
-    <a class="ti-nav__link" href="/connections"
-       {% if nav_active|default('') == 'connections' %}aria-current="page"{% endif %}>Connections</a>
+    <a class="ti-nav__link" href="/settings"
+       {% if nav_active|default('') == 'settings' %}aria-current="page"{% endif %}>Settings</a>
   </nav>
 
   <div class="ti-status">
@@ -163,15 +171,47 @@
       btns[i].removeAttribute('aria-current');
     }
   }
+  /* Theme. Same shape as density: aria-pressed because these are toggles for
+     a setting, not the current item in a set. */
+  function paintTheme() {
+    var cur = root.getAttribute('data-theme') || 'system';
+    var btns = document.querySelectorAll('[data-theme-set]');
+    for (var i = 0; i < btns.length; i++) {
+      var on = btns[i].getAttribute('data-theme-set') === cur;
+      btns[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+      btns[i].removeAttribute('aria-current');
+    }
+  }
   document.addEventListener('click', function (e) {
-    var btn = e.target.closest && e.target.closest('[data-density-set]');
-    if (!btn) return;
-    var next = btn.getAttribute('data-density-set');
-    root.setAttribute('data-density', next);
-    try { localStorage.setItem('ti-density', next); } catch (err) {}
-    paintDensity();
+    if (!e.target.closest) return;
+
+    var dens = e.target.closest('[data-density-set]');
+    if (dens) {
+      var nextD = dens.getAttribute('data-density-set');
+      root.setAttribute('data-density', nextD);
+      try { localStorage.setItem('ti-density', nextD); } catch (err) {}
+      paintDensity();
+      return;
+    }
+
+    var theme = e.target.closest('[data-theme-set]');
+    if (theme) {
+      var nextT = theme.getAttribute('data-theme-set');
+      if (nextT === 'system') {
+        /* Removed, not set to 'system'. The CSS follows prefers-color-scheme
+           for anything without the attribute, so removing it hands the
+           decision back to the operating system — writing 'system' into the
+           attribute would match no selector and silently pin light. */
+        root.removeAttribute('data-theme');
+      } else {
+        root.setAttribute('data-theme', nextT);
+      }
+      try { localStorage.setItem('ti-theme', nextT); } catch (err) {}
+      paintTheme();
+    }
   });
   paintDensity();
+  paintTheme();
 })();
 </script>
 {% block scripts %}{% endblock %}

@@ -82,6 +82,9 @@
   --ti-tick-empty:   #CDD3D7;
   --ti-tick-ring:    #A9B0B5;
 
+  --ti-seg-on:       #FFFFFF;  /* selected segment; 17.13 with --ti-ink   */
+  --ti-seg-hover:    rgba(255, 255, 255, 0.75);
+
   --ti-accent:       #C43D1C;  /* 4.55:1 on panel ONLY. Never text on field. */
   --ti-accent-from:  #D24C29;
   --ti-accent-to:    #B83718;
@@ -297,7 +300,7 @@
   top: 0;
   z-index: 100;
   padding: var(--ti-8) var(--ti-14);
-  background: #FFFFFF;
+  background: var(--ti-seg-on);
   color: var(--ti-ink);
   font: 500 13px/20px var(--ti-sans);
   box-shadow: var(--ti-sh-ctl-raised);
@@ -370,7 +373,7 @@
   gap: var(--ti-8);
   height: 34px;
   padding: 0 var(--ti-12);
-  background: #FFFFFF;
+  background: var(--ti-seg-on);
   border: 1px solid var(--ti-line-ctl);
   border-radius: 17px;              /* half of 34px height */
   box-shadow: var(--ti-sh-ctl-inset);
@@ -451,11 +454,11 @@
   text-decoration: none;
 }
 .ti-nav__link:hover {
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--ti-seg-hover);
   color: var(--ti-ink);
 }
 .ti-nav__link[aria-current='page'] {
-  background: #FFFFFF;
+  background: var(--ti-seg-on);
   color: var(--ti-ink);
   box-shadow: var(--ti-sh-ctl-raised);
 }
@@ -492,7 +495,7 @@
   justify-content: center;
   width: 22px; height: 22px;
   border-radius: 11px;              /* half of 22px */
-  background: #FFFFFF;
+  background: var(--ti-seg-on);
   box-shadow: var(--ti-sh-ctl-raised);
   font-family: var(--ti-mono);
   /* 10px is the smallest step in this system's type scale; the
@@ -705,7 +708,7 @@
   align-items: center;
 }
 .ti-seg__btn:hover {
-  background: rgba(255, 255, 255, 0.75);
+  background: var(--ti-seg-hover);
   color: var(--ti-ink);
 }
 /* Two attributes because this class serves two kinds of control, and they take
@@ -715,7 +718,12 @@
    density buttons when they were corrected to aria-pressed. */
 .ti-seg__btn[aria-current='true'],
 .ti-seg__btn[aria-pressed='true'] {
-  background: #FFFFFF;
+  /* A token, not #FFFFFF. Hardcoded white put --ti-ink — which is near-white
+     in the dark theme — onto a white pill, so the selected option was the one
+     thing on the page you could not read. The selected state is "lifted above
+     the surface", and on a dark surface lifting means lighter than the panel,
+     not white. */
+  background: var(--ti-seg-on);
   color: var(--ti-ink);
   box-shadow: 0 1px 2px rgba(25, 28, 30, 0.16), inset 0 0 0 1px var(--ti-line-ctl);
 }
@@ -1182,7 +1190,7 @@
   cursor: pointer;
 }
 .ti-cite:hover {
-  background: #FFFFFF;
+  background: var(--ti-seg-on);
   color: var(--ti-ink);
   border-color: var(--ti-stroke-strong, #8D969C);
 }
@@ -1602,7 +1610,7 @@
   max-width: 44ch;
   min-height: 34px;
   padding: 0 var(--ti-12);
-  background: #FFFFFF;
+  background: var(--ti-seg-on);
   border: 1px solid var(--ti-line-ctl);
   border-radius: var(--ti-r-input);
   box-shadow: var(--ti-sh-ctl-inset);
@@ -1691,7 +1699,7 @@
   gap: var(--ti-12);
   height: 52px;
   padding: 0 var(--ti-18);
-  background: #FFFFFF;
+  background: var(--ti-seg-on);
   border: 1px solid var(--ti-line-ctl);
   border-radius: 26px;              /* half of 52px height */
   box-shadow: var(--ti-sh-ctl-inset);
@@ -2736,3 +2744,153 @@ button.ti-lrow__act {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+
+/* --- Dark theme ---------------------------------------------------------- */
+/* Chosen by computing the ratios, not by eye.
+   ---------------------------------------------------------------------------
+   The light tokens above document a contrast figure beside almost every colour
+   and tests/test_contrast.py proves each claim rather than trusting it. A dark
+   theme picked by eye would be the one part of this stylesheet where the
+   numbers were guessed, so every value below was measured against the same
+   arithmetic and the test now runs over both themes.
+
+   Measured on field #15181B / panel #1F2429:
+     --ti-ink          15.16 / 13.30
+     --ti-sec          11.09 /  9.73
+     --ti-mut           8.19 /  7.18
+     --ti-accent-dark   8.85 /  7.76
+     --ti-ok-dark       9.73 /  8.54
+     --ti-accent        5.26 /  4.62   (indicator, needs 3)
+     --ti-ok            5.80 /  5.09   (indicator, needs 3)
+
+   One deliberate difference from light. There, `--ti-dim` is panel-only: it is
+   4.29 on the field, which fails, and six classes using it for text on the
+   field were a real bug. Here it measures 6.02 on the field and 5.28 on the
+   panel, so it is legal on both. That is a property of this palette, not a rule
+   to reproduce — forcing a worse grey to imitate a light-theme constraint would
+   be copying the shape of a fix without its reason. */
+
+[data-theme='dark'] {
+  --ti-field:        #15181B;
+  --ti-panel:        #1F2429;
+  --ti-panel-hover:  #272D33;
+  --ti-head-from:    #232930;
+  --ti-head-to:      #1B2126;
+  --ti-band-from:    #1C2226;
+  --ti-band-to:      #171C20;
+  --ti-thead-from:   #232930;
+  --ti-thead-to:     #1D2328;
+
+  --ti-ink:          #EAEDEF;
+  --ti-sec:          #C6CDD2;
+  --ti-mut:          #A8B1B8;
+  --ti-dim:          #8F979E;
+
+  /* Borders lighten rather than darken: on a dark surface a hairline reads by
+     being lighter than what it sits on, which is the inverse of the light
+     theme and the reason these are not simply the light values reused. */
+  --ti-line:         #333A41;
+  --ti-line-ctl:     #3B434A;
+  --ti-rule:         #272D33;
+  --ti-tick-empty:   #2E353B;
+  --ti-tick-ring:    #4A535A;
+
+  --ti-seg-on:       #39424A;  /* 8.70 with --ti-ink; lifted, not white */
+  --ti-seg-hover:    rgba(255, 255, 255, 0.08);
+
+  --ti-accent:       #E8613A;
+  --ti-accent-from:  #F0704A;
+  --ti-accent-to:    #D9522C;
+  --ti-accent-dark:  #FF9E7A;  /* the TEXT accent: lighter here, not darker */
+  --ti-ok:           #5FA34E;
+  --ti-ok-dark:      #8ED07C;  /* likewise — "dark" names the role, not the
+                                  lightness, and inverting the hue steps would
+                                  have made the text green illegible */
+
+  /* Shadows carry almost nothing on a dark surface; depth comes from the panel
+     being lighter than the page. Keeping the light theme's shadows would just
+     add muddy haloes. */
+  --ti-sh-band:      0 1px 0 rgba(0, 0, 0, 0.4);
+  --ti-sh-chip:      0 1px 2px rgba(0, 0, 0, 0.5);
+  --ti-sh-ctl-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --ti-sh-ctl-raised:0 1px 2px rgba(0, 0, 0, 0.5);
+  --ti-sh-dot-halo:  0 0 0 3px rgba(95, 163, 78, 0.18);
+
+  color-scheme: dark;
+}
+
+/* "System" is the default: no attribute set, follow the operating system.
+   Written as a media query rather than JavaScript so the very first paint is
+   already correct — a light flash before a script runs is the most visible
+   possible bug in a dark theme. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --ti-field:        #15181B;
+    --ti-panel:        #1F2429;
+    --ti-panel-hover:  #272D33;
+    --ti-head-from:    #232930;
+    --ti-head-to:      #1B2126;
+    --ti-band-from:    #1C2226;
+    --ti-band-to:      #171C20;
+    --ti-thead-from:   #232930;
+    --ti-thead-to:     #1D2328;
+    --ti-ink:          #EAEDEF;
+    --ti-sec:          #C6CDD2;
+    --ti-mut:          #A8B1B8;
+    --ti-dim:          #8F979E;
+    --ti-line:         #333A41;
+    --ti-line-ctl:     #3B434A;
+    --ti-rule:         #272D33;
+    --ti-tick-empty:   #2E353B;
+    --ti-tick-ring:    #4A535A;
+    --ti-seg-on:       #39424A;
+    --ti-seg-hover:    rgba(255, 255, 255, 0.08);
+    --ti-accent:       #E8613A;
+    --ti-accent-from:  #F0704A;
+    --ti-accent-to:    #D9522C;
+    --ti-accent-dark:  #FF9E7A;
+    --ti-ok:           #5FA34E;
+    --ti-ok-dark:      #8ED07C;
+    --ti-sh-band:      0 1px 0 rgba(0, 0, 0, 0.4);
+    --ti-sh-chip:      0 1px 2px rgba(0, 0, 0, 0.5);
+    --ti-sh-ctl-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    --ti-sh-ctl-raised:0 1px 2px rgba(0, 0, 0, 0.5);
+    --ti-sh-dot-halo:  0 0 0 3px rgba(95, 163, 78, 0.18);
+    color-scheme: dark;
+  }
+}
+
+@media print {
+  /* Paper is white. Printing the dark theme would spend a cartridge to make a
+     report harder to read than the light one. */
+  [data-theme='dark'] { color-scheme: light; }
+}
+
+/* --- Settings ------------------------------------------------------------ */
+
+.ti-settings { padding: var(--ti-4) var(--ti-16); }
+
+.ti-settings__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ti-20);
+  padding: var(--ti-16) 0;
+  border-bottom: 1px solid var(--ti-rule);
+  flex-wrap: wrap;
+}
+.ti-settings__row:last-child { border-bottom: 0; }
+
+.ti-settings__label { margin: 0; font-size: var(--ti-14); color: var(--ti-ink); }
+.ti-settings__hint {
+  margin: var(--ti-4) 0 0;
+  font-size: var(--ti-12);
+  line-height: 1.5;
+  color: var(--ti-mut);
+  max-width: 58ch;
+}
+.ti-settings__note { margin: 0; padding: var(--ti-12) 0; font-size: var(--ti-12); color: var(--ti-mut); }
+
+/* The mirror of [data-js-only]: shown only when scripting is off, so the
+   appearance panel explains itself rather than looking broken. */
+[data-nojs-only] { display: none; }
